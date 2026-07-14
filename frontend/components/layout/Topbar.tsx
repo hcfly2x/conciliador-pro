@@ -1,8 +1,8 @@
 'use client'
 import { useEffect, useState } from 'react'
 import { usePathname, useRouter } from 'next/navigation'
-import { Eraser, Link2Off, LogOut, RefreshCw, Upload } from 'lucide-react'
-import { clearTransactionClassifications, clearTransactionLinks, recalculateProbabilities, logout, getStoredUser } from '@/lib/api'
+import { Eraser, LogOut, RefreshCw, Upload } from 'lucide-react'
+import { clearTransactionClassifications, recalculateProbabilities, logout, getStoredUser } from '@/lib/api'
 import type { AuthUser } from '@/types'
 import { useStore } from '@/store/app'
 
@@ -20,7 +20,6 @@ export default function Topbar() {
   const router = useRouter()
   const { addToast, bumpRefresh } = useStore()
   const [recalcLoading, setRecalcLoading] = useState(false)
-  const [clearLinksLoading, setClearLinksLoading] = useState(false)
   const [clearClassLoading, setClearClassLoading] = useState(false)
   const [user, setUser] = useState<AuthUser | null>(null)
   useEffect(() => { setUser(getStoredUser()) }, [])
@@ -45,20 +44,6 @@ export default function Topbar() {
     }
   }
 
-  async function handleClearLinks() {
-    if (!window.confirm('Limpar todos os vinculos historicos dos lancamentos? As classificacoes serao mantidas.')) return
-    setClearLinksLoading(true)
-    try {
-      const result = await clearTransactionLinks()
-      addToast(`${result.updated} vinculos limpos`)
-      bumpRefresh()
-    } catch {
-      addToast('Erro ao limpar vinculos', 'err')
-    } finally {
-      setClearLinksLoading(false)
-    }
-  }
-
   async function handleClearClassifications() {
     if (!window.confirm('Limpar todas as classificacoes e voltar lancamentos para pendente? Os lancamentos e a base historica original serao mantidos.')) return
     setClearClassLoading(true)
@@ -80,16 +65,6 @@ export default function Topbar() {
     >
       <h2 className="flex-1 font-display font-bold text-[15px] text-[#e8eaf0]">{title}</h2>
       {isAdminUser && (<>
-      <button
-        onClick={handleClearLinks}
-        disabled={clearLinksLoading}
-        className="mr-2 flex items-center gap-2 px-3.5 py-1.5 rounded-md text-[12px] font-semibold transition-all disabled:opacity-50"
-        style={{ background: 'rgba(251,191,36,0.10)', color: '#fbbf24', border: '1px solid rgba(251,191,36,0.28)' }}
-        title="Remove apenas o vinculo com a base historica"
-      >
-        <Link2Off size={13} />
-        {clearLinksLoading ? 'Limpando...' : 'Limpar vinculos'}
-      </button>
       <button
         onClick={handleClearClassifications}
         disabled={clearClassLoading}
