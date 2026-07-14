@@ -2,8 +2,9 @@
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { useEffect, useState } from 'react'
-import { LayoutList, Clock, BarChart2, Tag, Upload, CreditCard, AlertTriangle, Database, FolderOpen, WalletCards } from 'lucide-react'
+import { LayoutList, Clock, BarChart2, Tag, Upload, CreditCard, AlertTriangle, Database, FolderOpen, WalletCards, Settings } from 'lucide-react'
 import { useStore } from '@/store/app'
+import { isAdmin } from '@/lib/api'
 import { getLedgers } from '@/lib/api'
 import { cn } from '@/lib/utils'
 import type { Ledger } from '@/types'
@@ -19,9 +20,12 @@ const nav = [
   { href: '/contas-correntes', label: 'Contas Correntes', icon: WalletCards, section: 'principal' },
   { href: '/categorias', label: 'Categorias',  icon: Tag,        section: 'config' },
   { href: '/contas',     label: 'Contas',      icon: CreditCard, section: 'config' },
+  { href: '/sistema',    label: 'Sistema',     icon: Settings,   section: 'config', adminOnly: true },
 ]
 
 export default function Sidebar() {
+  const [admin, setAdmin] = useState(false)
+  useEffect(() => { setAdmin(isAdmin()) }, [])
   const pathname = usePathname()
   const { pendingCount } = useStore()
   const [ledgers, setLedgers] = useState<Ledger[]>([])
@@ -81,7 +85,7 @@ export default function Sidebar() {
         <p className="text-[10px] font-semibold text-[#5a5f73] uppercase tracking-widest px-3 pb-2 pt-1">
           Principal
         </p>
-        {nav.filter(n => n.section === 'principal').map(item => (
+        {nav.filter(n => n.section === 'principal' && (!n.adminOnly || admin)).map(item => (
           <NavItem key={item.href} item={item} />
         ))}
         {ledgers.length > 0 && (
@@ -116,14 +120,14 @@ export default function Sidebar() {
         <p className="text-[10px] font-semibold text-[#5a5f73] uppercase tracking-widest px-3 pb-2 pt-4">
           Importação
         </p>
-        {nav.filter(n => n.section === 'importacao').map(item => (
+        {nav.filter(n => n.section === 'importacao' && (!n.adminOnly || admin)).map(item => (
           <NavItem key={item.href} item={item} />
         ))}
 
         <p className="text-[10px] font-semibold text-[#5a5f73] uppercase tracking-widest px-3 pb-2 pt-4">
           Configurações
         </p>
-        {nav.filter(n => n.section === 'config').map(item => (
+        {nav.filter(n => n.section === 'config' && (!n.adminOnly || admin)).map(item => (
           <NavItem key={item.href} item={item} />
         ))}
       </nav>

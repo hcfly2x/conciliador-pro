@@ -1,4 +1,4 @@
-﻿'use client'
+'use client'
 import { useRef, useState } from 'react'
 import { importSeedFile } from '@/lib/api'
 import { useStore } from '@/store/app'
@@ -30,10 +30,10 @@ export default function HistoricoPage() {
   return (
     <div className="max-w-2xl">
       <h2 className="font-display text-xl text-[#e8eaf0] mb-2">Importar planilha historica</h2>
-      <p className="text-sm text-[#8b90a4] mb-5">Use esta tela para subir sua planilha ja conciliada (abas ENTRADAS/SAIDAS).</p>
+      <p className="text-sm text-[#8b90a4] mb-5">Use esta tela para subir sua planilha ja conciliada (abas ENTRADAS/SAIDAS) ou PDF. Ela alimenta apenas as sugestoes de categoria/subcategoria.</p>
 
       <div className="rounded-xl p-5 mb-4" style={{ background: '#13161d', border: '1px solid rgba(255,255,255,0.07)' }}>
-        <input ref={inputRef} type="file" accept=".xlsx" className="hidden" onChange={e => setFile(e.target.files?.[0] || null)} />
+        <input ref={inputRef} type="file" accept=".xlsx,.pdf" className="hidden" onChange={e => setFile(e.target.files?.[0] || null)} />
         <button onClick={() => inputRef.current?.click()} className="h-10 px-4 rounded-md text-sm font-semibold" style={{ background: '#1a1e28', color: '#e8eaf0', border: '1px solid rgba(255,255,255,0.12)' }}>
           Selecionar planilha
         </button>
@@ -46,6 +46,9 @@ export default function HistoricoPage() {
         <div className="rounded-xl p-4 mb-4" style={{ background: 'rgba(62,207,142,0.06)', border: '1px solid rgba(62,207,142,0.2)' }}>
           <p className="text-sm text-[#3ecf8e] font-semibold mb-2">Importacao concluida</p>
           <p className="text-sm text-[#e8eaf0]">Total: {result.total_parsed} | Inseridos: {result.total_inserted} | Duplicados: {result.total_duplicates}</p>
+          {typeof result.suggestions_recalculated === 'number' && (
+            <p className="text-sm text-[#8b90a4] mt-1">Sugestoes recalculadas para {result.suggestions_recalculated} lancamentos pendentes.</p>
+          )}
         </div>
       )}
 

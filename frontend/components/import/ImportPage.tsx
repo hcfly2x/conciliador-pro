@@ -1,4 +1,4 @@
-﻿'use client'
+'use client'
 import { useMemo, useRef, useState } from 'react'
 import { Upload, CheckCircle, AlertCircle, FileText, ShieldCheck, Database } from 'lucide-react'
 import { useStore } from '@/store/app'
@@ -82,6 +82,11 @@ export default function ImportPage() {
 
   async function handleCommit() {
     if (!preview) return
+    const [cy, cm] = competenceMonth.split('-')
+    if (!cy || !cm) {
+      setError('Selecione o mês e o ano de competência antes de confirmar a importação.')
+      return
+    }
     setLoading(true)
     setError(null)
     try {
@@ -160,14 +165,36 @@ export default function ImportPage() {
               <p className="text-sm text-[#8b90a4]">Conta selecionada: {selectedAccount?.name || preview.account_name}</p>
               <label className="mt-3 flex items-center gap-2 text-sm text-[#8b90a4]">
                 Competência
-                <input
-                  type="month"
-                  value={competenceMonth}
-                  onChange={e => setCompetenceMonth(e.target.value)}
+                <select
+                  value={competenceMonth.split('-')[1] || ''}
+                  onChange={e => {
+                    const y = competenceMonth.split('-')[0] || String(new Date().getFullYear())
+                    setCompetenceMonth(`${y}-${e.target.value}`)
+                  }}
                   className="h-8 rounded-md px-2 text-sm text-[#e8eaf0] outline-none"
                   style={{ background: '#1a1e28', border: '1px solid rgba(255,255,255,0.12)' }}
-                />
+                >
+                  <option value="">Mês</option>
+                  {['01','02','03','04','05','06','07','08','09','10','11','12'].map((m, i) => (
+                    <option key={m} value={m}>{['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'][i]}</option>
+                  ))}
+                </select>
+                <select
+                  value={competenceMonth.split('-')[0] || ''}
+                  onChange={e => {
+                    const m = competenceMonth.split('-')[1] || '01'
+                    setCompetenceMonth(`${e.target.value}-${m}`)
+                  }}
+                  className="h-8 rounded-md px-2 text-sm text-[#e8eaf0] outline-none"
+                  style={{ background: '#1a1e28', border: '1px solid rgba(255,255,255,0.12)' }}
+                >
+                  <option value="">Ano</option>
+                  {['2023','2024','2025','2026'].map(y => <option key={y} value={y}>{y}</option>)}
+                </select>
               </label>
+              {(!competenceMonth || competenceMonth.split('-').filter(Boolean).length < 2) && (
+                <p className="mt-1 text-xs text-[#fbbf24]">Selecione mês e ano de competência antes de confirmar.</p>
+              )}
             </div>
             <div className="flex items-center gap-2 text-[#3ecf8e]"><ShieldCheck size={18} /><span className="text-sm font-medium">Pré-validação concluída</span></div>
           </div>
@@ -177,7 +204,7 @@ export default function ImportPage() {
             <div className="rounded-lg p-3" style={{ background: '#0f1320', border: '1px solid rgba(255,255,255,0.07)' }}><p className="text-xs text-[#8b90a4]">Duplicados no banco</p><p className="text-xl text-[#fbbf24] font-semibold">{preview.duplicates_db}</p></div>
             <div className="rounded-lg p-3" style={{ background: '#0f1320', border: '1px solid rgba(255,255,255,0.07)' }}><p className="text-xs text-[#8b90a4]">Duplicados internos</p><p className="text-xl text-[#c084fc] font-semibold">{preview.duplicates_internal}</p></div>
             <div className="rounded-lg p-3" style={{ background: '#0f1320', border: '1px solid rgba(255,255,255,0.07)' }}><p className="text-xs text-[#8b90a4]">Novos para inserir</p><p className="text-xl text-[#3ecf8e] font-semibold">{preview.new_records}</p></div>
-            <div className="rounded-lg p-3" style={{ background: '#0f1320', border: '1px solid rgba(255,255,255,0.07)' }}><p className="text-xs text-[#8b90a4]">Match historico</p><p className="text-xl text-[#93c5fd] font-semibold">{preview.historical_matches || 0}</p></div>
+            <div className="rounded-lg p-3" style={{ background: '#0f1320', border: '1px solid rgba(255,255,255,0.07)' }}><p className="text-xs text-[#8b90a4]">Sugestões do histórico</p><p className="text-xl text-[#93c5fd] font-semibold">{preview.historical_matches || 0}</p></div>
           </div>
 
           {preview.warnings && preview.warnings.length > 0 && (

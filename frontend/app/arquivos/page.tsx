@@ -1,10 +1,11 @@
 'use client'
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Check, FileUp, RefreshCw, Search, Trash2, X } from 'lucide-react'
+import { Check, Download, FileUp, RefreshCw, Search, Trash2, X } from 'lucide-react'
 import {
   commitImportPreview,
   deleteCoverageFile,
+  downloadDocument,
   dispenseCoverage,
   getCoverage,
   getCoverageFiles,
@@ -269,8 +270,18 @@ export default function ArquivosPage() {
                 <div key={file.path} className="rounded-md bg-[#0d0f14] border border-white/10 px-3 py-2 flex items-start gap-3">
                   <div className="min-w-0 flex-1">
                     <p className="text-sm font-medium text-[#e8eaf0] break-all">{file.filename}</p>
-                    <p className="text-xs text-[#5a5f73] break-all">{file.path}</p>
+                    <p className="text-xs text-[#5a5f73] break-all">{file.path.startsWith('db://') ? 'guardado no banco de dados' : file.path}</p>
                   </div>
+                  {file.doc_id && (
+                    <button
+                      onClick={() => downloadDocument(file.doc_id!, file.filename)}
+                      disabled={busy}
+                      className="h-8 w-8 rounded-md bg-[#1a1e28] text-[#93c5fd] border border-white/10 flex items-center justify-center hover:bg-[#232838] disabled:opacity-50"
+                      title="Baixar arquivo"
+                    >
+                      <Download size={14} />
+                    </button>
+                  )}
                   <button
                     onClick={() => removeFile(file)}
                     disabled={busy}

@@ -1,5 +1,6 @@
 ﻿from __future__ import annotations
 
+import base64
 import csv
 import datetime as dt
 import difflib
@@ -304,6 +305,28 @@ def archive_target_path(source: Path, account_name: str, txs: list[Any]) -> Path
     if target.exists():
         target = target_dir / f"{target.stem}-{int(dt.datetime.now().timestamp())}{target.suffix}"
     return target
+
+
+def store_document_in_db(source: Path, account_name: str, year_month: str, filename: str) -> str | None:
+    """Guarda o conteudo do arquivo no banco (base64) para sobreviver a redeploys."""
+    try:
+        content = base64.b64encode(source.read_bytes()).decode("ascii")
+    except Exception:
+        return None
+    doc_id = str(uuid.uuid4())
+    with db_connect() as conn:
+        dup = conn.execute(
+            "SELECT id FROM stored_documents WHERE account_name=? AND year_month=? AND filename=? LIMIT 1",
+            (account_name, year_month, filename),
+        ).fetchone()
+        if dup:
+            conn.execute("UPDATE stored_documents SET content_b64=?, size=? WHERE id=?", (content, source.stat().st_size, dup[0]))
+            return dup[0]
+        conn.execute(
+            "INSERT INTO stored_documents(id,account_name,year_month,filename,size,content_b64,created_at) VALUES (?,?,?,?,?,?,?)",
+            (doc_id, account_name, year_month, filename, source.stat().st_size, content, dt.datetime.now().isoformat(timespec="seconds")),
+        )
+    return doc_id
 
 
 def archive_import_file(source: Path, target: Path) -> None:
@@ -1333,6 +1356,21 @@ def init_db() -> None:
         if "classified_at" not in tx_cols:
             conn.execute("ALTER TABLE transactions ADD COLUMN classified_at TEXT NOT NULL DEFAULT ''")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_tx_locked ON transactions(locked)")
+        # Cofre de arquivos persistente no banco (o disco do hosting e efemero).
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS stored_documents(
+              id TEXT PRIMARY KEY,
+              account_name TEXT NOT NULL,
+              year_month TEXT NOT NULL,
+              filename TEXT NOT NULL,
+              size INTEGER NOT NULL DEFAULT 0,
+              content_b64 TEXT NOT NULL,
+              created_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_docs_acc_month ON stored_documents(account_name, year_month)")
 
 
 def seed() -> None:
@@ -1932,11 +1970,14 @@ def import_seed_workbook(path: Path):
     total_inserted = 0
     total_duplicates = 0
 
+    sheets_found = [ws.title for ws in wb.worksheets]
+    sheets_recognized: list[str] = []
     with db_connect() as conn:
         for ws in wb.worksheets:
             sname = norm_text(ws.title)
             if sname not in wanted:
                 continue
+            sheets_recognized.append(ws.title)
             sheet_type = wanted.get(sname)
             sheet_source_id = f"{imported_file_id}:sheet:{history_sheet_key(ws.title)}"
             rows = [list(r) for r in ws.iter_rows(values_only=True)]
@@ -2054,6 +2095,27 @@ def import_seed_workbook(path: Path):
                 now,
             ),
         )
+    if not sheets_recognized:
+        return {
+            "detail": (
+                "Nenhuma aba reconhecida na planilha. Abas esperadas: SAIDAS e/ou ENTRADAS. "
+                f"Abas encontradas no arquivo: {', '.join(sheets_found) or 'nenhuma'}. "
+                "Renomeie as abas e tente novamente."
+            ),
+            "code": "SEED_NO_SHEETS",
+            "sheets_found": sheets_found,
+        }, 422
+    if total_parsed == 0:
+        return {
+            "detail": (
+                f"Abas reconhecidas ({', '.join(sheets_recognized)}), mas nenhuma linha valida foi lida. "
+                "Confira se ha colunas de Data, Descricao e Valor preenchidas."
+            ),
+            "code": "SEED_NO_ROWS",
+            "sheets_found": sheets_found,
+        }, 422
+    # Recalcula as sugestoes dos lancamentos pendentes automaticamente apos alimentar a base.
+    recalc = _recalculate_probabilities_impl()
     return {
         "imported_file_id": imported_file_id,
         "filename": path.name,
@@ -2062,6 +2124,8 @@ def import_seed_workbook(path: Path):
         "total_inserted": total_inserted,
         "total_duplicates": total_duplicates,
         "total_errors": 0,
+        "sheets_recognized": sheets_recognized,
+        "suggestions_recalculated": recalc.get("updated", 0),
         "transactions_preview": [],
     }, 201
 
@@ -2176,6 +2240,7 @@ def import_seed_pdf(path: Path):
             ),
         )
 
+    recalc = _recalculate_probabilities_impl()
     return {
         "imported_file_id": imported_file_id,
         "filename": path.name,
@@ -2184,6 +2249,7 @@ def import_seed_pdf(path: Path):
         "total_inserted": total_inserted,
         "total_duplicates": total_duplicates,
         "total_errors": 0,
+        "suggestions_recalculated": recalc.get("updated", 0),
         "debug_rejected_sample": rejected[:15],
         "transactions_preview": [],
     }, 201
@@ -2406,6 +2472,14 @@ def import_document(
             ),
         )
 
+    # Persistir o arquivo original no banco ANTES de arquivar (o disco e efemero no hosting).
+    # Ano/mes e nome vem do proprio destino de arquivamento para manter cofre e disco identicos.
+    store_document_in_db(
+        path,
+        acc[1],
+        f"{archived_target.parents[2].name}/{archived_target.parents[1].name}",
+        archived_target.name,
+    )
     archive_import_file(path, archived_target)
 
     return {
@@ -2956,21 +3030,37 @@ def coverage_account_rows(conn: sqlite3.Connection) -> list[sqlite3.Row]:
 
 def coverage_files_for(account_name: str, year_month: str) -> list[dict[str, Any]]:
     year, month = year_month.split("/")
+    files: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    # 1) Cofre persistente no banco (fonte principal no modo hosted)
+    with db_connect() as conn:
+        rows = conn.execute(
+            "SELECT id, filename, size, created_at FROM stored_documents WHERE account_name=? AND year_month=? ORDER BY filename",
+            (account_name, year_month),
+        ).fetchall()
+    for r in rows:
+        seen.add(str(r[1]).lower())
+        files.append({
+            "filename": r[1],
+            "path": f"db://{r[0]}",
+            "doc_id": r[0],
+            "size": r[2],
+            "modified_at": r[3],
+        })
+    # 2) Arquivos em disco (uso local / legado)
     folder = DOCS / year / month / account_folder_name(account_name)
-    if not folder.exists():
-        return []
-    allowed = {".csv", ".xls", ".xlsx", ".pdf"}
-    files = []
-    for path in sorted(folder.iterdir(), key=lambda p: p.name.lower()):
-        if path.is_file() and path.suffix.lower() in allowed:
-            stat = path.stat()
-            files.append({
-                "filename": path.name,
-                "path": project_relative_path(path),
-                "size": stat.st_size,
-                "modified_at": dt.datetime.fromtimestamp(stat.st_mtime).isoformat(timespec="seconds"),
-            })
-    return files
+    if folder.exists():
+        allowed = {".csv", ".xls", ".xlsx", ".pdf"}
+        for path in sorted(folder.iterdir(), key=lambda p: p.name.lower()):
+            if path.is_file() and path.suffix.lower() in allowed and path.name.lower() not in seen:
+                stat = path.stat()
+                files.append({
+                    "filename": path.name,
+                    "path": project_relative_path(path),
+                    "size": stat.st_size,
+                    "modified_at": dt.datetime.fromtimestamp(stat.st_mtime).isoformat(timespec="seconds"),
+                })
+    return sorted(files, key=lambda f: str(f["filename"]).lower())
 
 
 @app.route("/api/v1/coverage")
@@ -3068,10 +3158,44 @@ def resolve_document_path(raw_path: str) -> Path | None:
     return resolved
 
 
+@app.route("/api/v1/documents/<doc_id>/download")
+def document_download(doc_id: str):
+    with db_connect() as conn:
+        row = conn.execute(
+            "SELECT filename, content_b64 FROM stored_documents WHERE id=?", (doc_id,)
+        ).fetchone()
+    if not row:
+        return jsonify({"detail": "Arquivo nao encontrado", "code": "NOT_FOUND"}), 404
+    filename = row[0]
+    content = base64.b64decode(row[1])
+    ext = Path(filename).suffix.lower()
+    mimetypes_map = {
+        ".pdf": "application/pdf",
+        ".csv": "text/csv",
+        ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        ".xls": "application/vnd.ms-excel",
+    }
+    from flask import Response
+    return Response(
+        content,
+        mimetype=mimetypes_map.get(ext, "application/octet-stream"),
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 @app.route("/api/v1/coverage/files", methods=["DELETE"])
 def coverage_delete_file():
     data = request.get_json(force=True) or {}
     raw_path = (data.get("path") or "").strip()
+    if raw_path.startswith("db://"):
+        doc_id = raw_path[5:]
+        with db_connect() as conn:
+            row = conn.execute("SELECT id, filename FROM stored_documents WHERE id=?", (doc_id,)).fetchone()
+            if not row:
+                return jsonify({"detail": "Arquivo nao encontrado", "code": "NOT_FOUND"}), 404
+            conn.execute("DELETE FROM stored_documents WHERE id=?", (doc_id,))
+            record_audit(current_user(), "delete_document", "document", doc_id, "filename", row[1], "", conn=conn)
+        return jsonify({"ok": True, "deleted": row[1]})
     file_path = resolve_document_path(raw_path)
     if not file_path:
         return jsonify({"detail": "Caminho invalido", "code": "VALIDATION_ERROR"}), 400
@@ -3122,17 +3246,41 @@ def system_reset():
     else:
         backup_ref = "hosted: use o backup/branch do provedor Postgres antes de resetar"
 
+    scope = (data.get("scope") or "transactions").strip()
+    wipe_categories = bool(data.get("wipe_categories"))
+    if scope not in ("transactions", "all"):
+        return jsonify({"detail": "scope deve ser transactions ou all", "code": "VALIDATION_ERROR"}), 400
+
     with db_connect() as conn:
         before = {
             "transactions": conn.execute("SELECT COUNT(1) FROM transactions").fetchone()[0],
             "import_previews": conn.execute("SELECT COUNT(1) FROM import_previews").fetchone()[0],
-            "imported_files": conn.execute("SELECT COUNT(1) FROM imported_files WHERE file_type NOT IN ('xlsx-seed','pdf-seed')").fetchone()[0],
+            "imported_files": conn.execute("SELECT COUNT(1) FROM imported_files").fetchone()[0],
+            "stored_documents": conn.execute("SELECT COUNT(1) FROM stored_documents").fetchone()[0],
+            "classification_history": conn.execute("SELECT COUNT(1) FROM classification_history").fetchone()[0],
         }
+        # Lancamentos, previews, cofre e cobertura sempre sao limpos.
         conn.execute("DELETE FROM transactions")
         conn.execute("DELETE FROM import_previews")
-        conn.execute("DELETE FROM imported_files WHERE file_type NOT IN ('xlsx-seed','pdf-seed')")
-        record_audit(current_user(), "system_reset", "system", detail=str(before), conn=conn)
-    return jsonify({"ok": True, "backup": backup_ref, "deleted": before})
+        conn.execute("DELETE FROM stored_documents")
+        conn.execute("DELETE FROM account_file_coverage")
+        if scope == "all":
+            # Base historica e registros de importacao (incluindo seeds).
+            conn.execute("DELETE FROM classification_history")
+            conn.execute("DELETE FROM imported_files")
+            if wipe_categories:
+                conn.execute("UPDATE transactions SET subcategory_id=NULL, category_id=NULL")  # no-op (ja vazio), por seguranca
+                conn.execute("DELETE FROM subcategories")
+                conn.execute("DELETE FROM categories")
+        else:
+            conn.execute("DELETE FROM imported_files WHERE file_type NOT IN ('xlsx-seed','pdf-seed')")
+        record_audit(
+            current_user(), "system_reset", "system",
+            detail=f"scope={scope}, wipe_categories={wipe_categories}, antes={before}", conn=conn,
+        )
+    if scope == "all" and wipe_categories:
+        seed()  # recria as categorias base
+    return jsonify({"ok": True, "backup": backup_ref, "scope": scope, "wipe_categories": wipe_categories, "deleted": before})
 
 
 @app.route("/api/v1/import/scan-folder", methods=["POST"])
@@ -3788,6 +3936,10 @@ def tx_suggestions(tx_id: str):
 
 @app.route("/api/v1/transactions/recalculate-probabilities", methods=["POST"])
 def recalculate_probabilities():
+    return jsonify(_recalculate_probabilities_impl())
+
+
+def _recalculate_probabilities_impl():
     updated = 0
     linked_classified = 0
     with db_connect() as conn:
@@ -3876,7 +4028,7 @@ def recalculate_probabilities():
                 )
                 linked_classified += 1
             updated += 1
-    return jsonify({"updated": updated, "total": len(rows), "linked_classified": linked_classified})
+    return {"updated": updated, "total": len(rows), "linked_classified": linked_classified}
 
 
 @app.route("/api/v1/transactions/auto-classify", methods=["POST"])

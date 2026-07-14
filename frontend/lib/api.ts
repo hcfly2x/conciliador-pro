@@ -444,8 +444,27 @@ export async function importSeedFile(file: File): Promise<ImportResult> {
 export interface CoverageFile {
   filename: string
   path: string
+  doc_id?: string
   size: number
   modified_at: string
+}
+
+export async function systemReset(scope: 'transactions' | 'all', wipe_categories = false): Promise<{ ok: boolean; deleted: Record<string, number> }> {
+  return http('POST', '/system/reset', { confirm: 'RESETAR', scope, wipe_categories })
+}
+
+export async function downloadDocument(docId: string, filename: string): Promise<void> {
+  const res = await fetch(`${BASE}/documents/${docId}/download`, { headers: authHeaders() })
+  if (!res.ok) throw { status: res.status, detail: 'Erro ao baixar arquivo' }
+  const blob = await res.blob()
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = filename
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+  URL.revokeObjectURL(url)
 }
 
 export interface CoverageCell {
