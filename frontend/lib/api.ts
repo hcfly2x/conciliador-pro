@@ -172,6 +172,9 @@ export async function getSubcategories(): Promise<Subcategory[]> {
   if (USE_MOCK) { await delay(); return mockSubcategories }
   return http<Subcategory[]>('GET', '/subcategories')
 }
+export async function deleteSubcategory(id: string): Promise<{ ok: boolean }> {
+  return http('DELETE', `/subcategories/${id}`)
+}
 export async function createSubcategory(name: string): Promise<Subcategory> {
   if (USE_MOCK) {
     await delay()
