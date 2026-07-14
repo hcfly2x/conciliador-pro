@@ -69,6 +69,8 @@ _IFNULL = re.compile(r"\bIFNULL\s*\(", re.IGNORECASE)
 _COLLATE_NOCASE = re.compile(r"\bCOLLATE\s+NOCASE\b", re.IGNORECASE)
 _DDL_START = re.compile(r"^\s*(CREATE|ALTER)\b", re.IGNORECASE)
 _REAL = re.compile(r"\bREAL\b", re.IGNORECASE)
+# ROUND(x, n) no Postgres exige NUMERIC (nao aceita double precision).
+_ROUND = re.compile(r"\bROUND\(\s*([^,()]+?)\s*,", re.IGNORECASE)
 _PLACEHOLDER_SENTINEL = "\x00PH\x00"
 
 
@@ -85,6 +87,7 @@ def _translate_pg(sql: str, has_params: bool) -> str:
         )
     sql = _IFNULL.sub("COALESCE(", sql)
     sql = _COLLATE_NOCASE.sub("", sql)
+    sql = _ROUND.sub(r"ROUND(CAST(\1 AS NUMERIC),", sql)
     if _DDL_START.match(sql):
         sql = _REAL.sub("DOUBLE PRECISION", sql)
     if has_params:
