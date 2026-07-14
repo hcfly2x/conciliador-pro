@@ -2,7 +2,7 @@
 import { useState } from 'react'
 import { Plus, Pencil, Trash2, Check, X } from 'lucide-react'
 import { useStore } from '@/store/app'
-import { createCategory, updateCategory, deleteCategory, createSubcategory } from '@/lib/api'
+import { createCategory, updateCategory, deleteCategory, createSubcategory, deleteSubcategory } from '@/lib/api'
 import type { Category } from '@/types'
 
 const COLORS = ['#dc2626','#f97316','#d97706','#16a34a','#0d9488','#2563eb','#7c3aed','#db2777','#94a3b8','#c9a84c','#3ecf8e','#60a5fa','#ea580c','#06b6d4','#f59e0b','#64748b']
@@ -35,6 +35,18 @@ export default function CategoriesPage() {
       setCategories(categories.filter(c => c.id !== id))
       addToast('Removida')
     } catch { addToast('Erro ao remover', 'err') }
+  }
+
+  async function delSubcategory(id: string, name: string) {
+    if (!confirm(`Remover a subcategoria ${name}?`)) return
+    try {
+      await deleteSubcategory(id)
+      setSubcategories(subcategories.filter(s => s.id !== id))
+      addToast('Subcategoria removida')
+    } catch (err: unknown) {
+      const e = err as { code?: string; detail?: string }
+      addToast(e?.code === 'HAS_TRANSACTIONS' ? (e.detail || 'Subcategoria em uso') : 'Erro ao remover subcategoria', 'err')
+    }
   }
 
   async function addSubcategory() {
@@ -119,18 +131,45 @@ export default function CategoriesPage() {
       </div>
 
       <div className="mt-6 rounded-xl p-5" style={{ background: '#13161d', border: '1px solid rgba(255,255,255,0.07)' }}>
-        <h3 className="font-display font-bold text-[14px] text-[#e8eaf0] mb-3">Subcategorias</h3>
+        <h3 className="font-display font-bold text-[14px] text-[#e8eaf0] mb-3">Subcategorias ({subcategories.length})</h3>
         <div className="flex gap-2 mb-3">
-          <input className="flex-1 h-9 rounded-md px-3 text-sm text-[#e8eaf0] outline-none" style={{ background: '#1a1e28', border: '1px solid rgba(255,255,255,0.12)' }} value={newSub} onChange={e => setNewSub(e.target.value)} placeholder="Nova subcategoria" />
+          <input
+            className="flex-1 h-9 rounded-md px-3 text-sm text-[#e8eaf0] outline-none"
+            style={{ background: '#1a1e28', border: '1px solid rgba(255,255,255,0.12)' }}
+            value={newSub}
+            onChange={e => setNewSub(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter') addSubcategory() }}
+            placeholder="Nova subcategoria"
+          />
           <button onClick={addSubcategory} className="px-4 py-2 rounded-md text-sm font-semibold" style={{ background: '#c9a84c', color: '#0d0f14' }}>Adicionar</button>
         </div>
-        <div className="flex flex-wrap gap-2">
-          {subcategories.map(s => (
-            <span key={s.id} className="px-2 py-1 rounded text-xs font-mono-custom" style={{ background: '#1a1e28', color: '#e8eaf0', border: '1px solid rgba(255,255,255,0.12)' }}>
-              {s.name}
-            </span>
-          ))}
-        </div>
+        {subcategories.length === 0 ? (
+          <p className="text-xs text-[#5a5f73]">
+            Nenhuma subcategoria ainda. Elas sao criadas automaticamente ao importar a base historica
+            (menu Importar historico) e tambem quando voce adiciona pelo campo acima.
+          </p>
+        ) : (
+          <div className="flex flex-wrap gap-2">
+            {[...subcategories].sort((a, b) => a.name.localeCompare(b.name)).map(s => (
+              <span
+                key={s.id}
+                className="inline-flex items-center gap-1.5 px-2 py-1 rounded text-xs font-mono-custom group"
+                style={{ background: '#1a1e28', color: '#e8eaf0', border: '1px solid rgba(255,255,255,0.12)' }}
+              >
+                {s.name}
+                <button
+                  type="button"
+                  onClick={() => delSubcategory(s.id, s.name)}
+                  className="opacity-40 hover:opacity-100 transition-opacity"
+                  title="Remover subcategoria (bloqueado se estiver em uso)"
+                  style={{ color: '#f87171', lineHeight: 0 }}
+                >
+                  <X size={11} />
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   )
