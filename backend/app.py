@@ -1788,14 +1788,11 @@ def find_or_create_subcategory(conn: sqlite3.Connection, name: str):
     if row:
         return row[0]
     sid = str(uuid.uuid4())
-    try:
-        conn.execute("INSERT INTO subcategories(id,name) VALUES (?,?)", (sid, target))
-    except sqlite3.IntegrityError:
-        row = conn.execute("SELECT id FROM subcategories WHERE name=? LIMIT 1", (target,)).fetchone()
-        if row:
-            return row[0]
-        raise
-    return sid
+    # ON CONFLICT funciona igual em SQLite (3.24+) e Postgres, evitando erro de
+    # duplicidade em concorrencia sem abortar a transacao no Postgres.
+    conn.execute("INSERT INTO subcategories(id,name) VALUES (?,?) ON CONFLICT(name) DO NOTHING", (sid, target))
+    row = conn.execute("SELECT id FROM subcategories WHERE name=? LIMIT 1", (target,)).fetchone()
+    return row[0] if row else sid
 
 
 def resolve_account_from_text(conn: sqlite3.Connection, raw: str):
@@ -2715,6 +2712,22 @@ def subcategories():
         sid = str(uuid.uuid4())
         conn.execute("INSERT INTO subcategories(id,name) VALUES (?,?)", (sid, name))
     return jsonify({"id": sid, "name": name}), 201
+
+
+@app.route("/api/v1/subcategories/<sub_id>", methods=["DELETE", "OPTIONS"])
+def subcategory_delete(sub_id: str):
+    if request.method == "OPTIONS":
+        return jsonify({}), 200
+    with db_connect() as conn:
+        row = conn.execute("SELECT id, name FROM subcategories WHERE id=?", (sub_id,)).fetchone()
+        if not row:
+            return jsonify({"detail": "Nao encontrado", "code": "NOT_FOUND"}), 404
+        n = conn.execute("SELECT COUNT(1) FROM transactions WHERE subcategory_id=?", (sub_id,)).fetchone()[0]
+        if int(n) > 0:
+            return jsonify({"detail": f"Subcategoria usada em {n} lancamentos. Reclassifique-os primeiro.", "code": "HAS_TRANSACTIONS"}), 400
+        conn.execute("DELETE FROM subcategories WHERE id=?", (sub_id,))
+        record_audit(current_user(), "delete_subcategory", "subcategory", sub_id, "name", row[1], "", conn=conn)
+    return jsonify({"ok": True})
 
 
 @app.route("/api/v1/import/upload", methods=["POST"])
@@ -4065,6 +4078,13 @@ def bulk_classify():
 
 @app.route("/api/v1/transactions/bulk-vincular", methods=["POST"])
 def bulk_vincular():
+    return jsonify({
+        "detail": "Vinculo com a base historica foi descontinuado. A base historica agora serve apenas para sugestoes de categoria/subcategoria.",
+        "code": "DISABLED_BY_PRODUCT_RULE",
+    }), 409
+
+
+def _bulk_vincular_desativado():
     data = request.get_json(force=True) or {}
     threshold = float(data.get("threshold", 70.0))
     account_id = (data.get("account_id") or "").strip()
