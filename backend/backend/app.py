@@ -1,0 +1,4448 @@
+﻿from __future__ import annotations
+
+import base64
+import csv
+import datetime as dt
+import difflib
+import hashlib
+import re
+import shutil
+import sqlite3
+import unicodedata
+import uuid
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+import os
+
+from flask import Flask, g, jsonify, request, send_from_directory
+
+from parsers.engine import ImportResult, run_import_pipeline
+
+from db import db_connect, IS_POSTGRES
+import auth as auth_mod
+from auth import record_audit, ROLE_ADMIN
+
+try:
+    import openpyxl
+except Exception:
+    openpyxl = None
+
+try:
+    import xlrd
+except Exception:
+    xlrd = None
+
+try:
+    from pypdf import PdfReader
+except Exception:
+    PdfReader = None
+
+BASE = Path(__file__).resolve().parent
+DATA = BASE / "data"
+UPLOADS = DATA / "uploads"
+DOCS = DATA / "documents"
+TOOLS = BASE.parent / "tools"
+DB = DATA / "conciliador_pro.db"
+for d in (DATA, UPLOADS, DOCS):
+    d.mkdir(parents=True, exist_ok=True)
+
+app = Flask(__name__)
+
+# ---------------------------------------------------------------------------
+# CORS + Autenticacao (versao web)
+# ---------------------------------------------------------------------------
+CORS_ORIGINS = [o.strip() for o in (os.environ.get("CORS_ORIGINS") or "*").split(",") if o.strip()]
+PUBLIC_PATHS = {"/api/v1/health", "/api/v1/auth/login"}
+
+# Rotas de escrita liberadas para o perfil colaborador (classificacao do dia a dia).
+_COLLAB_WRITE_SUFFIXES = ("/classify", "/bulk-classify", "/flags", "/bulk-vincular", "/auth/logout")
+
+
+@app.after_request
+def _apply_cors(resp):
+    origin = request.headers.get("Origin")
+    if origin and ("*" in CORS_ORIGINS or origin in CORS_ORIGINS):
+        resp.headers["Access-Control-Allow-Origin"] = origin
+        resp.headers["Vary"] = "Origin"
+        resp.headers["Access-Control-Allow-Headers"] = "Authorization, Content-Type"
+        resp.headers["Access-Control-Allow-Methods"] = "GET,POST,PUT,PATCH,DELETE,OPTIONS"
+        resp.headers["Access-Control-Max-Age"] = "86400"
+    return resp
+
+
+@app.errorhandler(Exception)
+def _unhandled_error(exc):
+    """Loga o traceback completo (visivel nos logs do Render) e devolve o motivo
+    no JSON para o erro aparecer de forma legivel na tela em vez de um 500 mudo."""
+    import traceback
+    from werkzeug.exceptions import HTTPException
+    if isinstance(exc, HTTPException):
+        return exc
+    print("[erro-nao-tratado]", request.method, request.path)
+    traceback.print_exc()
+    return jsonify({
+        "detail": f"Erro interno: {type(exc).__name__}: {exc}",
+        "code": "INTERNAL_ERROR",
+    }), 500
+
+
+@app.before_request
+def _auth_guard():
+    if request.method == "OPTIONS":
+        return None
+    path = request.path or ""
+    if path in PUBLIC_PATHS:
+        return None
+    if auth_mod.AUTH_DISABLED:
+        g.user = {"id": None, "username": "local", "role": ROLE_ADMIN}
+        return None
+    if path.startswith("/ui/"):
+        # Paginas-ferramenta legadas sao apenas para uso local (AUTH_DISABLED=1).
+        return jsonify({"detail": "Indisponivel no modo hosted", "code": "NOT_AVAILABLE"}), 404
+    token = (request.headers.get("Authorization") or "").strip()
+    if token.lower().startswith("bearer "):
+        token = token[7:].strip()
+    user = auth_mod.user_for_token(token)
+    if not user:
+        return jsonify({"detail": "Nao autenticado", "code": "UNAUTHORIZED"}), 401
+    g.user = user
+    if user["role"] != ROLE_ADMIN and request.method not in ("GET", "HEAD"):
+        if not any(path.endswith(suffix) for suffix in _COLLAB_WRITE_SUFFIXES):
+            return jsonify({"detail": "Apenas administrador pode executar esta acao", "code": "FORBIDDEN"}), 403
+    return None
+
+
+def current_user() -> dict:
+    return getattr(g, "user", None) or {"id": None, "username": "sistema", "role": ROLE_ADMIN}
+
+
+def require_admin():
+    """Retorna uma resposta de erro se o usuario atual nao for admin, senao None."""
+    user = current_user()
+    if user.get("role") != ROLE_ADMIN:
+        return jsonify({"detail": "Apenas administrador pode executar esta acao", "code": "FORBIDDEN"}), 403
+    return None
+
+
+@app.route("/api/v1/auth/login", methods=["POST"])
+def auth_login():
+    data = request.get_json(force=True) or {}
+    username = (data.get("username") or "").strip()
+    password = data.get("password") or ""
+    if not username or not password:
+        return jsonify({"detail": "username e password obrigatorios", "code": "VALIDATION_ERROR"}), 400
+    user = auth_mod.authenticate(username, password)
+    if not user:
+        return jsonify({"detail": "Usuario ou senha invalidos", "code": "INVALID_CREDENTIALS"}), 401
+    token = auth_mod.create_session(user["id"])
+    record_audit(user, "login", "auth", user["id"])
+    return jsonify({"token": token, "user": user})
+
+
+@app.route("/api/v1/auth/logout", methods=["POST"])
+def auth_logout():
+    token = (request.headers.get("Authorization") or "").strip()
+    if token.lower().startswith("bearer "):
+        token = token[7:].strip()
+    if token:
+        auth_mod.destroy_session(token)
+    return jsonify({"ok": True})
+
+
+@app.route("/api/v1/auth/me")
+def auth_me():
+    return jsonify(current_user())
+
+
+@app.route("/api/v1/auth/users", methods=["GET", "POST"])
+def auth_users():
+    forbidden = require_admin()
+    if forbidden:
+        return forbidden
+    if request.method == "GET":
+        with db_connect() as conn:
+            rows = conn.execute(
+                "SELECT id, username, role, is_active, created_at FROM users ORDER BY created_at"
+            ).fetchall()
+        return jsonify([
+            {"id": r[0], "username": r[1], "role": r[2], "is_active": bool(r[3]), "created_at": r[4]}
+            for r in rows
+        ])
+    data = request.get_json(force=True) or {}
+    username = (data.get("username") or "").strip()
+    password = data.get("password") or ""
+    role = (data.get("role") or auth_mod.ROLE_COLLAB).strip()
+    if not username or len(password) < 8:
+        return jsonify({"detail": "username obrigatorio e senha com pelo menos 8 caracteres", "code": "VALIDATION_ERROR"}), 400
+    if role not in auth_mod.VALID_ROLES:
+        return jsonify({"detail": "role deve ser admin ou colaborador", "code": "VALIDATION_ERROR"}), 400
+    user_id = str(uuid.uuid4())
+    with db_connect() as conn:
+        exists = conn.execute("SELECT id FROM users WHERE lower(username)=lower(?)", (username,)).fetchone()
+        if exists:
+            return jsonify({"detail": "Usuario ja existe", "code": "ALREADY_EXISTS"}), 409
+        conn.execute(
+            "INSERT INTO users(id, username, password_hash, role, is_active, created_at) VALUES (?,?,?,?,1,?)",
+            (user_id, username, auth_mod.hash_password(password), role, dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")),
+        )
+        record_audit(current_user(), "create_user", "user", user_id, "username", "", username, f"role={role}", conn=conn)
+    return jsonify({"id": user_id, "username": username, "role": role, "is_active": True}), 201
+
+
+@app.route("/api/v1/auth/users/<user_id>", methods=["PATCH", "OPTIONS"])
+def auth_user_update(user_id: str):
+    forbidden = require_admin()
+    if forbidden:
+        return forbidden
+    data = request.get_json(force=True) or {}
+    with db_connect() as conn:
+        row = conn.execute("SELECT id, username, role, is_active FROM users WHERE id=?", (user_id,)).fetchone()
+        if not row:
+            return jsonify({"detail": "Usuario nao encontrado", "code": "NOT_FOUND"}), 404
+        if "password" in data:
+            password = data.get("password") or ""
+            if len(password) < 8:
+                return jsonify({"detail": "Senha com pelo menos 8 caracteres", "code": "VALIDATION_ERROR"}), 400
+            conn.execute("UPDATE users SET password_hash=? WHERE id=?", (auth_mod.hash_password(password), user_id))
+            record_audit(current_user(), "reset_password", "user", user_id, conn=conn)
+        if "role" in data:
+            role = (data.get("role") or "").strip()
+            if role not in auth_mod.VALID_ROLES:
+                return jsonify({"detail": "role invalida", "code": "VALIDATION_ERROR"}), 400
+            conn.execute("UPDATE users SET role=? WHERE id=?", (role, user_id))
+            record_audit(current_user(), "change_role", "user", user_id, "role", row[2], role, conn=conn)
+        if "is_active" in data:
+            active = 1 if data.get("is_active") else 0
+            conn.execute("UPDATE users SET is_active=? WHERE id=?", (active, user_id))
+            if not active:
+                conn.execute("DELETE FROM sessions WHERE user_id=?", (user_id,))
+                auth_mod.invalidate_token_cache()
+            record_audit(current_user(), "set_active", "user", user_id, "is_active", row[3], active, conn=conn)
+    return jsonify({"ok": True})
+
+
+@app.route("/api/v1/audit")
+def audit_list():
+    entity_id = (request.args.get("entity_id") or "").strip()
+    entity = (request.args.get("entity") or "").strip()
+    limit = min(500, max(1, int(request.args.get("limit", 100))))
+    where = ["1=1"]
+    params: list[Any] = []
+    if entity_id:
+        where.append("entity_id=?")
+        params.append(entity_id)
+    if entity:
+        where.append("entity=?")
+        params.append(entity)
+    with db_connect() as conn:
+        rows = conn.execute(
+            f"""
+            SELECT id, username, action, entity, entity_id, field, old_value, new_value, detail, created_at
+            FROM audit_log WHERE {' AND '.join(where)}
+            ORDER BY created_at DESC LIMIT ?
+            """,
+            params + [limit],
+        ).fetchall()
+    return jsonify([
+        {
+            "id": r[0], "username": r[1], "action": r[2], "entity": r[3], "entity_id": r[4],
+            "field": r[5], "old_value": r[6], "new_value": r[7], "detail": r[8], "created_at": r[9],
+        }
+        for r in rows
+    ])
+
+
+@dataclass
+class ParsedTx:
+    date: str
+    description: str
+    amount: float
+    tx_type: str
+    installment_current: int | None = None
+    installment_total: int | None = None
+
+
+def strip_accents(text: str) -> str:
+    return "".join(c for c in unicodedata.normalize("NFKD", text or "") if not unicodedata.combining(c))
+
+
+def norm_text(text: str) -> str:
+    cleaned = strip_accents((text or "").lower())
+    cleaned = re.sub(r"[^a-z0-9\s]+", " ", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned)
+    return cleaned.strip()
+
+
+def clean_path_part(text: str) -> str:
+    cleaned = strip_accents(text or "").upper()
+    cleaned = re.sub(r"[^A-Z0-9]+", "_", cleaned)
+    cleaned = re.sub(r"_+", "_", cleaned).strip("_")
+    return cleaned or "SEM_NOME"
+
+
+def clean_archive_filename(filename: str) -> str:
+    path = Path(filename or "arquivo")
+    stem = clean_path_part(path.stem)
+    suffix = path.suffix.lower()
+    return f"{stem}{suffix}" if suffix else stem
+
+
+def account_folder_name(account_name: str) -> str:
+    return clean_path_part(account_name)
+
+
+def project_relative_path(path: Path) -> str:
+    try:
+        return str(path.resolve().relative_to(BASE.parent.resolve()))
+    except ValueError:
+        return str(path.resolve())
+
+
+def archive_target_path(source: Path, account_name: str, txs: list[Any]) -> Path:
+    if txs:
+        from collections import Counter
+
+        month_counts = Counter(
+            (t.date[:7] or "").replace("-", "/")
+            for t in txs
+            if getattr(t, "date", "") and len(t.date) >= 7
+        )
+        if month_counts:
+            ref = month_counts.most_common(1)[0][0]
+            year, month = ref[:4], ref[5:7]
+        else:
+            year, month = txs[0].date[:4], txs[0].date[5:7]
+    else:
+        year, month = dt.datetime.now().strftime("%Y"), dt.datetime.now().strftime("%m")
+    target_dir = DOCS / year / month / account_folder_name(account_name)
+    target_dir.mkdir(parents=True, exist_ok=True)
+    target = target_dir / clean_archive_filename(source.name)
+    if target.exists():
+        target = target_dir / f"{target.stem}-{int(dt.datetime.now().timestamp())}{target.suffix}"
+    return target
+
+
+def store_document_in_db(source: Path, account_name: str, year_month: str, filename: str) -> str | None:
+    """Guarda o conteudo do arquivo no banco (base64) para sobreviver a redeploys."""
+    try:
+        content = base64.b64encode(source.read_bytes()).decode("ascii")
+    except Exception:
+        return None
+    doc_id = str(uuid.uuid4())
+    with db_connect() as conn:
+        dup = conn.execute(
+            "SELECT id FROM stored_documents WHERE account_name=? AND year_month=? AND filename=? LIMIT 1",
+            (account_name, year_month, filename),
+        ).fetchone()
+        if dup:
+            conn.execute("UPDATE stored_documents SET content_b64=?, size=? WHERE id=?", (content, source.stat().st_size, dup[0]))
+            return dup[0]
+        conn.execute(
+            "INSERT INTO stored_documents(id,account_name,year_month,filename,size,content_b64,created_at) VALUES (?,?,?,?,?,?,?)",
+            (doc_id, account_name, year_month, filename, source.stat().st_size, content, dt.datetime.now().isoformat(timespec="seconds")),
+        )
+    return doc_id
+
+
+def archive_import_file(source: Path, target: Path) -> None:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if source.resolve() == target.resolve():
+        return
+    shutil.copy2(source, target)
+    try:
+        source.unlink()
+    except FileNotFoundError:
+        pass
+
+
+def parse_installment(value: Any) -> tuple[int | None, int | None]:
+    raw = str(value or "").strip()
+    if not raw or raw in {"-", "--"}:
+        return None, None
+    text = norm_text(raw)
+    patterns = [
+        r"\b(\d{1,2})\s+de\s+(\d{1,2})\b",
+        r"\b(\d{1,2})\s*/\s*(\d{1,2})\b",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if match:
+            current = int(match.group(1))
+            total = int(match.group(2))
+            if 1 <= current <= total:
+                return current, total
+    return None, None
+
+
+def installment_label(current: int | None, total: int | None) -> str | None:
+    if current and total:
+        return f"Parcela {current} de {total}"
+    return None
+
+
+def merchant_signature(text: str) -> str:
+    n = norm_text(text)
+    n = re.sub(r"\b(pix|enviado|recebido|internet|banking|cartao|debito|credito|pagamento|transferencia|transferencias)\b", " ", n)
+    n = re.sub(r"\b\d+\b", " ", n)
+    n = re.sub(r"\s+", " ", n).strip()
+    parts = n.split(" ")
+    return " ".join(parts[:3]).strip()
+
+
+def token_similarity(a: str, b: str) -> float:
+    return description_similarity(a, b)
+
+
+def first_tokens(text: str, count: int) -> str:
+    return " ".join(norm_text(text).split()[:count])
+
+
+def meaningful_tokens(text: str) -> set[str]:
+    stop = {"a", "o", "os", "as", "de", "da", "do", "das", "dos", "e", "em", "no", "na", "nos", "nas"}
+    return {token for token in norm_text(text).split() if len(token) >= 3 and token not in stop}
+
+
+GENERIC_MATCH_TOKENS = {
+    "posto", "mercado", "supermercado", "uber", "amazon", "ifood", "drogaria",
+    "farmacia", "farm", "pagamento", "compra", "cartao", "debito", "credito",
+    "visa", "electron", "pix", "enviado", "recebido", "internet", "banking",
+    "transferencia", "mp", "mercadopago", "auto",
+}
+
+
+def descriptions_have_common_parts(a: str, b: str) -> bool:
+    na = norm_text(a)
+    nb = norm_text(b)
+    if not na or not nb:
+        return False
+    if na == nb:
+        return True
+    if len(na) >= 4 and len(nb) >= 4 and (na in nb or nb in na):
+        return True
+    common = meaningful_tokens(na) & meaningful_tokens(nb)
+    if not common:
+        return False
+    return bool(common - GENERIC_MATCH_TOKENS)
+
+
+def description_similarity(a: str, b: str) -> float:
+    na = norm_text(a)
+    nb = norm_text(b)
+    sa = set(na.split())
+    sb = set(nb.split())
+    if not sa or not sb:
+        return 0.0
+    inter = len(sa & sb)
+    jaccard = inter / (len(sa | sb) or 1)
+    containment = inter / min(len(sa), len(sb))
+    text_ratio = difflib.SequenceMatcher(None, na, nb).ratio()
+    prefix_bonus = 0.0
+    if first_tokens(na, 2) and first_tokens(na, 2) == first_tokens(nb, 2):
+        prefix_bonus = 0.08
+    score = (0.35 * jaccard) + (0.40 * containment) + (0.25 * text_ratio) + prefix_bonus
+    return round(max(0.0, min(1.0, score)), 4)
+
+
+def date_similarity(d1: str, d2: str) -> float:
+    try:
+        a = dt.date.fromisoformat(d1)
+        b = dt.date.fromisoformat(d2)
+    except Exception:
+        return 0.0
+    delta = abs((a - b).days)
+    if delta <= 2:
+        return round(max(0.0, 1.0 - (delta * 0.15)), 4)
+    return 0.0
+
+
+def amount_similarity(a: float, b: float) -> float:
+    aa = abs(float(a or 0))
+    bb = abs(float(b or 0))
+    diff = abs(aa - bb)
+    if diff <= 0.01:
+        return 1.0
+    if diff <= 1.0:
+        return round(max(0.50, 1.0 - (diff / 2.0)), 4)
+    return 0.0
+
+
+def amount_range_fit(tx_amount: float, category_amounts: list[float]) -> float:
+    amounts = [abs(float(v or 0)) for v in category_amounts if v is not None]
+    if not amounts:
+        return 0.5
+    tx_amount = abs(float(tx_amount or 0))
+    mn = min(amounts)
+    mx = max(amounts)
+    if mn <= tx_amount <= mx:
+        return 1.0
+    if tx_amount < mn:
+        rel = (mn - tx_amount) / max(mn, 1.0)
+    else:
+        rel = (tx_amount - mx) / max(mx, 1.0)
+    if rel <= 0.20:
+        return 0.70
+    if rel <= 0.50:
+        return 0.40
+    if rel <= 1.50:
+        return 0.15
+    return 0.05
+
+
+def recurring_pattern_score(tx_date: str, category_dates: list[str]) -> float:
+    try:
+        tx_day = dt.date.fromisoformat(tx_date).day
+    except Exception:
+        return 0.4
+    days: list[int] = []
+    for value in category_dates:
+        try:
+            days.append(dt.date.fromisoformat(value).day)
+        except Exception:
+            continue
+    if len(days) < 3:
+        return 0.4
+    near = sum(1 for day in days if abs(day - tx_day) <= 3 or abs(day - tx_day) >= 28) / len(days)
+    if near >= 0.50:
+        return 1.0
+    if near >= 0.25:
+        return 0.6
+    return 0.4
+
+
+def account_similarity(tx_account_id: str | None, ref_account_id: str | None) -> float:
+    if not tx_account_id:
+        return 0.5
+    if not ref_account_id:
+        return 0.5
+    return 1.0 if tx_account_id == ref_account_id else 0.0
+
+
+def weighted_match_score(
+    tx_date: str,
+    tx_desc: str,
+    tx_amount: float,
+    tx_account_id: str | None,
+    ref_date: str,
+    ref_desc: str,
+    ref_amount: float,
+    ref_account_id: str | None,
+) -> float:
+    d_score = date_similarity(tx_date, ref_date)
+    desc_score = token_similarity(tx_desc, ref_desc)
+    amt_score = amount_similarity(tx_amount, ref_amount)
+    # Conta/cartao nao participa do vinculo historico: a base antiga usava contas
+    # como subdivisoes pessoais, entao comparar conta criaria falsos negativos.
+    score = (0.36 * d_score) + (0.34 * desc_score) + (0.30 * amt_score)
+    return max(0.0, min(1.0, score))
+
+
+def find_identity_match(
+    conn: sqlite3.Connection,
+    tx: dict[str, Any],
+    hist_cache: dict[str, list[tuple[Any, ...]]] | None = None,
+) -> dict[str, Any] | None:
+    tx_type = tx.get("type") or ""
+    tx_date = tx.get("date") or ""
+    tx_desc = tx.get("description_norm") or norm_text(tx.get("description") or "")
+    tx_amount = abs(float(tx.get("amount") or 0))
+    tx_account_id = tx.get("account_id")
+    if tx_amount < 2.0:
+        return None
+    if hist_cache is not None:
+        rows = hist_cache.get(tx_type, [])
+    else:
+        rows = conn.execute(
+            """
+            SELECT id,date,description_norm,ABS(amount),account_id,category_id,subcategory_id
+            FROM classification_history
+            WHERE type=?
+            """,
+            (tx_type,),
+        ).fetchall()
+    best: dict[str, Any] | None = None
+    for row in rows:
+        try:
+            date_normal = bool(tx_date and row[1] and abs((dt.date.fromisoformat(tx_date) - dt.date.fromisoformat(row[1])).days) <= 2)
+        except Exception:
+            date_normal = False
+        amount_normal = abs(tx_amount - float(row[3] or 0)) <= 1.0
+        description_normal = descriptions_have_common_parts(tx_desc, row[2] or "")
+        # Vinculo historico representa a mesma transacao da base antiga.
+        # Data, valor e descricao precisam estar dentro da normalidade; quando
+        # apenas dois batem, o resultado costuma virar sugestao de categoria,
+        # nao identidade.
+        if not (date_normal and amount_normal and description_normal):
+            continue
+        desc_score = token_similarity(tx_desc, row[2] or "")
+        if description_normal and desc_score < 0.50:
+            desc_score = 0.50
+        base = weighted_match_score(
+            tx_date,
+            tx_desc,
+            tx_amount,
+            tx_account_id,
+            row[1] or "",
+            row[2] or "",
+            float(row[3] or 0),
+            row[4],
+        )
+        amount_exact = abs(tx_amount - float(row[3] or 0)) < 0.01
+        date_exact = bool(tx_date and row[1] and tx_date == row[1])
+        score = base
+        if amount_exact:
+            score += 0.14
+        if date_exact:
+            score += 0.12
+        score = round(min(score, 1.0) * 100, 2)
+        if best is None or score > best["identity_score"]:
+            best = {
+                "history_match_id": row[0],
+                "identity_score": score,
+                "category_id": row[5],
+                "subcategory_id": row[6],
+            }
+    return best
+
+
+def build_scored_evidence(
+    conn: sqlite3.Connection,
+    tx: dict[str, Any],
+    exclude_tx_id: str | None = None,
+    include_transactions: bool = False,
+    include_history: bool = True,
+) -> list[dict[str, Any]]:
+    """
+    Usa o melhor match por categoria, com bonus pequeno de frequencia.
+    Isso evita que categorias muito frequentes dominem por volume acumulado.
+    """
+    import math
+
+    tx_date = tx.get("date") or ""
+    tx_desc = tx.get("description_norm") or norm_text(tx.get("description") or "")
+    tx_amount = abs(float(tx.get("amount") or 0))
+    tx_type = tx.get("type") or ""
+    tx_account_id = tx.get("account_id")
+
+    all_rows: list[tuple[Any, ...]] = []
+    if include_transactions:
+        all_rows += conn.execute(
+            """
+            SELECT t.category_id, c.name, t.subcategory_id, IFNULL(s.name,''),
+                   t.date, t.description_norm, ABS(t.amount), t.account_id, t.notes
+            FROM transactions t
+            LEFT JOIN categories c ON c.id=t.category_id
+            LEFT JOIN subcategories s ON s.id=t.subcategory_id
+            WHERE t.category_id IS NOT NULL
+              AND t.type=?
+              AND (? IS NULL OR t.id<>?)
+            """,
+            (tx_type, exclude_tx_id, exclude_tx_id),
+        ).fetchall()
+
+    if include_history:
+        all_rows += conn.execute(
+            """
+            SELECT h.category_id, c.name, h.subcategory_id, IFNULL(s.name,''),
+                   h.date, h.description_norm, ABS(h.amount), h.account_id, ''
+            FROM classification_history h
+            LEFT JOIN categories c ON c.id=h.category_id
+            LEFT JOIN subcategories s ON s.id=h.subcategory_id
+            WHERE h.type=?
+            """,
+            (tx_type,),
+        ).fetchall()
+
+    if not all_rows:
+        return []
+
+    relevant: list[tuple[float, tuple[Any, ...]]] = []
+    for row in all_rows:
+        desc_score = token_similarity(tx_desc, row[5] or "")
+        if desc_score >= 0.15:
+            relevant.append((desc_score, row))
+
+    if not relevant:
+        return []
+
+    cat_amounts: dict[str, list[float]] = {}
+    cat_dates: dict[str, list[str]] = {}
+    for _, row in relevant:
+        cat_id = row[0]
+        if not cat_id:
+            continue
+        cat_amounts.setdefault(cat_id, []).append(float(row[6] or 0))
+        cat_dates.setdefault(cat_id, []).append(row[4] or "")
+
+    cat_best: dict[str, dict[str, Any]] = {}
+    cat_freq: dict[str, int] = {}
+    cat_exact: dict[str, int] = {}
+    sub_scores: dict[tuple[str, str | None], float] = {}
+    sub_names: dict[tuple[str, str | None], str] = {}
+    sub_notes: dict[tuple[str, str | None], str] = {}
+
+    for desc_score, row in relevant:
+        cat_id = row[0]
+        if not cat_id:
+            continue
+        cat_name = row[1] or ""
+        sub_id = row[2]
+        sub_name = row[3] or ""
+        ref_date = row[4] or ""
+        ref_amount = float(row[6] or 0)
+        ref_acc = row[7]
+        ref_notes = row[8] or ""
+
+        date_score = recurring_pattern_score(tx_date, cat_dates.get(cat_id, []))
+        amount_score = amount_range_fit(tx_amount, cat_amounts.get(cat_id, []))
+        account_score = account_similarity(tx_account_id, ref_acc)
+        full_score = (0.60 * desc_score) + (0.20 * account_score) + (0.15 * amount_score) + (0.05 * date_score)
+
+        if cat_id not in cat_best or full_score > cat_best[cat_id]["best_score"]:
+            cat_best[cat_id] = {
+                "category_id": cat_id,
+                "category_name": cat_name,
+                "best_score": full_score,
+                "best_notes": ref_notes,
+            }
+
+        cat_freq[cat_id] = cat_freq.get(cat_id, 0) + 1
+        if desc_score > 0.85:
+            cat_exact[cat_id] = cat_exact.get(cat_id, 0) + 1
+
+        sub_key = (cat_id, sub_id)
+        if full_score > sub_scores.get(sub_key, 0.0):
+            sub_scores[sub_key] = full_score
+            sub_names[sub_key] = sub_name
+            sub_notes[sub_key] = ref_notes
+
+    ranked: list[dict[str, Any]] = []
+    for cat_id, info in cat_best.items():
+        freq = cat_freq.get(cat_id, 1)
+        exact = cat_exact.get(cat_id, 0)
+        final_score = info["best_score"] + (math.log(1 + freq) * 0.05) + min(exact * 0.08, 0.25)
+        candidates = [(k, v) for k, v in sub_scores.items() if k[0] == cat_id]
+        if candidates:
+            best_sub_key = max(candidates, key=lambda x: x[1])[0]
+            best_sub_id = best_sub_key[1]
+            best_sub_name = sub_names.get(best_sub_key, "")
+            best_sub_notes = sub_notes.get(best_sub_key, info.get("best_notes", ""))
+        else:
+            best_sub_id = None
+            best_sub_name = ""
+            best_sub_notes = info.get("best_notes", "")
+
+        ranked.append({
+            "category_id": cat_id,
+            "category_name": info["category_name"],
+            "subcategory_id": best_sub_id,
+            "subcategory_name": best_sub_name,
+            "best_notes": best_sub_notes,
+            "score": final_score,
+            "best_score": info["best_score"],
+            "frequency": freq,
+            "exact_matches": exact,
+        })
+
+    ranked.sort(key=lambda x: x["score"], reverse=True)
+    total = sum(float(r["score"]) for r in ranked) or 1.0
+    cat_total: dict[str, float] = {}
+    for r in ranked:
+        cat_total[r["category_id"]] = cat_total.get(r["category_id"], 0.0) + float(r["score"])
+
+    for r in ranked:
+        r["probability"] = round((float(r["score"]) / total) * 100, 2)
+        r["confidence"] = round(min(100.0, float(r["score"]) * 100.0), 2)
+        cat_score = cat_total.get(r["category_id"], 1.0)
+        sub_key = (r["category_id"], r["subcategory_id"])
+        r["subcategory_probability"] = round(min(100.0, sub_scores.get(sub_key, 0.0) * 100.0), 2) if r["subcategory_id"] else 0.0
+        r["category_probability"] = r["confidence"]
+        r["frequency"] = int(r["frequency"])
+    return ranked
+
+
+def best_history_match_for_tx(conn: sqlite3.Connection, tx: dict[str, Any]) -> dict[str, Any] | None:
+    ranked = build_scored_evidence(conn, tx, None, include_transactions=False, include_history=True)
+    if not ranked:
+        return None
+    best = ranked[0]
+    raw_score = float(best.get("best_score") or 0)
+    if raw_score < 0.20:
+        return None
+
+    return {
+        "match_probability": round(raw_score * 100.0, 2),
+        "match_category_id": best["category_id"],
+        "match_category_name": best["category_name"] or "",
+        "match_subcategory_id": best.get("subcategory_id"),
+        "match_subcategory_name": best.get("subcategory_name") or "",
+        "match_notes": best.get("best_notes") or "",
+    }
+
+
+def parse_date(raw: Any) -> str:
+    if raw is None:
+        return ""
+    if isinstance(raw, dt.datetime):
+        return raw.date().isoformat()
+    if isinstance(raw, dt.date):
+        return raw.isoformat()
+    if isinstance(raw, (float, int)):
+        try:
+            d = dt.datetime(1899, 12, 30) + dt.timedelta(days=float(raw))
+            return d.date().isoformat()
+        except Exception:
+            return ""
+    text = str(raw).strip()
+    for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d/%m/%y"):
+        try:
+            return dt.datetime.strptime(text, fmt).date().isoformat()
+        except ValueError:
+            pass
+    return ""
+
+
+def parse_money(raw: Any) -> float | None:
+    if raw is None:
+        return None
+    if isinstance(raw, (int, float)):
+        return float(raw)
+    text = str(raw).strip().replace("R$", "").replace(" ", "")
+    if not text:
+        return None
+    trailing_minus = text.endswith("-")
+    if trailing_minus:
+        text = text[:-1]
+    if "," in text and "." in text:
+        text = text.replace(".", "").replace(",", ".")
+    elif "," in text:
+        text = text.replace(",", ".")
+    try:
+        val = float(text)
+    except ValueError:
+        return None
+    return -val if trailing_minus else val
+
+
+def parse_csv(path: Path) -> list[ParsedTx]:
+    out: list[ParsedTx] = []
+    with path.open("r", encoding="utf-8-sig", newline="") as f:
+        sample = f.read(2048)
+        f.seek(0)
+        delim = ";" if sample.count(";") >= sample.count(",") else ","
+        reader = csv.DictReader(f, delimiter=delim)
+        headers = {norm_text(h).replace(" ", "_"): h for h in (reader.fieldnames or [])}
+        h_date = headers.get("data") or headers.get("date") or headers.get("dia")
+        h_desc = headers.get("descricao") or headers.get("historico") or headers.get("estabelecimento")
+        h_val = headers.get("valor")
+        h_type = headers.get("tipo")
+        h_cred = headers.get("credito")
+        h_deb = headers.get("debito")
+        h_inst = headers.get("parcela") or headers.get("parcelas") or headers.get("parcelamento")
+        for row in reader:
+            d = parse_date(row.get(h_date, "")) if h_date else ""
+            desc = (row.get(h_desc, "") or "").strip() if h_desc else ""
+            if not (d and desc):
+                continue
+            inst_current, inst_total = parse_installment(row.get(h_inst, "")) if h_inst else (None, None)
+            if h_cred or h_deb:
+                cred = parse_money(row.get(h_cred, "")) if h_cred else None
+                deb = parse_money(row.get(h_deb, "")) if h_deb else None
+                if cred not in (None, 0.0):
+                    out.append(ParsedTx(d, desc, abs(cred), "income", inst_current, inst_total))
+                if deb not in (None, 0.0):
+                    out.append(ParsedTx(d, desc, abs(deb), "expense", inst_current, inst_total))
+                continue
+            v = parse_money(row.get(h_val, "")) if h_val else None
+            if v is None:
+                continue
+            rt = (row.get(h_type, "") or "").strip().lower() if h_type else ""
+            if rt in {"entrada", "income", "credito", "crédito"}:
+                t = "income"
+            elif rt in {"saida", "saída", "expense", "debito", "débito"}:
+                t = "expense"
+            else:
+                t = "income" if v >= 0 else "expense"
+            out.append(ParsedTx(d, desc, abs(v), t, inst_current, inst_total))
+    return out
+
+
+def parse_xlsx(path: Path) -> list[ParsedTx]:
+    if openpyxl is None:
+        raise RuntimeError("openpyxl nao encontrado")
+    wb = openpyxl.load_workbook(path, data_only=True)
+    ws = wb[wb.sheetnames[0]]
+    rows = [list(r) for r in ws.iter_rows(values_only=True)]
+    return parse_tabular_rows(rows)
+
+
+def parse_xls(path: Path) -> list[ParsedTx]:
+    if xlrd is None:
+        raise RuntimeError("xlrd nao encontrado")
+    book = xlrd.open_workbook(str(path))
+    sh = book.sheet_by_index(0)
+    rows = [[sh.cell_value(r, c) for c in range(sh.ncols)] for r in range(sh.nrows)]
+    return parse_tabular_rows(rows)
+
+
+def parse_tabular_rows(rows: list[list[Any]]) -> list[ParsedTx]:
+    if not rows:
+        return []
+    best, score = 0, -1
+    keys = {"data", "dia", "date", "descricao", "historico", "estabelecimento", "valor", "credito", "debito", "tipo", "parcela", "parcelas", "parcelamento"}
+    for i, row in enumerate(rows[:20]):
+        rk = {norm_text(str(c)).replace(" ", "_") for c in row if str(c).strip()}
+        s = len(rk.intersection(keys))
+        if s > score:
+            best, score = i, s
+    header = [norm_text(str(c)).replace(" ", "_") for c in rows[best]]
+    idx = {h: i for i, h in enumerate(header) if h}
+
+    def get(row: list[Any], k: str) -> Any:
+        i = idx.get(k)
+        if i is None or i >= len(row):
+            return None
+        return row[i]
+
+    out: list[ParsedTx] = []
+    for row in rows[best + 1 :]:
+        d = parse_date(get(row, "data") or get(row, "dia") or get(row, "date"))
+        desc = str(get(row, "descricao") or get(row, "historico") or get(row, "estabelecimento") or "").strip()
+        if not (d and desc):
+            continue
+        inst_current, inst_total = parse_installment(get(row, "parcela") or get(row, "parcelas") or get(row, "parcelamento"))
+        cred = parse_money(get(row, "credito"))
+        deb = parse_money(get(row, "debito"))
+        if cred not in (None, 0.0):
+            out.append(ParsedTx(d, desc, abs(cred), "income", inst_current, inst_total))
+        if deb not in (None, 0.0):
+            out.append(ParsedTx(d, desc, abs(deb), "expense", inst_current, inst_total))
+        if cred not in (None, 0.0) or deb not in (None, 0.0):
+            continue
+        v = parse_money(get(row, "valor"))
+        if v is None:
+            continue
+        rt = str(get(row, "tipo") or "").strip().lower()
+        if rt in {"entrada", "income", "credito", "crédito"}:
+            t = "income"
+        elif rt in {"saida", "saída", "expense", "debito", "débito"}:
+            t = "expense"
+        else:
+            t = "income" if v >= 0 else "expense"
+        out.append(ParsedTx(d, desc, abs(v), t, inst_current, inst_total))
+    return out
+
+
+def parse_pdf(path: Path) -> list[ParsedTx]:
+    if PdfReader is None:
+        raise RuntimeError("pypdf nao encontrado")
+    try:
+        reader = PdfReader(str(path))
+    except Exception as exc:
+        raise RuntimeError(f"Falha ao abrir PDF: {exc}")
+    page_texts: list[str] = []
+    for pg in reader.pages:
+        try:
+            page_texts.append(pg.extract_text() or "")
+        except Exception:
+            # Ignora pagina com erro e segue com as demais.
+            continue
+    text = "\n".join(page_texts)
+    if not text.strip():
+        return []
+    out: list[ParsedTx] = []
+    amount_re = re.compile(r"-?\d{1,3}(?:\.\d{3})*,\d{2}-?")
+
+    year = dt.datetime.now().year
+    ym = re.search(r"/(\d{4})", text[:2500])
+    if ym:
+        try:
+            year = int(ym.group(1))
+        except Exception:
+            pass
+
+    lines = [re.sub(r"\s+", " ", (ln or "").strip()) for ln in text.splitlines()]
+    lines = [ln for ln in lines if ln]
+
+    pending_date = ""
+    pending_parts: list[str] = []
+
+    def maybe_commit() -> None:
+        nonlocal pending_date, pending_parts, out
+        if not pending_date or not pending_parts:
+            return
+        joined = " ".join(pending_parts).strip()
+        vals = amount_re.findall(joined)
+        if not vals:
+            return
+        mov = vals[-2] if len(vals) >= 2 else vals[-1]
+        pos = joined.find(mov)
+        if pos <= 0:
+            return
+        desc = joined[:pos].strip(" -")
+        v = parse_money(mov)
+        if not desc or v is None:
+            return
+        d = parse_date(f"{pending_date}/{year}")
+        if not d:
+            return
+        out.append(ParsedTx(d, desc, abs(v), "income" if v > 0 else "expense"))
+        pending_date = ""
+        pending_parts = []
+
+    for ln in lines:
+        ln_norm = norm_text(ln)
+        # Extrato Santander costuma repetir operações no bloco final de comprovantes.
+        # Quando esse bloco inicia, ignoramos o restante para evitar lançamentos espelhados.
+        if "comprovantes de lancamento" in ln_norm or "comprovante de lancamento" in ln_norm:
+            maybe_commit()
+            break
+        if ln.lower().startswith("data descricao") or ln.lower().startswith("saldo em "):
+            continue
+        m = re.match(r"^(\d{2}/\d{2})\s+(.*)$", ln)
+        if m:
+            maybe_commit()
+            pending_date = m.group(1)
+            rest = m.group(2).strip()
+            pending_parts = [rest] if rest else []
+            maybe_commit()
+            continue
+        if pending_date:
+            pending_parts.append(ln)
+            maybe_commit()
+            if len(pending_parts) > 4:
+                pending_date = ""
+                pending_parts = []
+
+    maybe_commit()
+
+    # Fallback generico para comprovantes/faturas em formato compacto.
+    if not out:
+        for ln in lines:
+            m = re.search(r"(\d{2}/\d{2}/\d{4}).*?(-?\d{1,3}(?:\.\d{3})*,\d{2}-?)", ln)
+            if not m:
+                continue
+            d = parse_date(m.group(1))
+            v = parse_money(m.group(2))
+            if not d or v is None:
+                continue
+            desc = ln.replace(m.group(1), "").replace(m.group(2), "").strip(" -")
+            if not desc:
+                desc = "LANCAMENTO PDF"
+            out.append(ParsedTx(d, desc, abs(v), "income" if v > 0 else "expense"))
+
+    return out
+
+
+def parse_santander_card_statement_pdf(path: Path) -> list[ParsedTx]:
+    if PdfReader is None:
+        raise RuntimeError("pypdf nao encontrado")
+    reader = PdfReader(str(path))
+    text = "\n".join((p.extract_text() or "") for p in reader.pages)
+    if not text.strip():
+        return []
+
+    # Competência no nome: "... - 03-26 - ...", fallback para ano atual.
+    name_norm = norm_text(path.name)
+    ref_year = dt.datetime.now().year
+    ref_month = dt.datetime.now().month
+    mref = re.search(r"(\d{2})[-_/](\d{2})", name_norm)
+    if mref:
+        ref_month = int(mref.group(1))
+        ref_year = 2000 + int(mref.group(2))
+
+    amount_re = re.compile(r"-?\d{1,3}(?:\.\d{3})*,\d{2}-?")
+    out: list[ParsedTx] = []
+    lines = [re.sub(r"\s+", " ", (ln or "").strip()) for ln in text.splitlines()]
+    lines = [ln for ln in lines if ln]
+
+    for ln in lines:
+        ln_norm = norm_text(ln)
+        if any(
+            k in ln_norm
+            for k in (
+                "detalhamento da fatura",
+                "pagamento e demais creditos",
+                "parcelamentos",
+                "despesas",
+                "valor total",
+                "compra data descricao",
+                "parcela",
+                "santander",
+            )
+        ):
+            continue
+        m = re.search(r"(\d{2}/\d{2})\s+(.+)$", ln)
+        if not m:
+            continue
+        ddmm = m.group(1)
+        rest = m.group(2).strip()
+        vals = amount_re.findall(rest)
+        if not vals:
+            continue
+        val_txt = vals[-1]
+        val = parse_money(val_txt)
+        if val is None:
+            continue
+        pos = rest.rfind(val_txt)
+        desc = rest[:pos].strip(" -")
+        if not desc:
+            continue
+        inst_current, inst_total = parse_installment(desc)
+        desc = re.sub(r"\s+\d{1,2}/\d{1,2}\s*$", "", desc).strip()
+        if not desc:
+            continue
+
+        day = int(ddmm[:2])
+        month = int(ddmm[3:5])
+        year = ref_year if month <= ref_month else (ref_year - 1)
+        d = parse_date(f"{day:02d}/{month:02d}/{year}")
+        if not d:
+            continue
+        out.append(ParsedTx(d, desc, abs(val), "income" if val > 0 else "expense", inst_current, inst_total))
+    return out
+
+
+def remove_santander_statement_mirrors(txs: list[ParsedTx]) -> list[ParsedTx]:
+    if not txs:
+        return txs
+    incomes = []
+    expenses = []
+    for i, t in enumerate(txs):
+        if t.tx_type == "income":
+            incomes.append((i, t))
+        elif t.tx_type == "expense":
+            expenses.append((i, t))
+
+    remove_income_idx: set[int] = set()
+    for i_idx, inc in incomes:
+        inc_desc = norm_text(inc.description)
+        inc_amt = round(abs(float(inc.amount or 0)), 2)
+        try:
+            inc_date = dt.date.fromisoformat(inc.date)
+        except Exception:
+            continue
+        is_proof_line = (
+            inc_desc.startswith("internet banking pix")
+            or inc_desc.startswith("cartao de credito")
+        )
+        if not is_proof_line:
+            continue
+
+        for _, exp in expenses:
+            exp_desc = norm_text(exp.description)
+            exp_amt = round(abs(float(exp.amount or 0)), 2)
+            if exp_amt != inc_amt:
+                continue
+            try:
+                exp_date = dt.date.fromisoformat(exp.date)
+            except Exception:
+                continue
+            date_delta = abs((inc_date - exp_date).days)
+            if date_delta > 1:
+                continue
+
+            pix_pair = ("internet banking pix" in inc_desc and "pix enviado" in exp_desc)
+            card_pair = ("cartao de credito" in inc_desc and "debito aut" in exp_desc and "fatura cartao" in exp_desc)
+            if pix_pair or card_pair:
+                remove_income_idx.add(i_idx)
+                break
+
+    if not remove_income_idx:
+        return txs
+    return [t for idx, t in enumerate(txs) if idx not in remove_income_idx]
+
+
+def load_transactions(path: Path) -> list[ParsedTx]:
+    ext = path.suffix.lower()
+    if ext == ".csv":
+        return parse_csv(path)
+    if ext == ".xlsx":
+        return parse_xlsx(path)
+    if ext == ".xls":
+        return parse_xls(path)
+    if ext == ".pdf":
+        return parse_pdf(path)
+    raise RuntimeError(f"Formato nao suportado: {ext}")
+
+
+def tx_key(account_id: str, date: str, amount: float, desc: str) -> str:
+    return f"{account_id}|{date}|{amount:.2f}|{norm_text(desc)}"
+
+
+def map_headers(cells: list[Any]) -> dict[str, int]:
+    return {norm_text(str(c)).replace(" ", "_"): i for i, c in enumerate(cells) if str(c).strip()}
+
+
+def row_get(row: list[Any], idx: dict[str, int], keys: list[str]) -> Any:
+    for k in keys:
+        i = idx.get(k)
+        if i is not None and i < len(row):
+            return row[i]
+    return None
+
+
+def init_db() -> None:
+    with db_connect() as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS accounts(
+              id TEXT PRIMARY KEY,
+              name TEXT NOT NULL UNIQUE,
+              type TEXT NOT NULL,
+              color TEXT NOT NULL,
+              is_active INTEGER NOT NULL DEFAULT 1,
+              created_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS categories(
+              id TEXT PRIMARY KEY,
+              name TEXT NOT NULL,
+              color TEXT NOT NULL,
+              text_color TEXT NOT NULL,
+              type TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS subcategories(
+              id TEXT PRIMARY KEY,
+              name TEXT NOT NULL UNIQUE
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS imported_files(
+              id TEXT PRIMARY KEY,
+              filename TEXT NOT NULL,
+              file_type TEXT NOT NULL,
+              file_hash TEXT NOT NULL,
+              source_path TEXT NOT NULL,
+              account_id TEXT NOT NULL,
+              account_name TEXT NOT NULL,
+              total_parsed INTEGER NOT NULL,
+              total_inserted INTEGER NOT NULL,
+              total_duplicates INTEGER NOT NULL,
+              total_errors INTEGER NOT NULL,
+              year TEXT NOT NULL DEFAULT '',
+              month TEXT NOT NULL DEFAULT '',
+              source_kind TEXT NOT NULL DEFAULT '',
+              bank TEXT NOT NULL DEFAULT '',
+              imported_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS transactions(
+              id TEXT PRIMARY KEY,
+              tx_key TEXT NOT NULL UNIQUE,
+              date TEXT NOT NULL,
+              competence_month TEXT NOT NULL,
+              description TEXT NOT NULL,
+              description_norm TEXT NOT NULL,
+              amount REAL NOT NULL,
+              type TEXT NOT NULL,
+              status TEXT NOT NULL,
+              account_id TEXT NOT NULL,
+              category_id TEXT,
+              subcategory_id TEXT,
+              notes TEXT NOT NULL DEFAULT '',
+              suggested_category_id TEXT,
+              suggested_subcategory_id TEXT,
+              installment_current INTEGER,
+              installment_total INTEGER,
+              flags TEXT NOT NULL DEFAULT '',
+              match_probability REAL NOT NULL DEFAULT 0.0,
+              match_notes TEXT NOT NULL DEFAULT '',
+              history_match_id TEXT,
+              identity_score REAL NOT NULL DEFAULT 0.0,
+              imported_file_id TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS classification_history(
+              id TEXT PRIMARY KEY,
+              source_file_id TEXT NOT NULL,
+              account_id TEXT,
+              date TEXT,
+              description TEXT NOT NULL,
+              description_norm TEXT NOT NULL,
+              amount REAL NOT NULL,
+              type TEXT NOT NULL,
+              category_id TEXT NOT NULL,
+              subcategory_id TEXT
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS import_previews(
+              id TEXT PRIMARY KEY,
+              filename TEXT NOT NULL,
+              temp_path TEXT NOT NULL,
+              account_id TEXT NOT NULL,
+              detected_type TEXT NOT NULL,
+              detection_confidence REAL NOT NULL,
+              created_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS account_file_coverage(
+              id TEXT PRIMARY KEY,
+              account_id TEXT NOT NULL,
+              year_month TEXT NOT NULL,
+              status TEXT NOT NULL DEFAULT 'dispensed',
+              reason TEXT NOT NULL DEFAULT '',
+              created_at TEXT NOT NULL,
+              UNIQUE(account_id, year_month)
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS ledgers(
+              id TEXT PRIMARY KEY,
+              name TEXT NOT NULL UNIQUE,
+              description TEXT NOT NULL DEFAULT '',
+              color TEXT NOT NULL DEFAULT '#c9a84c',
+              is_active INTEGER NOT NULL DEFAULT 1,
+              created_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_tx_desc_norm ON transactions(description_norm)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_tx_status ON transactions(status)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_hist_desc_norm ON classification_history(description_norm)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_tx_status_date ON transactions(status,date)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_tx_month_status_account ON transactions(competence_month,status,account_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_tx_dedupe ON transactions(account_id,date,amount,type,description_norm,installment_current,installment_total)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_tx_history_match_status ON transactions(history_match_id,status)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_hist_type_desc_norm ON classification_history(type,description_norm)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_hist_type_account_date_amount ON classification_history(type,account_id,date,amount)")
+        # Migração segura para bases antigas.
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(classification_history)").fetchall()]
+        if "account_id" not in cols:
+            conn.execute("ALTER TABLE classification_history ADD COLUMN account_id TEXT")
+        tx_cols = [r[1] for r in conn.execute("PRAGMA table_info(transactions)").fetchall()]
+        if "installment_current" not in tx_cols:
+            conn.execute("ALTER TABLE transactions ADD COLUMN installment_current INTEGER")
+        if "installment_total" not in tx_cols:
+            conn.execute("ALTER TABLE transactions ADD COLUMN installment_total INTEGER")
+        if "flags" not in tx_cols:
+            conn.execute("ALTER TABLE transactions ADD COLUMN flags TEXT NOT NULL DEFAULT ''")
+        if "match_probability" not in tx_cols:
+            conn.execute("ALTER TABLE transactions ADD COLUMN match_probability REAL NOT NULL DEFAULT 0.0")
+        if "match_notes" not in tx_cols:
+            conn.execute("ALTER TABLE transactions ADD COLUMN match_notes TEXT NOT NULL DEFAULT ''")
+        if "history_match_id" not in tx_cols:
+            conn.execute("ALTER TABLE transactions ADD COLUMN history_match_id TEXT")
+        if "identity_score" not in tx_cols:
+            conn.execute("ALTER TABLE transactions ADD COLUMN identity_score REAL NOT NULL DEFAULT 0.0")
+        if "ledger_id" not in tx_cols:
+            conn.execute("ALTER TABLE transactions ADD COLUMN ledger_id TEXT")
+        hist_cols = [r[1] for r in conn.execute("PRAGMA table_info(classification_history)").fetchall()]
+        if "ledger_id" not in hist_cols:
+            conn.execute("ALTER TABLE classification_history ADD COLUMN ledger_id TEXT")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_tx_ledger ON transactions(ledger_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_hist_ledger ON classification_history(ledger_id)")
+        file_cols = [r[1] for r in conn.execute("PRAGMA table_info(imported_files)").fetchall()]
+        if "year" not in file_cols:
+            conn.execute("ALTER TABLE imported_files ADD COLUMN year TEXT NOT NULL DEFAULT ''")
+        if "month" not in file_cols:
+            conn.execute("ALTER TABLE imported_files ADD COLUMN month TEXT NOT NULL DEFAULT ''")
+        if "source_kind" not in file_cols:
+            conn.execute("ALTER TABLE imported_files ADD COLUMN source_kind TEXT NOT NULL DEFAULT ''")
+        if "bank" not in file_cols:
+            conn.execute("ALTER TABLE imported_files ADD COLUMN bank TEXT NOT NULL DEFAULT ''")
+        # Colunas de protecao contra alteracao acidental (versao web).
+        if "locked" not in tx_cols:
+            conn.execute("ALTER TABLE transactions ADD COLUMN locked INTEGER NOT NULL DEFAULT 0")
+        if "classified_by" not in tx_cols:
+            conn.execute("ALTER TABLE transactions ADD COLUMN classified_by TEXT NOT NULL DEFAULT ''")
+        if "classified_at" not in tx_cols:
+            conn.execute("ALTER TABLE transactions ADD COLUMN classified_at TEXT NOT NULL DEFAULT ''")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_tx_locked ON transactions(locked)")
+        # Cofre de arquivos persistente no banco (o disco do hosting e efemero).
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS stored_documents(
+              id TEXT PRIMARY KEY,
+              account_name TEXT NOT NULL,
+              year_month TEXT NOT NULL,
+              filename TEXT NOT NULL,
+              size INTEGER NOT NULL DEFAULT 0,
+              content_b64 TEXT NOT NULL,
+              created_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_docs_acc_month ON stored_documents(account_name, year_month)")
+
+
+def seed() -> None:
+    with db_connect() as conn:
+        now = dt.datetime.now().isoformat(timespec="seconds")
+        desired = [
+            ("CONTA XP", "checking", "#2563eb"),
+            ("CARTAO XP", "credit_card", "#7c3aed"),
+            ("CONTA NUBANK", "checking", "#14b8a6"),
+            ("CARTAO NUBANK", "credit_card", "#8b5cf6"),
+            ("CONTA SANTANDER", "checking", "#dc2626"),
+            ("CARTAO SANTANDER", "credit_card", "#f43f5e"),
+        ]
+        for name, acc_type, color in desired:
+            ex = conn.execute("SELECT id FROM accounts WHERE name=?", (name,)).fetchone()
+            if not ex:
+                conn.execute(
+                    "INSERT INTO accounts(id,name,type,color,is_active,created_at) VALUES (?,?,?,?,?,?)",
+                    (str(uuid.uuid4()), name, acc_type, color, 1, now),
+                )
+        if conn.execute("SELECT COUNT(1) FROM categories").fetchone()[0] == 0:
+            base = [
+                ("GASTO PESSOAL", "#dc2626", "#ffffff", "expense"),
+                ("ALIMENTACAO", "#ea580c", "#ffffff", "expense"),
+                ("TRANSPORTE", "#7c3aed", "#ffffff", "expense"),
+                ("MORADIA", "#2563eb", "#ffffff", "expense"),
+                ("RECEITA", "#16a34a", "#ffffff", "income"),
+            ]
+            for n, c, tc, t in base:
+                conn.execute("INSERT INTO categories(id,name,color,text_color,type) VALUES (?,?,?,?,?)", (str(uuid.uuid4()), n, c, tc, t))
+
+
+def get_account(conn: sqlite3.Connection, account_id: str):
+    return conn.execute("SELECT id,name,type,color FROM accounts WHERE id=?", (account_id,)).fetchone()
+
+
+def detect_account_by_filename(conn: sqlite3.Connection, filename: str):
+    n = norm_text(filename)
+    if any(k in n for k in ("fatura", "cartao", "comprovante de fatura", "comprovante de cartao", "comprovante-de-fatura")):
+        if "xp" in n:
+            return conn.execute("SELECT id,name,type,color FROM accounts WHERE name='CARTAO XP' LIMIT 1").fetchone()
+        if "nubank" in n or "nu " in n or "nu_" in n:
+            return conn.execute("SELECT id,name,type,color FROM accounts WHERE name='CARTAO NUBANK' LIMIT 1").fetchone()
+        if "santander" in n:
+            return conn.execute("SELECT id,name,type,color FROM accounts WHERE name='CARTAO SANTANDER' LIMIT 1").fetchone()
+    else:
+        if "xp" in n:
+            return conn.execute("SELECT id,name,type,color FROM accounts WHERE name='CONTA XP' LIMIT 1").fetchone()
+        if "nubank" in n or "nu " in n or "nu_" in n:
+            return conn.execute("SELECT id,name,type,color FROM accounts WHERE name='CONTA NUBANK' LIMIT 1").fetchone()
+        if "santander" in n:
+            return conn.execute("SELECT id,name,type,color FROM accounts WHERE name='CONTA SANTANDER' LIMIT 1").fetchone()
+    return None
+
+
+def detect_account_by_content(conn: sqlite3.Connection, path: Path):
+    ext = path.suffix.lower()
+    text = ""
+    try:
+        if ext == ".pdf" and PdfReader is not None:
+            text = "\n".join((p.extract_text() or "") for p in PdfReader(str(path)).pages[:3])
+        elif ext == ".csv":
+            text = path.read_text(encoding="utf-8-sig", errors="ignore")[:12000]
+        elif ext in (".xlsx", ".xls"):
+            # Leitura tabular já padroniza texto suficiente para sinal de origem.
+            sample_rows = load_transactions(path)[:40]
+            text = "\n".join(f"{t.date} {t.description}" for t in sample_rows)
+    except Exception:
+        text = ""
+    n = norm_text(text)
+    if not n:
+        return None
+    is_statement = any(k in n for k in ("conta corrente", "extrato consolidado", "movimentacao", "saldo em"))
+    is_card = any(k in n for k in ("fatura", "comprovante de fatura", "cartao final", "vencimento da fatura"))
+    if is_statement:
+        is_card = False
+    if "nubank" in n:
+        name = "CARTAO NUBANK" if is_card else "CONTA NUBANK"
+        return conn.execute("SELECT id,name,type,color FROM accounts WHERE name=? LIMIT 1", (name,)).fetchone()
+    if "santander" in n:
+        name = "CARTAO SANTANDER" if is_card else "CONTA SANTANDER"
+        return conn.execute("SELECT id,name,type,color FROM accounts WHERE name=? LIMIT 1", (name,)).fetchone()
+    if "xp invest" in n or "xp investimentos" in n or re.search(r"\bxp\b", n):
+        name = "CARTAO XP" if is_card else "CONTA XP"
+        return conn.execute("SELECT id,name,type,color FROM accounts WHERE name=? LIMIT 1", (name,)).fetchone()
+    return None
+
+
+def suggest_for_desc(conn: sqlite3.Connection, dnorm: str, tx_type: str = "expense"):
+    row = conn.execute(
+        """
+        SELECT h.category_id, h.subcategory_id, COUNT(*) c
+        FROM classification_history h
+        WHERE h.description_norm=? AND h.category_id IS NOT NULL AND h.type=?
+        GROUP BY h.category_id, h.subcategory_id
+        ORDER BY c DESC
+        LIMIT 1
+        """,
+        (dnorm, tx_type),
+    ).fetchone()
+    if row:
+        return row[0], row[1]
+
+    row = conn.execute(
+        """
+        SELECT category_id, subcategory_id, COUNT(*) c
+        FROM transactions
+        WHERE description_norm=? AND category_id IS NOT NULL AND type=?
+        GROUP BY category_id, subcategory_id
+        ORDER BY c DESC
+        LIMIT 1
+        """,
+        (dnorm, tx_type),
+    ).fetchone()
+    if row:
+        return row[0], row[1]
+
+    ranked = build_scored_evidence(
+        conn,
+        {"description_norm": dnorm, "amount": 0, "date": "", "type": tx_type, "account_id": None},
+        None,
+        include_transactions=False,
+        include_history=True,
+    )
+    if ranked and float(ranked[0].get("best_score") or 0) >= 0.40:
+        best = ranked[0]
+        return best["category_id"], best.get("subcategory_id")
+    return None, None
+
+
+def detect_file_type(filename: str, account_name: str) -> tuple[str, float]:
+    n = norm_text(filename)
+    acc = (account_name or "").upper()
+    if "SANTANDER" in acc:
+        bank = "SANTANDER"
+    elif "XP" in acc:
+        bank = "XP"
+    elif "NUBANK" in acc:
+        bank = "NUBANK"
+    else:
+        bank = "DESCONHECIDO"
+    kind = "CARTAO" if "CARTAO" in acc else "EXTRATO"
+    detected = f"{kind} {bank}"
+    confidence = 0.7
+    if bank != "DESCONHECIDO" and bank.lower() in n:
+        confidence += 0.2
+    if kind == "CARTAO" and any(k in n for k in ("cartao", "fatura", "comprovante")):
+        confidence += 0.1
+    if kind == "EXTRATO" and "extrato" in n:
+        confidence += 0.1
+    return detected, min(0.99, confidence)
+
+
+IMPORT_SCAN_DEFAULT_ROOT = Path(r"C:\Users\hcfly\Desktop\aplicvativo financeiro\Financeiro_Organizado")
+IMPORT_SCAN_EXTENSIONS = {".csv", ".xls", ".xlsx", ".pdf"}
+
+
+def scan_source_metadata(path: Path, root: Path) -> dict[str, Any]:
+    rel_parts = path.relative_to(root).parts if root in path.parents else path.parts
+    text = norm_text(" ".join(rel_parts))
+    year = ""
+    month = ""
+    source_kind = "desconhecido"
+    bank = "desconhecido"
+
+    for part in rel_parts:
+        if re.fullmatch(r"20\d{2}", str(part)):
+            year = str(part)
+            break
+    for part in rel_parts:
+        m = re.match(r"(\d{2})", str(part))
+        if m and 1 <= int(m.group(1)) <= 12:
+            month = m.group(1)
+            break
+
+    if "cartao" in text or "cartoes" in text or "fatura" in text:
+        source_kind = "cartao"
+    elif "extrato" in text or "extratos" in text or "conta" in text:
+        source_kind = "extrato"
+
+    if "santander" in text:
+        bank = "SANTANDER"
+    elif "nubank" in text:
+        bank = "NUBANK"
+    elif re.search(r"\bxp\b", text):
+        bank = "XP"
+    elif "smartek" in text or "smtk" in text:
+        bank = "SMARTEK"
+    elif "sulivan" in text:
+        bank = "SULIVAN"
+
+    return {"year": year, "month": month, "source_kind": source_kind, "bank": bank}
+
+
+def import_metadata_from_account(path: Path, account_name: str) -> dict[str, Any]:
+    meta = scan_source_metadata(path, path.parent)
+    acc = norm_text(account_name)
+    if "cartao" in acc:
+        meta["source_kind"] = "cartao"
+    elif "conta" in acc:
+        meta["source_kind"] = "extrato"
+    if "santander" in acc:
+        meta["bank"] = "SANTANDER"
+    elif "nubank" in acc:
+        meta["bank"] = "NUBANK"
+    elif re.search(r"\bxp\b", acc):
+        meta["bank"] = "XP"
+    elif "smartek" in acc or "smtk" in acc:
+        meta["bank"] = "SMARTEK"
+    elif "sulivan" in acc:
+        meta["bank"] = "SULIVAN"
+    return meta
+
+
+def suggested_competence_from_file(path: Path, txs: list[Any] | None = None) -> str:
+    m = re.search(r"(\d{2})\s*[-_/]\s*(\d{2})", strip_accents(path.name).lower())
+    if m:
+        return f"20{m.group(2)}/{m.group(1)}"
+    if txs:
+        months: dict[str, int] = {}
+        for tx in txs:
+            d = getattr(tx, "date", "") or ""
+            if re.match(r"^\d{4}-\d{2}-\d{2}$", d):
+                key = d[:7].replace("-", "/")
+                months[key] = months.get(key, 0) + 1
+        if months:
+            return sorted(months.items(), key=lambda item: item[1], reverse=True)[0][0]
+    return ""
+
+
+def detect_account_for_scan(conn: sqlite3.Connection, path: Path):
+    meta = scan_source_metadata(path, IMPORT_SCAN_DEFAULT_ROOT if IMPORT_SCAN_DEFAULT_ROOT.exists() else path.parent)
+    bank = meta["bank"]
+    kind = meta["source_kind"]
+    account_name = ""
+    if bank == "SMARTEK":
+        account_name = "CONTA SMARTEK"
+    elif bank == "SULIVAN":
+        account_name = "CARTAO SULIVAN"
+    elif bank in {"SANTANDER", "XP", "NUBANK"}:
+        prefix = "CARTAO" if kind == "cartao" else "CONTA"
+        account_name = f"{prefix} {bank}"
+    if account_name:
+        row = conn.execute("SELECT id,name,type,color FROM accounts WHERE name=? LIMIT 1", (account_name,)).fetchone()
+        if row:
+            return row
+    return detect_account_by_filename(conn, str(path)) or detect_account_by_content(conn, path)
+
+
+def collect_scan_files(root: Path) -> list[Path]:
+    return [
+        p for p in sorted(root.rglob("*"))
+        if p.is_file()
+        and p.suffix.lower() in IMPORT_SCAN_EXTENSIONS
+        and not p.name.startswith(("~", ".", "_"))
+    ]
+
+
+def existing_db_duplicate_count(conn: sqlite3.Connection, account_id: str, row: dict[str, Any]) -> int:
+    installment_current = int(row.get("installment_current") or 0)
+    installment_total = int(row.get("installment_total") or 0)
+    return int(conn.execute(
+        """
+        SELECT COUNT(1) FROM transactions
+        WHERE account_id=?
+          AND date=?
+          AND ROUND(amount,2)=?
+          AND description_norm=?
+          AND type=?
+          AND IFNULL(installment_current,0)=?
+          AND IFNULL(installment_total,0)=?
+        """,
+        (
+            account_id,
+            row["date"],
+            row["amount_signed"],
+            row["description_norm"],
+            row["tx_type"],
+            installment_current,
+            installment_total,
+        ),
+    ).fetchone()[0] or 0)
+
+
+def existing_db_duplicate_count_for_rows(conn: sqlite3.Connection, account_id: str, rows: list[dict[str, Any]]) -> int:
+    db_counts = {r["sig"]: existing_db_duplicate_count(conn, account_id, r) for r in rows}
+    occurrences: dict[tuple[Any, ...], int] = {}
+    duplicates = 0
+    for row in rows:
+        sig = row["sig"]
+        occurrences[sig] = occurrences.get(sig, 0) + 1
+        if occurrences[sig] <= db_counts.get(sig, 0):
+            duplicates += 1
+    return duplicates
+
+
+def add_csv_flag(flags_text: str, flag: str) -> str:
+    flags = [part for part in (flags_text or "").split(",") if part]
+    if flag not in flags:
+        flags.append(flag)
+    return ",".join(flags)
+
+
+def historical_match_count(conn: sqlite3.Connection, account_id: str, parsed_rows: list[dict[str, Any]], threshold: float = 70.0) -> tuple[int, float]:
+    count = 0
+    best = 0.0
+    for r in parsed_rows:
+        match = find_identity_match(conn, {
+            "date": r["date"],
+            "description": r["description"],
+            "description_norm": r["description_norm"],
+            "amount": r["amount_signed"],
+            "type": r["tx_type"],
+            "account_id": account_id,
+        })
+        probability = float((match or {}).get("identity_score") or 0)
+        best = max(best, probability)
+        if probability >= threshold:
+            count += 1
+    return count, round(best, 2)
+
+
+def build_import_preview(path: Path, acc: tuple[Any, ...]) -> dict[str, Any]:
+    account_name = acc[1] or ""
+    account_type = (acc[2] or "checking").lower()
+    result: ImportResult = run_import_pipeline(path, account_name, account_type)
+
+    parsed_rows: list[dict[str, Any]] = []
+    internal_counter: dict[tuple[Any, ...], int] = {}
+    for t in result.txs:
+        display_desc = f"{t.description} ({t.installment_label})" if t.installment_label else t.description
+        flags_text = ",".join(t.flags)
+        if account_type == "credit_card" and abs(float(t.amount_signed or 0)) < 2.0:
+            flags_text = add_csv_flag(flags_text, "non_count")
+        sig = (
+            t.date,
+            round(float(t.amount_signed or 0), 2),
+            t.description_norm,
+            t.tx_type,
+            t.installment_current or 0,
+            t.installment_total or 0,
+            flags_text,
+        )
+        internal_counter[sig] = internal_counter.get(sig, 0) + 1
+        parsed_rows.append({
+            "date": t.date,
+            "description": display_desc,
+            "description_norm": t.description_norm,
+            "amount_signed": round(float(t.amount_signed or 0), 2),
+            "tx_type": t.tx_type,
+            "installment_current": t.installment_current,
+            "installment_total": t.installment_total,
+            "installment_label": t.installment_label,
+            "is_installment": t.is_installment,
+            "flags": flags_text,
+            "sig": sig,
+        })
+
+    return {
+        "txs": result.txs,
+        "parsed_rows": parsed_rows,
+        "internal_counter": internal_counter,
+        "warnings": result.warnings,
+        "balance_check": {
+            "ok": result.balance_check.ok,
+            "message": result.balance_check.message,
+            "saldo_anterior": result.balance_check.saldo_anterior,
+            "saldo_final_declarado": result.balance_check.saldo_final_declarado,
+            "saldo_calculado": result.balance_check.saldo_calculado,
+            "diferenca": result.balance_check.diferenca,
+        },
+        "import_meta": {
+            "bank": result.format_detection.bank,
+            "doc_type": result.format_detection.doc_type,
+            "file_format": result.format_detection.file_format,
+            "encoding": result.format_detection.encoding,
+            "detection_confidence": result.format_detection.confidence,
+            "suggested_competence_month": suggested_competence_from_file(path, result.txs),
+            "total_installments": result.total_installments,
+            "total_inter_account": result.total_inter_account,
+            "total_cashback": result.total_cashback,
+            "total_discarded": len(result.discarded_lines),
+        },
+        "rejected_lines": result.rejected_lines,
+        "discarded_lines": result.discarded_lines,
+    }
+
+
+def build_suggestions_for_tx(conn: sqlite3.Connection, tx_id: str):
+    tx_row = conn.execute(
+        """
+        SELECT id, date, description, description_norm, amount, type, account_id
+        FROM transactions
+        WHERE id=?
+        """,
+        (tx_id,),
+    ).fetchone()
+    if not tx_row:
+        return None
+    tx = {
+        "id": tx_row[0],
+        "date": tx_row[1],
+        "description": tx_row[2],
+        "description_norm": tx_row[3],
+        "amount": tx_row[4],
+        "type": tx_row[5],
+        "account_id": tx_row[6],
+    }
+    ranked = build_scored_evidence(conn, tx, tx_id, include_transactions=False, include_history=True)
+    if not ranked:
+        return []
+    return [
+        {
+            "category_id": r["category_id"],
+            "category_name": r["category_name"] or "",
+            "subcategory_id": r.get("subcategory_id"),
+            "subcategory_name": r.get("subcategory_name") or "",
+            "best_notes": r.get("best_notes") or "",
+            "probability": round(float(r["probability"]), 2),
+            "category_probability": round(float(r.get("category_probability", r["probability"])), 2),
+            "subcategory_probability": round(float(r.get("subcategory_probability", 0.0)), 2),
+            "frequency": int(r.get("frequency", 0)),
+        }
+        for r in ranked[:12]
+        if float(r.get("category_probability", r.get("probability", 0.0))) >= 20.0
+    ]
+
+
+def find_category_id(conn: sqlite3.Connection, name: str, tx_type: str):
+    cname = (name or "").strip()
+    if not cname:
+        return None
+    row = conn.execute(
+        "SELECT id FROM categories WHERE UPPER(name)=UPPER(?) AND type=? LIMIT 1",
+        (cname, tx_type),
+    ).fetchone()
+    if row:
+        return row[0]
+    cat_id = str(uuid.uuid4())
+    conn.execute(
+        "INSERT INTO categories(id,name,color,text_color,type) VALUES (?,?,?,?,?)",
+        (cat_id, cname.upper(), "#334155", "#ffffff", tx_type),
+    )
+    return cat_id
+
+
+def find_or_create_subcategory(conn: sqlite3.Connection, name: str):
+    sname = (name or "").strip()
+    if not sname:
+        return None
+    target = sname.upper()
+    row = conn.execute("SELECT id FROM subcategories WHERE lower(name)=lower(?) LIMIT 1", (target,)).fetchone()
+    if row:
+        return row[0]
+    sid = str(uuid.uuid4())
+    # ON CONFLICT funciona igual em SQLite (3.24+) e Postgres, evitando erro de
+    # duplicidade em concorrencia sem abortar a transacao no Postgres.
+    conn.execute("INSERT INTO subcategories(id,name) VALUES (?,?) ON CONFLICT(name) DO NOTHING", (sid, target))
+    row = conn.execute("SELECT id FROM subcategories WHERE name=? LIMIT 1", (target,)).fetchone()
+    return row[0] if row else sid
+
+
+def resolve_account_from_text(conn: sqlite3.Connection, raw: str):
+    n = norm_text(raw or "")
+    if "smartek" in n or "smtk" in n:
+        name = "CONTA SMARTEK"
+    elif "nubank" in n:
+        name = "CARTAO NUBANK" if "cart" in n or "fatura" in n else "CONTA NUBANK"
+    elif "santander" in n:
+        name = "CARTAO SANTANDER" if "cart" in n or "fatura" in n else "CONTA SANTANDER"
+    elif "xp" in n:
+        name = "CARTAO XP" if "cart" in n or "fatura" in n else "CONTA XP"
+    else:
+        name = clean_label(raw)
+    if not name:
+        return None
+    rows = conn.execute("SELECT id,name,type,color FROM accounts").fetchall()
+    for row in rows:
+        if norm_text(row[1]) == norm_text(name):
+            return row
+    acc_type = "credit_card" if "cartao" in norm_text(name) else "checking"
+    color = "#7c3aed" if acc_type == "credit_card" else "#2563eb"
+    acc_id = str(uuid.uuid4())
+    conn.execute(
+        "INSERT INTO accounts(id,name,type,color,is_active,created_at) VALUES (?,?,?,?,?,?)",
+        (acc_id, name, acc_type, color, 1, dt.datetime.now().isoformat(timespec="seconds")),
+    )
+    return (acc_id, name, acc_type, color)
+
+
+def clean_label(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode("ascii")
+    text = re.sub(r"\s+", " ", text).strip()
+    return text.upper()
+
+
+def seed_type_for_row(sheet_type: str | None, cat_raw: Any, amount: float | None = None) -> str | None:
+    if sheet_type:
+        return sheet_type
+    cat = norm_text(cat_raw or "")
+    if any(k in cat for k in ("smartek", "smtk")):
+        if amount is None:
+            return "expense"
+        return "income" if amount < 0 else "expense"
+    if any(k in cat for k in ("deposito", "retirada", "reembolso", "acerto", "venda", "pro labore")):
+        return "income"
+    if cat:
+        return "expense"
+    return None
+
+
+def smartek_seed_subcategory(tx_type: str, desc_raw: Any, cat_raw: Any, notes_raw: Any) -> str:
+    desc_notes = norm_text(f"{desc_raw or ''} {notes_raw or ''}")
+    cat = norm_text(cat_raw or "")
+    text = f"{desc_notes} {cat}".strip()
+    if tx_type == "income":
+        if "juros" in text or "2" in text and "capital" in text:
+            return "JUROS 2%"
+        if "devol" in text or "retirada" in text or "receb" in text:
+            return "DEVOLUCAO CAPITAL"
+        return "REEMBOLSO"
+    if "emprest" in text or "deposito" in cat or "smtk" in cat:
+        return "EMPRESTIMO"
+    if "aporte" in text:
+        return "APORTE"
+    return "PAGAMENTO POR CONTA DA EMPRESA"
+
+
+def move_duplicate_history_to_smartek_sheet(
+    conn: sqlite3.Connection,
+    smartek_account_id: str | None,
+    smartek_source_id: str,
+    smartek_category_id: str,
+    smartek_subcategory_id: str | None,
+    date: str,
+    description_norm: str,
+    amount: float,
+    tx_type: str,
+) -> int:
+    if not smartek_account_id:
+        return 0
+    cur = conn.execute(
+        """
+        UPDATE classification_history
+        SET source_file_id=?,
+            account_id=?,
+            category_id=?,
+            subcategory_id=?
+        WHERE source_file_id NOT LIKE '%:sheet:helcio_smartek'
+          AND date=?
+          AND description_norm=?
+          AND ROUND(amount, 2)=ROUND(?, 2)
+          AND type=?
+        """,
+        (
+            smartek_source_id,
+            smartek_account_id,
+            smartek_category_id,
+            smartek_subcategory_id,
+            date,
+            description_norm,
+            abs(float(amount or 0)),
+            tx_type,
+        ),
+    )
+    return cur.rowcount or 0
+
+
+def history_sheet_key(sheet_name: str) -> str:
+    normalized = norm_text(sheet_name)
+    if normalized in {"saidas", "saidas "}:
+        return "saidas"
+    if normalized == "entradas":
+        return "entradas"
+    if normalized in {"helcio smartek", "smartek"}:
+        return "helcio_smartek"
+    return normalized.replace(" ", "_") or "historico"
+
+
+def import_seed_workbook(path: Path):
+    if openpyxl is None:
+        raise RuntimeError("openpyxl nao encontrado")
+    wb = openpyxl.load_workbook(path, data_only=True)
+    wanted = {
+        "saidas": "expense",
+        "saidas ": "expense",
+        "entradas": "income",
+        "helcio smartek": None,
+        "smartek": None,
+    }
+    now = dt.datetime.now().isoformat(timespec="seconds")
+    imported_file_id = str(uuid.uuid4())
+    total_parsed = 0
+    total_inserted = 0
+    total_duplicates = 0
+
+    sheets_found = [ws.title for ws in wb.worksheets]
+    sheets_recognized: list[str] = []
+    with db_connect() as conn:
+        for ws in wb.worksheets:
+            sname = norm_text(ws.title)
+            if sname not in wanted:
+                continue
+            sheets_recognized.append(ws.title)
+            sheet_type = wanted.get(sname)
+            sheet_source_id = f"{imported_file_id}:sheet:{history_sheet_key(ws.title)}"
+            rows = [list(r) for r in ws.iter_rows(values_only=True)]
+            if not rows:
+                continue
+            header_idx = 0
+            score = -1
+            for i, row in enumerate(rows[:30]):
+                idx = map_headers(row)
+                s = sum(1 for k in ("data", "descricao", "historico", "valor", "categoria", "subcategoria") if k in idx)
+                if s > score:
+                    header_idx, score = i, s
+            idx = map_headers(rows[header_idx])
+            is_smartek_sheet = sname in {"helcio smartek", "smartek"}
+            for row in rows[header_idx + 1 :]:
+                date_raw = row_get(row, idx, ["data", "date", "dia"])
+                desc_raw = row_get(row, idx, ["descricao", "historico", "estabelecimento"])
+                value_raw = row_get(row, idx, ["valor", "value", "total"])
+                cat_raw = row_get(row, idx, ["categoria", "centro_de_custo", "centro_custo"])
+                sub_raw = row_get(row, idx, ["subcategoria", "sub_categoria"])
+                notes_raw = row_get(row, idx, ["observacao", "observacoes", "obs", "nota"])
+                account_raw = row_get(row, idx, ["forma", "conta", "cartao", "cartão", "banco"])
+                d = parse_date(date_raw)
+                desc = str(desc_raw or "").strip()
+                v = parse_money(value_raw)
+                if not (d and desc and v is not None):
+                    continue
+                total_parsed += 1
+                tx_type = seed_type_for_row(sheet_type, cat_raw, v)
+                if not tx_type:
+                    continue
+                category_label = "SMARTEK" if is_smartek_sheet else str(cat_raw or "")
+                cat_id = find_category_id(conn, category_label, tx_type)
+                if not cat_id:
+                    continue
+                sub_label = smartek_seed_subcategory(tx_type, desc_raw, cat_raw, notes_raw) if is_smartek_sheet else str(sub_raw or notes_raw or "")
+                sub_id = find_or_create_subcategory(conn, sub_label)
+                acc_id = None
+                account_label = "CONTA SMARTEK" if is_smartek_sheet else str(account_raw or "")
+                if account_label:
+                    acc = resolve_account_from_text(conn, account_label)
+                    if acc:
+                        acc_id = acc[0]
+                dnorm = norm_text(desc)
+                if is_smartek_sheet:
+                    moved = move_duplicate_history_to_smartek_sheet(
+                        conn,
+                        acc_id,
+                        sheet_source_id,
+                        cat_id,
+                        sub_id,
+                        d,
+                        dnorm,
+                        abs(v),
+                        tx_type,
+                    )
+                    if moved:
+                        total_duplicates += moved
+                        total_inserted += moved
+                        continue
+                if conn.execute(
+                    """
+                    SELECT 1
+                    FROM classification_history
+                    WHERE source_file_id=?
+                      AND date=?
+                      AND description_norm=?
+                      AND ROUND(amount, 2)=ROUND(?, 2)
+                      AND type=?
+                    LIMIT 1
+                    """,
+                    (sheet_source_id, d, dnorm, abs(float(v)), tx_type),
+                ).fetchone():
+                    total_duplicates += 1
+                    continue
+                conn.execute(
+                    """
+                    INSERT INTO classification_history(
+                      id, source_file_id, account_id, date, description, description_norm, amount, type, category_id, subcategory_id
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        str(uuid.uuid4()),
+                        sheet_source_id,
+                        acc_id,
+                        d,
+                        desc,
+                        dnorm,
+                        abs(v),
+                        tx_type,
+                        cat_id,
+                        sub_id,
+                    ),
+                )
+                total_inserted += 1
+        conn.execute(
+            """
+            INSERT INTO imported_files(
+              id,filename,file_type,file_hash,source_path,account_id,account_name,
+              total_parsed,total_inserted,total_duplicates,total_errors,imported_at
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                imported_file_id,
+                path.name,
+                "xlsx-seed",
+                hashlib.sha1(path.read_bytes()).hexdigest(),
+                str(path),
+                "seed",
+                "IMPORT_SEED",
+                total_parsed,
+                total_inserted,
+                total_duplicates,
+                0,
+                now,
+            ),
+        )
+    if not sheets_recognized:
+        return {
+            "detail": (
+                "Nenhuma aba reconhecida na planilha. Abas esperadas: SAIDAS e/ou ENTRADAS. "
+                f"Abas encontradas no arquivo: {', '.join(sheets_found) or 'nenhuma'}. "
+                "Renomeie as abas e tente novamente."
+            ),
+            "code": "SEED_NO_SHEETS",
+            "sheets_found": sheets_found,
+        }, 422
+    if total_parsed == 0:
+        return {
+            "detail": (
+                f"Abas reconhecidas ({', '.join(sheets_recognized)}), mas nenhuma linha valida foi lida. "
+                "Confira se ha colunas de Data, Descricao e Valor preenchidas."
+            ),
+            "code": "SEED_NO_ROWS",
+            "sheets_found": sheets_found,
+        }, 422
+    # Recalcula as sugestoes dos lancamentos pendentes automaticamente apos alimentar a base.
+    recalc = _recalculate_probabilities_impl()
+    return {
+        "imported_file_id": imported_file_id,
+        "filename": path.name,
+        "account_name": "IMPORT_SEED",
+        "total_parsed": total_parsed,
+        "total_inserted": total_inserted,
+        "total_duplicates": total_duplicates,
+        "total_errors": 0,
+        "sheets_recognized": sheets_recognized,
+        "suggestions_recalculated": recalc.get("updated", 0),
+        "transactions_preview": [],
+    }, 201
+
+
+def import_seed_pdf(path: Path):
+    if PdfReader is None:
+        raise RuntimeError("pypdf nao encontrado")
+    text = "\n".join((p.extract_text() or "") for p in PdfReader(str(path)).pages)
+    lines = [re.sub(r"\s+", " ", (ln or "").strip()) for ln in text.splitlines()]
+    lines = [ln for ln in lines if ln]
+
+    now = dt.datetime.now().isoformat(timespec="seconds")
+    imported_file_id = str(uuid.uuid4())
+    total_parsed = 0
+    total_inserted = 0
+    total_duplicates = 0
+
+    row_re = re.compile(
+        r"^(\d{2}/\d{2}/\d{4})\s+\d{4}/\d{2}\s+(.+?)\s*[(]R[$]\s*[(]?([\d.,]+)[-]?[)]?[)]\s*(.*)$"
+    )
+    rejected: list[str] = []
+
+    with db_connect() as conn:
+        cat_rows = conn.execute("SELECT id,name,type FROM categories").fetchall()
+        cat_map = [(r[0], r[1], r[2], norm_text(r[1])) for r in cat_rows]
+
+        for ln in lines:
+            m = row_re.match(ln)
+            if not m:
+                if re.search(r"\d{2}/\d{2}/\d{4}", ln):
+                    rejected.append(ln[:150])
+                continue
+            d = parse_date(m.group(1))
+            desc = (m.group(2) or "").strip()
+            val = parse_money((m.group(3) or "").replace(" ", ""))
+            tail = (m.group(4) or "").strip()
+            if not (d and desc and val is not None):
+                continue
+            total_parsed += 1
+
+            tx_type = "income" if val >= 0 else "expense"
+            dnorm = norm_text(desc)
+            tail_norm = norm_text(tail)
+
+            matched = None
+            for cid, cname, ctype, cnorm in sorted(cat_map, key=lambda x: len(x[3]), reverse=True):
+                if ctype != tx_type:
+                    continue
+                if cnorm and (tail_norm.startswith(cnorm) or f" {cnorm} " in f" {tail_norm} "):
+                    matched = (cid, cname, cnorm)
+                    break
+            if not matched:
+                continue
+
+            cat_id = matched[0]
+            sub_txt = tail_norm.replace(matched[2], "", 1).strip()
+            sub_txt = re.sub(r"\b(antigo|primeira planilha)\b", "", sub_txt).strip()
+            sub_id = find_or_create_subcategory(conn, sub_txt.upper()) if sub_txt else None
+
+            if conn.execute(
+                """
+                SELECT 1 FROM classification_history
+                WHERE description_norm=? AND type=? AND category_id=? AND IFNULL(subcategory_id,'')=IFNULL(?, '')
+                LIMIT 1
+                """,
+                (dnorm, tx_type, cat_id, sub_id),
+            ).fetchone():
+                total_duplicates += 1
+                continue
+
+            conn.execute(
+                """
+                INSERT INTO classification_history(
+                  id, source_file_id, account_id, date, description, description_norm, amount, type, category_id, subcategory_id
+                ) VALUES (?,?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    str(uuid.uuid4()),
+                    imported_file_id,
+                    None,
+                    d,
+                    desc,
+                    dnorm,
+                    abs(val),
+                    tx_type,
+                    cat_id,
+                    sub_id,
+                ),
+            )
+            total_inserted += 1
+
+        conn.execute(
+            """
+            INSERT INTO imported_files(
+              id,filename,file_type,file_hash,source_path,account_id,account_name,
+              total_parsed,total_inserted,total_duplicates,total_errors,imported_at
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                imported_file_id,
+                path.name,
+                "pdf-seed",
+                hashlib.sha1(path.read_bytes()).hexdigest(),
+                str(path),
+                "seed",
+                "IMPORT_SEED",
+                total_parsed,
+                total_inserted,
+                total_duplicates,
+                0,
+                now,
+            ),
+        )
+
+    recalc = _recalculate_probabilities_impl()
+    return {
+        "imported_file_id": imported_file_id,
+        "filename": path.name,
+        "account_name": "IMPORT_SEED",
+        "total_parsed": total_parsed,
+        "total_inserted": total_inserted,
+        "total_duplicates": total_duplicates,
+        "total_errors": 0,
+        "suggestions_recalculated": recalc.get("updated", 0),
+        "debug_rejected_sample": rejected[:15],
+        "transactions_preview": [],
+    }, 201
+
+
+def import_document(
+    path: Path,
+    account_id: str,
+    confirm_duplicates: bool = False,
+    import_db_duplicates: bool = False,
+    competence_month_override: str = "",
+):
+    h = hashlib.sha1(path.read_bytes()).hexdigest()
+    ext = path.suffix.lower().replace(".", "")
+    now = dt.datetime.now().isoformat(timespec="seconds")
+    imported_file_id = str(uuid.uuid4())
+
+    with db_connect() as conn:
+        acc = get_account(conn, account_id) if account_id else None
+        if not acc:
+            return {"detail": "Conta/cartao obrigatorio", "code": "ACCOUNT_REQUIRED"}, 400
+
+        preview_data = build_import_preview(path, acc)
+        txs = preview_data["txs"]
+        parsed_rows = preview_data["parsed_rows"]
+        warnings = preview_data["warnings"]
+
+        prev = conn.execute("SELECT id, imported_at, total_parsed FROM imported_files WHERE file_hash=?", (h,)).fetchone()
+        if prev and int(prev[2] or 0) == 0:
+            # Permite reprocessar arquivo que antes foi salvo sem lancamentos.
+            conn.execute("DELETE FROM transactions WHERE imported_file_id=?", (prev[0],))
+            conn.execute("DELETE FROM imported_files WHERE id=?", (prev[0],))
+
+        # Prova real: comprovante de fatura Santander (PDF) não é extrato detalhado de compras.
+        # Para cartão Santander, a fonte correta dos itens é o CSV da fatura.
+        if ext == "pdf" and (acc[1] or "").upper() == "CARTAO SANTANDER" and len(txs) < 12:
+            return {
+                "detail": "PDF de cartao Santander sem detalhamento suficiente. Use preferencialmente o CSV da fatura.",
+                "code": "CARD_SUMMARY_PDF_NOT_SUPPORTED",
+            }, 422
+        internal_counter = preview_data["internal_counter"]
+
+        internal_duplicates = sum(max(0, c - 1) for c in internal_counter.values())
+
+        # Duplicidade com base existente. Por padrao nao reinsere; a UI pode autorizar
+        # importar mesmo assim, mantendo a tag DUPLICATE_DB para conferencia posterior.
+        db_counts = {r["sig"]: existing_db_duplicate_count(conn, acc[0], r) for r in parsed_rows}
+        preview_occ: dict[tuple[Any, ...], int] = {}
+        existing_db_duplicates = 0
+        for r in parsed_rows:
+            preview_occ[r["sig"]] = preview_occ.get(r["sig"], 0) + 1
+            if preview_occ[r["sig"]] <= db_counts.get(r["sig"], 0):
+                existing_db_duplicates += 1
+
+        if existing_db_duplicates > 0 and not confirm_duplicates:
+            return {
+                "detail": (
+                    f"{existing_db_duplicates} lancamentos ja foram encontrados no banco. "
+                    f"{internal_duplicates} sao duplicados dentro do proprio arquivo. "
+                    "Deseja continuar a importacao desconsiderando apenas os itens duplicados no banco?"
+                ),
+                "code": "DUPLICATES_FOUND",
+                "duplicates_found": existing_db_duplicates,
+                "duplicates_db_found": existing_db_duplicates,
+                "duplicates_internal_found": internal_duplicates,
+                "total_parsed": len(txs),
+            }, 409
+
+        metadata = import_metadata_from_account(path, acc[1])
+        if competence_month_override and re.match(r"^\d{4}/\d{2}$", competence_month_override):
+            metadata["year"], metadata["month"] = competence_month_override.split("/")
+        archived_target = archive_target_path(path, acc[1], txs)
+        if metadata.get("year") and metadata.get("month"):
+            archived_target = DOCS / metadata["year"] / metadata["month"] / account_folder_name(acc[1]) / clean_archive_filename(path.name)
+        archived_source_path = project_relative_path(archived_target)
+
+        inserted = 0
+        duplicates_db = 0
+        duplicates_internal = internal_duplicates
+        preview = []
+        occ: dict[tuple[str, float, str, str], int] = {}
+        for r in parsed_rows:
+            occ[r["sig"]] = occ.get(r["sig"], 0) + 1
+            is_db_duplicate = occ[r["sig"]] <= db_counts.get(r["sig"], 0)
+            if is_db_duplicate and not import_db_duplicates:
+                duplicates_db += 1
+                continue
+
+            # Duplicados internos sao permitidos: diferencia tx_key por ocorrência.
+            key = (
+                f"{acc[0]}|{r['date']}|{r['amount_signed']:.2f}|{r['description_norm']}|"
+                f"{r['tx_type']}|{int(r['installment_current'] or 0)}|{int(r['installment_total'] or 0)}"
+                f"#{occ[r['sig']]}"
+            )
+            if is_db_duplicate:
+                key = f"{key}|dupdb|{uuid.uuid4()}"
+
+            exact = conn.execute(
+                """
+                SELECT category_id, subcategory_id
+                FROM transactions
+                WHERE date=?
+                  AND ROUND(amount,2)=?
+                  AND description_norm=?
+                  AND type=?
+                  AND category_id IS NOT NULL
+                LIMIT 1
+                """,
+                (r["date"], r["amount_signed"], r["description_norm"], r["tx_type"]),
+            ).fetchone()
+            status = "pending"
+            cat = None
+            sub = None
+            s_cat = None
+            s_sub = None
+            identity = None
+            if exact:
+                cat, sub = exact[0], exact[1]
+                status = "reconciled"
+            else:
+                identity = find_identity_match(conn, {
+                    "date": r["date"],
+                    "description": r["description"],
+                    "description_norm": r["description_norm"],
+                    "amount": r["amount_signed"],
+                    "type": r["tx_type"],
+                    "account_id": acc[0],
+                })
+                if identity:
+                    s_cat = identity.get("category_id")
+                    s_sub = identity.get("subcategory_id")
+                else:
+                    s_cat, s_sub = suggest_for_desc(conn, r["description_norm"], r["tx_type"])
+            match_probability = float((identity or {}).get("identity_score") or 0)
+            history_match_id = (identity or {}).get("history_match_id")
+            identity_score = match_probability
+            match_notes = "Match com base historica" if identity else ""
+            tx_id = str(uuid.uuid4())
+            row_flags = [flag for flag in (r.get("flags", "") or "").split(",") if flag]
+            if is_db_duplicate and "DUPLICATE_DB" not in row_flags:
+                row_flags.append("DUPLICATE_DB")
+            flags_text = ",".join(row_flags)
+            conn.execute(
+                """
+                INSERT INTO transactions(
+                  id,tx_key,date,competence_month,description,description_norm,amount,type,status,account_id,
+                  category_id,subcategory_id,notes,suggested_category_id,suggested_subcategory_id,
+                  match_probability,match_notes,history_match_id,identity_score,
+                  installment_current,installment_total,flags,imported_file_id
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    tx_id,
+                    key,
+                    r["date"],
+                    competence_month_override if re.match(r"^\d{4}/\d{2}$", competence_month_override or "") else r["date"][:7].replace("-", "/"),
+                    r["description"],
+                    r["description_norm"],
+                    r["amount_signed"],
+                    r["tx_type"],
+                    status,
+                    acc[0],
+                    cat,
+                    sub,
+                    "",
+                    s_cat,
+                    s_sub,
+                    match_probability,
+                    match_notes,
+                    history_match_id,
+                    identity_score,
+                    r["installment_current"],
+                    r["installment_total"],
+                    flags_text,
+                    imported_file_id,
+                ),
+            )
+            inserted += 1
+            if len(preview) < 20:
+                preview.append(
+                    {
+                        "id": tx_id,
+                        "date": r["date"],
+                        "description": r["description"],
+                        "amount": r["amount_signed"],
+                        "type": r["tx_type"],
+                        "status": status,
+                        "installment_current": r["installment_current"],
+                        "installment_total": r["installment_total"],
+                        "installment_label": r["installment_label"],
+                        "is_installment": r["is_installment"],
+                        "flags": flags_text,
+                    }
+                )
+
+        conn.execute(
+            """
+            INSERT INTO imported_files(
+              id,filename,file_type,file_hash,source_path,account_id,account_name,
+              total_parsed,total_inserted,total_duplicates,total_errors,year,month,source_kind,bank,imported_at
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                imported_file_id,
+                path.name,
+                ext,
+                h,
+                archived_source_path,
+                acc[0],
+                acc[1],
+                len(txs),
+                inserted,
+                duplicates_db,
+                0,
+                metadata.get("year", ""),
+                metadata.get("month", ""),
+                metadata.get("source_kind", ""),
+                metadata.get("bank", ""),
+                now,
+            ),
+        )
+
+    # Persistir o arquivo original no banco ANTES de arquivar (o disco e efemero no hosting).
+    # Ano/mes e nome vem do proprio destino de arquivamento para manter cofre e disco identicos.
+    store_document_in_db(
+        path,
+        acc[1],
+        f"{archived_target.parents[2].name}/{archived_target.parents[1].name}",
+        archived_target.name,
+    )
+    archive_import_file(path, archived_target)
+
+    return {
+        "imported_file_id": imported_file_id,
+        "filename": path.name,
+        "account_name": acc[1],
+        "total_parsed": len(txs),
+        "total_inserted": inserted,
+        "total_duplicates": duplicates_db,
+        "total_duplicates_db": duplicates_db,
+        "total_duplicates_internal": duplicates_internal,
+        "total_errors": 0,
+        "warnings": warnings,
+        "balance_check": preview_data.get("balance_check", {}),
+        "import_meta": preview_data.get("import_meta", {}),
+        "rejected_lines": preview_data.get("rejected_lines", []),
+        "discarded_lines": preview_data.get("discarded_lines", []),
+        "transactions_preview": preview,
+    }, 201
+
+
+@app.after_request
+def legacy_ui_cache_headers(resp):
+    # CORS e tratado em _apply_cors (respeita CORS_ORIGINS). Aqui apenas cache das paginas /ui.
+    if request.path.startswith("/ui/"):
+        resp.headers["Cache-Control"] = "no-store, max-age=0"
+        resp.headers["Pragma"] = "no-cache"
+    return resp
+
+
+@app.route("/api/v1/health")
+def health():
+    return jsonify({"status": "ok", "version": "1.0.0", "db": "connected"})
+
+
+@app.route("/ui/importar")
+def import_preview_ui():
+    return send_from_directory(TOOLS / "import-preview", "index.html")
+
+
+@app.route("/ui/varredura")
+def import_scan_ui():
+    return send_from_directory(TOOLS / "import-scan", "index.html")
+
+
+@app.route("/ui/arquivos")
+def import_files_ui():
+    return send_from_directory(TOOLS / "import-files", "index.html")
+
+
+@app.route("/api/v1/accounts", methods=["GET", "POST"])
+def accounts():
+    if request.method == "GET":
+        with db_connect() as conn:
+            rows = conn.execute("SELECT id,name,type,color,is_active,created_at FROM accounts ORDER BY name").fetchall()
+        return jsonify([
+            {
+                "id": r[0],
+                "name": r[1],
+                "type": r[2],
+                "color": r[3],
+                "is_active": bool(r[4]),
+                "created_at": r[5],
+            }
+            for r in rows
+        ])
+    data = request.get_json(force=True)
+    now = dt.datetime.now().isoformat(timespec="seconds")
+    item = (str(uuid.uuid4()), data.get("name", "").strip(), data.get("type", "checking"), data.get("color", "#2563eb"), 1, now)
+    with db_connect() as conn:
+        conn.execute("INSERT INTO accounts(id,name,type,color,is_active,created_at) VALUES (?,?,?,?,?,?)", item)
+    return jsonify({"id": item[0], "name": item[1], "type": item[2], "color": item[3], "is_active": True, "created_at": now}), 201
+
+
+@app.route("/api/v1/accounts/<account_id>", methods=["PUT", "DELETE", "OPTIONS"])
+def account_detail(account_id: str):
+    if request.method == "OPTIONS":
+        return jsonify({}), 200
+    with db_connect() as conn:
+        if request.method == "DELETE":
+            n = conn.execute("SELECT COUNT(1) FROM transactions WHERE account_id=?", (account_id,)).fetchone()[0]
+            if n > 0:
+                return jsonify({"detail": f"Conta tem {n} lancamentos. Remova os lancamentos primeiro.", "code": "HAS_TRANSACTIONS"}), 400
+            conn.execute("DELETE FROM accounts WHERE id=?", (account_id,))
+            return jsonify({"ok": True})
+        data = request.get_json(force=True)
+        conn.execute(
+            "UPDATE accounts SET name=?, type=?, color=?, is_active=? WHERE id=?",
+            (
+                (data.get("name") or "").strip(),
+                data.get("type", "checking"),
+                data.get("color", "#2563eb"),
+                int(bool(data.get("is_active", True))),
+                account_id,
+            ),
+        )
+        row = conn.execute("SELECT id,name,type,color,is_active,created_at FROM accounts WHERE id=?", (account_id,)).fetchone()
+    if not row:
+        return jsonify({"detail": "Nao encontrado", "code": "NOT_FOUND"}), 404
+    return jsonify({"id": row[0], "name": row[1], "type": row[2], "color": row[3], "is_active": bool(row[4]), "created_at": row[5]})
+
+
+@app.route("/api/v1/ledgers", methods=["GET", "POST"])
+def ledgers():
+    if request.method == "GET":
+        with db_connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT l.id,l.name,l.description,l.color,l.is_active,l.created_at,
+                       COUNT(t.id),
+                       SUM(CASE WHEN t.status='pending' THEN 1 ELSE 0 END),
+                       IFNULL(SUM(CASE WHEN t.type='income' THEN t.amount ELSE 0 END),0),
+                       IFNULL(SUM(CASE WHEN t.type='expense' THEN t.amount ELSE 0 END),0)
+                FROM ledgers l
+                LEFT JOIN transactions t ON t.ledger_id=l.id AND t.status NOT IN ('duplicate','ignored')
+                WHERE l.is_active=1
+                GROUP BY l.id
+                ORDER BY l.name
+                """
+            ).fetchall()
+        return jsonify([
+            {
+                "id": r[0],
+                "name": r[1],
+                "description": r[2] or "",
+                "color": r[3],
+                "is_active": bool(r[4]),
+                "created_at": r[5],
+                "transaction_count": int(r[6] or 0),
+                "pending_count": int(r[7] or 0),
+                "total_income": float(r[8] or 0),
+                "total_expense": float(r[9] or 0),
+                "balance": float(r[8] or 0) + float(r[9] or 0),
+            }
+            for r in rows
+        ])
+    data = request.get_json(force=True) or {}
+    name = (data.get("name") or "").strip().upper()
+    if not name:
+        return jsonify({"detail": "Nome obrigatorio", "code": "VALIDATION_ERROR"}), 400
+    now = dt.datetime.now().isoformat(timespec="seconds")
+    item = (
+        str(uuid.uuid4()),
+        name,
+        (data.get("description") or "").strip(),
+        data.get("color") or "#c9a84c",
+        1,
+        now,
+    )
+    with db_connect() as conn:
+        try:
+            conn.execute(
+                "INSERT INTO ledgers(id,name,description,color,is_active,created_at) VALUES (?,?,?,?,?,?)",
+                item,
+            )
+        except sqlite3.IntegrityError:
+            return jsonify({"detail": "Razao ja existe", "code": "DUPLICATE_LEDGER"}), 409
+    return jsonify({
+        "id": item[0],
+        "name": item[1],
+        "description": item[2],
+        "color": item[3],
+        "is_active": True,
+        "created_at": now,
+        "transaction_count": 0,
+        "pending_count": 0,
+        "total_income": 0,
+        "total_expense": 0,
+        "balance": 0,
+    }), 201
+
+
+@app.route("/api/v1/ledgers/<ledger_id>", methods=["PATCH", "DELETE", "OPTIONS"])
+def ledger_detail(ledger_id: str):
+    if request.method == "OPTIONS":
+        return jsonify({}), 200
+    with db_connect() as conn:
+        exists = conn.execute("SELECT id FROM ledgers WHERE id=?", (ledger_id,)).fetchone()
+        if not exists:
+            return jsonify({"detail": "Nao encontrado", "code": "NOT_FOUND"}), 404
+        if request.method == "DELETE":
+            moved = conn.execute("UPDATE transactions SET ledger_id=NULL WHERE ledger_id=?", (ledger_id,)).rowcount or 0
+            conn.execute("UPDATE classification_history SET ledger_id=NULL WHERE ledger_id=?", (ledger_id,))
+            conn.execute("UPDATE ledgers SET is_active=0 WHERE id=?", (ledger_id,))
+            return jsonify({"ok": True, "moved_back": moved})
+        data = request.get_json(force=True) or {}
+        conn.execute(
+            """
+            UPDATE ledgers
+            SET name=?, description=?, color=?, is_active=?
+            WHERE id=?
+            """,
+            (
+                (data.get("name") or "").strip().upper(),
+                (data.get("description") or "").strip(),
+                data.get("color") or "#c9a84c",
+                int(bool(data.get("is_active", True))),
+                ledger_id,
+            ),
+        )
+        row = conn.execute("SELECT id,name,description,color,is_active,created_at FROM ledgers WHERE id=?", (ledger_id,)).fetchone()
+    return jsonify({
+        "id": row[0],
+        "name": row[1],
+        "description": row[2] or "",
+        "color": row[3],
+        "is_active": bool(row[4]),
+        "created_at": row[5],
+    })
+
+
+@app.route("/api/v1/ledgers/<ledger_id>/include", methods=["POST"])
+def ledger_include(ledger_id: str):
+    data = request.get_json(force=True) or {}
+    tx_ids = [str(item) for item in (data.get("tx_ids") or []) if str(item).strip()]
+    if not tx_ids:
+        return jsonify({"updated": 0})
+    with db_connect() as conn:
+        exists = conn.execute("SELECT id FROM ledgers WHERE id=? AND is_active=1", (ledger_id,)).fetchone()
+        if not exists:
+            return jsonify({"detail": "Razao nao encontrada", "code": "NOT_FOUND"}), 404
+        placeholders = ",".join("?" for _ in tx_ids)
+        cur = conn.execute(
+            f"UPDATE transactions SET ledger_id=? WHERE id IN ({placeholders}) AND status NOT IN ('duplicate','ignored')",
+            [ledger_id] + tx_ids,
+        )
+    return jsonify({"updated": cur.rowcount or 0})
+
+
+@app.route("/api/v1/ledgers/<ledger_id>/exclude", methods=["POST"])
+def ledger_exclude(ledger_id: str):
+    data = request.get_json(force=True) or {}
+    tx_ids = [str(item) for item in (data.get("tx_ids") or []) if str(item).strip()]
+    if not tx_ids:
+        return jsonify({"updated": 0})
+    with db_connect() as conn:
+        placeholders = ",".join("?" for _ in tx_ids)
+        cur = conn.execute(
+            f"UPDATE transactions SET ledger_id=NULL WHERE ledger_id=? AND id IN ({placeholders})",
+            [ledger_id] + tx_ids,
+        )
+    return jsonify({"updated": cur.rowcount or 0})
+
+
+@app.route("/api/v1/categories", methods=["GET", "POST"])
+def categories():
+    if request.method == "GET":
+        ctype = (request.args.get("type") or "").strip()
+        with db_connect() as conn:
+            if ctype:
+                rows = conn.execute("SELECT id,name,color,text_color,type FROM categories WHERE type=? ORDER BY name", (ctype,)).fetchall()
+            else:
+                rows = conn.execute("SELECT id,name,color,text_color,type FROM categories ORDER BY name").fetchall()
+        return jsonify([{"id":r[0],"name":r[1],"color":r[2],"text_color":r[3],"type":r[4]} for r in rows])
+    data = request.get_json(force=True)
+    item = (str(uuid.uuid4()), data.get("name", "").strip(), data.get("color", "#334155"), data.get("text_color", "#ffffff"), data.get("type", "expense"))
+    with db_connect() as conn:
+        conn.execute("INSERT INTO categories(id,name,color,text_color,type) VALUES (?,?,?,?,?)", item)
+    return jsonify({"id":item[0],"name":item[1],"color":item[2],"text_color":item[3],"type":item[4]}), 201
+
+
+@app.route("/api/v1/categories/<cat_id>", methods=["PUT", "DELETE", "OPTIONS"])
+def category_detail(cat_id: str):
+    if request.method == "OPTIONS":
+        return jsonify({}), 200
+    with db_connect() as conn:
+        if request.method == "DELETE":
+            n = conn.execute("SELECT COUNT(1) FROM transactions WHERE category_id=?", (cat_id,)).fetchone()[0]
+            if n > 0:
+                return jsonify({"detail": f"Categoria tem {n} lancamentos. Reclassifique-os primeiro.", "code": "HAS_TRANSACTIONS"}), 400
+            conn.execute("DELETE FROM categories WHERE id=?", (cat_id,))
+            return jsonify({"ok": True})
+        data = request.get_json(force=True)
+        conn.execute(
+            "UPDATE categories SET name=?, color=?, text_color=?, type=? WHERE id=?",
+            (
+                (data.get("name") or "").strip(),
+                data.get("color", "#334155"),
+                data.get("text_color", "#ffffff"),
+                data.get("type", "expense"),
+                cat_id,
+            ),
+        )
+        row = conn.execute("SELECT id,name,color,text_color,type FROM categories WHERE id=?", (cat_id,)).fetchone()
+    if not row:
+        return jsonify({"detail": "Nao encontrado", "code": "NOT_FOUND"}), 404
+    return jsonify({"id": row[0], "name": row[1], "color": row[2], "text_color": row[3], "type": row[4]})
+
+
+@app.route("/api/v1/subcategories", methods=["GET", "POST"])
+def subcategories():
+    if request.method == "GET":
+        with db_connect() as conn:
+            rows = conn.execute("SELECT id,name FROM subcategories ORDER BY name").fetchall()
+        return jsonify([{"id":r[0],"name":r[1]} for r in rows])
+    data = request.get_json(force=True)
+    name = data.get("name", "").strip()
+    if not name:
+        return jsonify({"detail": "Nome obrigatorio", "code": "VALIDATION_ERROR"}), 400
+    with db_connect() as conn:
+        ex = conn.execute("SELECT id,name FROM subcategories WHERE name=?", (name,)).fetchone()
+        if ex:
+            return jsonify({"id": ex[0], "name": ex[1]}), 201
+        sid = str(uuid.uuid4())
+        conn.execute("INSERT INTO subcategories(id,name) VALUES (?,?)", (sid, name))
+    return jsonify({"id": sid, "name": name}), 201
+
+
+@app.route("/api/v1/subcategories/<sub_id>", methods=["DELETE", "OPTIONS"])
+def subcategory_delete(sub_id: str):
+    if request.method == "OPTIONS":
+        return jsonify({}), 200
+    with db_connect() as conn:
+        row = conn.execute("SELECT id, name FROM subcategories WHERE id=?", (sub_id,)).fetchone()
+        if not row:
+            return jsonify({"detail": "Nao encontrado", "code": "NOT_FOUND"}), 404
+        n = conn.execute("SELECT COUNT(1) FROM transactions WHERE subcategory_id=?", (sub_id,)).fetchone()[0]
+        if int(n) > 0:
+            return jsonify({"detail": f"Subcategoria usada em {n} lancamentos. Reclassifique-os primeiro.", "code": "HAS_TRANSACTIONS"}), 400
+        conn.execute("DELETE FROM subcategories WHERE id=?", (sub_id,))
+        record_audit(current_user(), "delete_subcategory", "subcategory", sub_id, "name", row[1], "", conn=conn)
+    return jsonify({"ok": True})
+
+
+@app.route("/api/v1/import/upload", methods=["POST"])
+def import_upload():
+    f = request.files.get("file")
+    account_id = (request.form.get("account_id") or "").strip()
+    confirm_duplicates = (request.form.get("confirm_duplicates") or "").strip().lower() in {"1", "true", "yes", "sim"}
+    import_db_duplicates = (request.form.get("import_db_duplicates") or "").strip().lower() in {"1", "true", "yes", "sim"}
+    competence_month = (request.form.get("competence_month") or "").strip()
+    if competence_month and not re.match(r"^\d{4}/\d{2}$", competence_month):
+        return jsonify({"detail": "competence_month deve estar no formato YYYY/MM", "code": "VALIDATION_ERROR"}), 400
+    if not f or not f.filename:
+        return jsonify({"detail": "Arquivo obrigatorio", "code": "VALIDATION_ERROR"}), 400
+    if not account_id:
+        return jsonify({"detail": "Conta/cartao obrigatorio", "code": "ACCOUNT_REQUIRED"}), 400
+    p = UPLOADS / f"{int(dt.datetime.now().timestamp())}-{f.filename}"
+    f.save(p)
+    try:
+        data, code = import_document(
+            p,
+            account_id,
+            confirm_duplicates=confirm_duplicates,
+            import_db_duplicates=import_db_duplicates,
+            competence_month_override=competence_month,
+        )
+        return jsonify(data), code
+    except Exception as exc:
+        try:
+            if p.exists():
+                p.unlink()
+        except Exception:
+            pass
+        return jsonify({"detail": f"{type(exc).__name__}: {exc}", "code": "PARSE_FAILED"}), 422
+
+
+@app.route("/api/v1/import/preview", methods=["POST"])
+def import_preview():
+    f = request.files.get("file")
+    account_id = (request.form.get("account_id") or "").strip()
+    if not f or not f.filename:
+        return jsonify({"detail": "Arquivo obrigatorio", "code": "VALIDATION_ERROR"}), 400
+    if not account_id:
+        return jsonify({"detail": "Conta/cartao obrigatorio", "code": "ACCOUNT_REQUIRED"}), 400
+
+    preview_id = str(uuid.uuid4())
+    p = UPLOADS / f"preview-{preview_id}-{f.filename}"
+    f.save(p)
+    try:
+        with db_connect() as conn:
+            acc = get_account(conn, account_id)
+            if not acc:
+                return jsonify({"detail": "Conta/cartao obrigatorio", "code": "ACCOUNT_REQUIRED"}), 400
+
+            prep = build_import_preview(p, acc)
+            parsed_rows = prep["parsed_rows"]
+            internal_counter = prep["internal_counter"]
+            warnings = prep["warnings"]
+            internal_duplicates = sum(max(0, c - 1) for c in internal_counter.values())
+
+            existing_db_duplicates = 0
+            historical_matches = 0
+            occ: dict[tuple[str, float, str, str], int] = {}
+            rows_preview: list[dict[str, Any]] = []
+            db_counts = {r["sig"]: existing_db_duplicate_count(conn, acc[0], r) for r in parsed_rows}
+            for r in parsed_rows:
+                occ[r["sig"]] = occ.get(r["sig"], 0) + 1
+                is_db_dup = occ[r["sig"]] <= db_counts.get(r["sig"], 0)
+                if is_db_dup:
+                    existing_db_duplicates += 1
+                match = find_identity_match(conn, {
+                    "date": r["date"],
+                    "description": r["description"],
+                    "description_norm": r["description_norm"],
+                    "amount": r["amount_signed"],
+                    "type": r["tx_type"],
+                    "account_id": acc[0],
+                }) or {}
+                match_probability = float(match.get("identity_score") or 0)
+                if match_probability >= 70:
+                    historical_matches += 1
+                rows_preview.append({
+                    "date": r["date"],
+                    "description": r["description"],
+                    "amount": r["amount_signed"],
+                    "type": r["tx_type"],
+                    "installment_current": r["installment_current"],
+                    "installment_total": r["installment_total"],
+                    "installment_label": r["installment_label"],
+                    "is_installment": r["is_installment"],
+                    "flags": r.get("flags", ""),
+                    "duplicate_db": is_db_dup,
+                    "duplicate_internal": (internal_counter.get(r["sig"], 0) > 1),
+                    "occurrence": occ[r["sig"]],
+                    "match_probability": match_probability,
+                    "history_match_id": match.get("history_match_id") or "",
+                })
+
+            detected_type, confidence = detect_file_type(f.filename, acc[1])
+            conn.execute(
+                "INSERT INTO import_previews(id,filename,temp_path,account_id,detected_type,detection_confidence,created_at) VALUES (?,?,?,?,?,?,?)",
+                (preview_id, f.filename, str(p), account_id, detected_type, confidence, dt.datetime.now().isoformat(timespec="seconds")),
+            )
+
+        return jsonify({
+            "preview_id": preview_id,
+            "filename": f.filename,
+            "account_name": acc[1],
+            "detected_type": detected_type,
+            "detection_confidence": round(confidence * 100, 2),
+            "total_parsed": len(parsed_rows),
+            "duplicates_db": existing_db_duplicates,
+            "duplicates_internal": internal_duplicates,
+            "new_records": max(0, len(parsed_rows) - existing_db_duplicates),
+            "historical_matches": historical_matches,
+            "warnings": warnings,
+            "balance_check": prep.get("balance_check", {}),
+            "import_meta": prep.get("import_meta", {}),
+            "rejected_lines": prep.get("rejected_lines", []),
+            "discarded_lines": prep.get("discarded_lines", []),
+            "rows": rows_preview,
+        }), 200
+    except Exception as exc:
+        try:
+            if p.exists():
+                p.unlink()
+        except Exception:
+            pass
+        return jsonify({"detail": f"{type(exc).__name__}: {exc}", "code": "PREVIEW_FAILED"}), 422
+
+
+@app.route("/api/v1/import/commit", methods=["POST"])
+def import_commit():
+    data = request.get_json(force=True) or {}
+    preview_id = (data.get("preview_id") or "").strip()
+    confirm_duplicates = bool(data.get("confirm_duplicates", True))
+    import_db_duplicates = bool(data.get("import_db_duplicates", False))
+    competence_month = (data.get("competence_month") or "").strip()
+    if competence_month and not re.match(r"^\d{4}/\d{2}$", competence_month):
+        return jsonify({"detail": "competence_month deve estar no formato YYYY/MM", "code": "VALIDATION_ERROR"}), 400
+    if not preview_id:
+        return jsonify({"detail": "preview_id obrigatorio", "code": "VALIDATION_ERROR"}), 400
+
+    with db_connect() as conn:
+        row = conn.execute("SELECT temp_path,account_id FROM import_previews WHERE id=?", (preview_id,)).fetchone()
+    if not row:
+        return jsonify({"detail": "Preview nao encontrado", "code": "PREVIEW_NOT_FOUND"}), 404
+
+    temp_path = Path(row[0])
+    account_id = row[1]
+    if not temp_path.exists():
+        with db_connect() as conn:
+            conn.execute("DELETE FROM import_previews WHERE id=?", (preview_id,))
+        return jsonify({"detail": "Arquivo temporario nao encontrado", "code": "PREVIEW_FILE_MISSING"}), 404
+
+    try:
+        result, status = import_document(
+            temp_path,
+            account_id,
+            confirm_duplicates=confirm_duplicates,
+            import_db_duplicates=import_db_duplicates,
+            competence_month_override=competence_month,
+        )
+        with db_connect() as conn:
+            conn.execute("DELETE FROM import_previews WHERE id=?", (preview_id,))
+        return jsonify(result), status
+    except Exception as exc:
+        return jsonify({"detail": f"{type(exc).__name__}: {exc}", "code": "COMMIT_FAILED"}), 422
+
+
+@app.route("/api/v1/import/history")
+def import_history():
+    with db_connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT id,filename,file_type,account_name,total_parsed,total_inserted,total_duplicates,imported_at,
+                   year,month,source_kind,bank
+            FROM imported_files ORDER BY imported_at DESC
+            """
+        ).fetchall()
+    return jsonify([
+        {
+            "id": r[0],
+            "filename": r[1],
+            "file_type": r[2],
+            "account_name": r[3],
+            "total_parsed": r[4],
+            "total_inserted": r[5],
+            "total_duplicates": r[6],
+            "imported_at": r[7],
+            "year": r[8],
+            "month": r[9],
+            "source_kind": r[10],
+            "bank": r[11],
+        }
+        for r in rows
+    ])
+
+
+def coverage_months() -> list[str]:
+    start = dt.date(2024, 1, 1)
+    today = dt.datetime.now().date().replace(day=1)
+    months: list[str] = []
+    cur = start
+    while cur <= today:
+        months.append(cur.strftime("%Y/%m"))
+        if cur.month == 12:
+            cur = dt.date(cur.year + 1, 1, 1)
+        else:
+            cur = dt.date(cur.year, cur.month + 1, 1)
+    return months
+
+
+def coverage_account_rows(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute(
+        """
+        SELECT id,name,type,color,is_active
+        FROM accounts
+        WHERE is_active=1
+        ORDER BY type,name
+        """
+    ).fetchall()
+    ignored = {"PRIMEIRA PLANILHA", "PLANILHA PASSADA", "ANTIGO"}
+    return [r for r in rows if (r["name"] or "").upper() not in ignored]
+
+
+def coverage_files_for(account_name: str, year_month: str) -> list[dict[str, Any]]:
+    year, month = year_month.split("/")
+    files: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    # 1) Cofre persistente no banco (fonte principal no modo hosted)
+    with db_connect() as conn:
+        rows = conn.execute(
+            "SELECT id, filename, size, created_at FROM stored_documents WHERE account_name=? AND year_month=? ORDER BY filename",
+            (account_name, year_month),
+        ).fetchall()
+    for r in rows:
+        seen.add(str(r[1]).lower())
+        files.append({
+            "filename": r[1],
+            "path": f"db://{r[0]}",
+            "doc_id": r[0],
+            "size": r[2],
+            "modified_at": r[3],
+        })
+    # 2) Arquivos em disco (uso local / legado)
+    folder = DOCS / year / month / account_folder_name(account_name)
+    if folder.exists():
+        allowed = {".csv", ".xls", ".xlsx", ".pdf"}
+        for path in sorted(folder.iterdir(), key=lambda p: p.name.lower()):
+            if path.is_file() and path.suffix.lower() in allowed and path.name.lower() not in seen:
+                stat = path.stat()
+                files.append({
+                    "filename": path.name,
+                    "path": project_relative_path(path),
+                    "size": stat.st_size,
+                    "modified_at": dt.datetime.fromtimestamp(stat.st_mtime).isoformat(timespec="seconds"),
+                })
+    return sorted(files, key=lambda f: str(f["filename"]).lower())
+
+
+@app.route("/api/v1/coverage")
+def coverage():
+    months = coverage_months()
+    with db_connect() as conn:
+        accounts = coverage_account_rows(conn)
+        dispensed = {
+            (r[0], r[1]): {"status": r[2], "reason": r[3]}
+            for r in conn.execute(
+                "SELECT account_id,year_month,status,reason FROM account_file_coverage"
+            ).fetchall()
+        }
+
+    matrix: dict[str, Any] = {}
+    for acc in accounts:
+        cells: dict[str, Any] = {}
+        for ym in months:
+            files = coverage_files_for(acc["name"], ym)
+            disp = dispensed.get((acc["id"], ym))
+            if files:
+                status = "imported"
+            elif disp:
+                status = "dispensed"
+            else:
+                status = "missing"
+            cells[ym] = {
+                "status": status,
+                "file_count": len(files),
+                "reason": (disp or {}).get("reason", ""),
+            }
+        matrix[acc["id"]] = {
+            "id": acc["id"],
+            "name": acc["name"],
+            "type": acc["type"],
+            "color": acc["color"],
+            "folder": account_folder_name(acc["name"]),
+            "cells": cells,
+        }
+    return jsonify({"months": months, "matrix": matrix})
+
+
+@app.route("/api/v1/coverage/dispense", methods=["POST", "DELETE"])
+def coverage_dispense():
+    data = request.get_json(force=True) or {}
+    account_id = (data.get("account_id") or "").strip()
+    year_month = (data.get("year_month") or "").strip()
+    reason = (data.get("reason") or "").strip()
+    if not account_id or not re.match(r"^\d{4}/\d{2}$", year_month):
+        return jsonify({"detail": "account_id e year_month obrigatorios", "code": "VALIDATION_ERROR"}), 400
+    with db_connect() as conn:
+        if request.method == "DELETE":
+            conn.execute("DELETE FROM account_file_coverage WHERE account_id=? AND year_month=?", (account_id, year_month))
+            return jsonify({"ok": True})
+        conn.execute(
+            """
+            INSERT INTO account_file_coverage(id,account_id,year_month,status,reason,created_at)
+            VALUES (?,?,?,?,?,?)
+            ON CONFLICT(account_id,year_month) DO UPDATE SET
+              status=excluded.status,
+              reason=excluded.reason,
+              created_at=excluded.created_at
+            """,
+            (str(uuid.uuid4()), account_id, year_month, "dispensed", reason, dt.datetime.now().isoformat(timespec="seconds")),
+        )
+    return jsonify({"ok": True})
+
+
+@app.route("/api/v1/coverage/files")
+def coverage_files():
+    account_id = (request.args.get("account_id") or "").strip()
+    year_month = (request.args.get("year_month") or "").strip()
+    if not account_id or not re.match(r"^\d{4}/\d{2}$", year_month):
+        return jsonify({"detail": "account_id e year_month obrigatorios", "code": "VALIDATION_ERROR"}), 400
+    with db_connect() as conn:
+        row = conn.execute("SELECT name FROM accounts WHERE id=?", (account_id,)).fetchone()
+    if not row:
+        return jsonify({"detail": "Conta nao encontrada", "code": "NOT_FOUND"}), 404
+    return jsonify({"files": coverage_files_for(row[0], year_month)})
+
+
+def resolve_document_path(raw_path: str) -> Path | None:
+    cleaned = (raw_path or "").strip()
+    if not cleaned:
+        return None
+    candidate = Path(cleaned)
+    if not candidate.is_absolute():
+        candidate = BASE.parent / candidate
+    try:
+        resolved = candidate.resolve()
+        docs_root = DOCS.resolve()
+        resolved.relative_to(docs_root)
+    except Exception:
+        return None
+    return resolved
+
+
+@app.route("/api/v1/documents/<doc_id>/download")
+def document_download(doc_id: str):
+    with db_connect() as conn:
+        row = conn.execute(
+            "SELECT filename, content_b64 FROM stored_documents WHERE id=?", (doc_id,)
+        ).fetchone()
+    if not row:
+        return jsonify({"detail": "Arquivo nao encontrado", "code": "NOT_FOUND"}), 404
+    filename = row[0]
+    content = base64.b64decode(row[1])
+    ext = Path(filename).suffix.lower()
+    mimetypes_map = {
+        ".pdf": "application/pdf",
+        ".csv": "text/csv",
+        ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        ".xls": "application/vnd.ms-excel",
+    }
+    from flask import Response
+    return Response(
+        content,
+        mimetype=mimetypes_map.get(ext, "application/octet-stream"),
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@app.route("/api/v1/coverage/files", methods=["DELETE"])
+def coverage_delete_file():
+    data = request.get_json(force=True) or {}
+    raw_path = (data.get("path") or "").strip()
+    if raw_path.startswith("db://"):
+        doc_id = raw_path[5:]
+        with db_connect() as conn:
+            row = conn.execute("SELECT id, filename FROM stored_documents WHERE id=?", (doc_id,)).fetchone()
+            if not row:
+                return jsonify({"detail": "Arquivo nao encontrado", "code": "NOT_FOUND"}), 404
+            conn.execute("DELETE FROM stored_documents WHERE id=?", (doc_id,))
+            record_audit(current_user(), "delete_document", "document", doc_id, "filename", row[1], "", conn=conn)
+        return jsonify({"ok": True, "deleted": row[1]})
+    file_path = resolve_document_path(raw_path)
+    if not file_path:
+        return jsonify({"detail": "Caminho invalido", "code": "VALIDATION_ERROR"}), 400
+    if not file_path.exists() or not file_path.is_file():
+        return jsonify({"detail": "Arquivo nao encontrado", "code": "NOT_FOUND"}), 404
+
+    rel_path = project_relative_path(file_path)
+    with db_connect() as conn:
+        imported_ids = [
+            r[0] for r in conn.execute(
+                """
+                SELECT id FROM imported_files
+                WHERE source_path=? OR source_path=?
+                """,
+                (rel_path, str(file_path)),
+            ).fetchall()
+        ]
+        tx_deleted = 0
+        for imported_id in imported_ids:
+            tx_deleted += int(conn.execute(
+                "SELECT COUNT(1) FROM transactions WHERE imported_file_id=?",
+                (imported_id,),
+            ).fetchone()[0] or 0)
+            conn.execute("DELETE FROM transactions WHERE imported_file_id=?", (imported_id,))
+            conn.execute("DELETE FROM imported_files WHERE id=?", (imported_id,))
+    file_path.unlink()
+    return jsonify({
+        "ok": True,
+        "deleted_file": rel_path,
+        "deleted_imported_files": len(imported_ids),
+        "deleted_transactions": tx_deleted,
+    })
+
+
+@app.route("/api/v1/system/reset", methods=["POST"])
+def system_reset():
+    data = request.get_json(force=True) or {}
+    if data.get("confirm") != "RESETAR":
+        return jsonify({"detail": "Confirmacao obrigatoria: RESETAR", "code": "VALIDATION_ERROR"}), 400
+
+    backup_ref = ""
+    if not IS_POSTGRES:
+        backups = DATA / "backups"
+        backups.mkdir(parents=True, exist_ok=True)
+        backup = backups / f"conciliador_pro_before_system_reset_{dt.datetime.now().strftime('%Y%m%d-%H%M%S')}.db"
+        shutil.copy2(DB, backup)
+        backup_ref = project_relative_path(backup)
+    else:
+        backup_ref = "hosted: use o backup/branch do provedor Postgres antes de resetar"
+
+    scope = (data.get("scope") or "transactions").strip()
+    wipe_categories = bool(data.get("wipe_categories"))
+    if scope not in ("transactions", "all"):
+        return jsonify({"detail": "scope deve ser transactions ou all", "code": "VALIDATION_ERROR"}), 400
+
+    with db_connect() as conn:
+        before = {
+            "transactions": conn.execute("SELECT COUNT(1) FROM transactions").fetchone()[0],
+            "import_previews": conn.execute("SELECT COUNT(1) FROM import_previews").fetchone()[0],
+            "imported_files": conn.execute("SELECT COUNT(1) FROM imported_files").fetchone()[0],
+            "stored_documents": conn.execute("SELECT COUNT(1) FROM stored_documents").fetchone()[0],
+            "classification_history": conn.execute("SELECT COUNT(1) FROM classification_history").fetchone()[0],
+        }
+        # Lancamentos, previews, cofre e cobertura sempre sao limpos.
+        conn.execute("DELETE FROM transactions")
+        conn.execute("DELETE FROM import_previews")
+        conn.execute("DELETE FROM stored_documents")
+        conn.execute("DELETE FROM account_file_coverage")
+        if scope == "all":
+            # Base historica e registros de importacao (incluindo seeds).
+            conn.execute("DELETE FROM classification_history")
+            conn.execute("DELETE FROM imported_files")
+            if wipe_categories:
+                conn.execute("UPDATE transactions SET subcategory_id=NULL, category_id=NULL")  # no-op (ja vazio), por seguranca
+                conn.execute("DELETE FROM subcategories")
+                conn.execute("DELETE FROM categories")
+        else:
+            conn.execute("DELETE FROM imported_files WHERE file_type NOT IN ('xlsx-seed','pdf-seed')")
+        record_audit(
+            current_user(), "system_reset", "system",
+            detail=f"scope={scope}, wipe_categories={wipe_categories}, antes={before}", conn=conn,
+        )
+    if scope == "all" and wipe_categories:
+        seed()  # recria as categorias base
+    return jsonify({"ok": True, "backup": backup_ref, "scope": scope, "wipe_categories": wipe_categories, "deleted": before})
+
+
+@app.route("/api/v1/import/scan-folder", methods=["POST"])
+def import_scan_folder():
+    data = request.get_json(force=True) or {}
+    root = Path(data.get("root") or str(IMPORT_SCAN_DEFAULT_ROOT))
+    threshold = float(data.get("threshold") or 70)
+    if not root.exists() or not root.is_dir():
+        return jsonify({"detail": f"Pasta nao encontrada: {root}", "code": "FOLDER_NOT_FOUND"}), 400
+
+    files = collect_scan_files(root)
+    rows: list[dict[str, Any]] = []
+    coverage: dict[tuple[str, str, str, str], dict[str, Any]] = {}
+    totals = {
+        "files_found": len(files),
+        "files_scanned": 0,
+        "files_with_error": 0,
+        "total_parsed": 0,
+        "duplicates_internal": 0,
+        "duplicates_db": 0,
+        "historical_matches_ge_threshold": 0,
+        "already_imported_files": 0,
+        "unidentified_account_files": 0,
+    }
+
+    with db_connect() as conn:
+        imported_hashes = {
+            r[0]: r for r in conn.execute(
+                """
+                SELECT file_hash,filename,account_name,total_parsed,total_inserted,total_duplicates,imported_at
+                FROM imported_files
+                WHERE file_type NOT IN ('xlsx-seed','pdf-seed')
+                """
+            ).fetchall()
+        }
+
+        for path in files:
+            meta = scan_source_metadata(path, root)
+            rel = str(path.relative_to(root))
+            key = (meta["year"], meta["month"], meta["source_kind"], meta["bank"])
+            coverage.setdefault(key, {
+                "year": meta["year"],
+                "month": meta["month"],
+                "source_kind": meta["source_kind"],
+                "bank": meta["bank"],
+                "files": 0,
+                "parsed": 0,
+                "errors": 0,
+                "accounts": set(),
+            })
+            coverage[key]["files"] += 1
+
+            h = hashlib.sha1(path.read_bytes()).hexdigest()
+            imported = imported_hashes.get(h)
+            if imported:
+                totals["already_imported_files"] += 1
+
+            acc = detect_account_for_scan(conn, path)
+            if not acc:
+                totals["unidentified_account_files"] += 1
+                totals["files_with_error"] += 1
+                coverage[key]["errors"] += 1
+                rows.append({
+                    **meta,
+                    "path": str(path),
+                    "relative_path": rel,
+                    "filename": path.name,
+                    "extension": path.suffix.lower(),
+                    "account_name": "",
+                    "already_imported": bool(imported),
+                    "total_parsed": 0,
+                    "duplicates_internal": 0,
+                    "duplicates_db": 0,
+                    "new_records": 0,
+                    "historical_matches_ge_threshold": 0,
+                    "best_historical_probability": 0,
+                    "rejected_lines": [],
+                    "discarded_lines": [],
+                    "warnings": ["Conta nao identificada"],
+                    "error": "Conta nao identificada",
+                })
+                continue
+
+            coverage[key]["accounts"].add(acc[1])
+            try:
+                preview = build_import_preview(path, acc)
+                parsed_rows = preview["parsed_rows"]
+                internal_duplicates = sum(max(0, c - 1) for c in preview["internal_counter"].values())
+                db_duplicates = existing_db_duplicate_count_for_rows(conn, acc[0], parsed_rows)
+                hist_count, best_prob = historical_match_count(conn, acc[0], parsed_rows, threshold)
+                total_parsed = len(parsed_rows)
+                totals["files_scanned"] += 1
+                totals["total_parsed"] += total_parsed
+                totals["duplicates_internal"] += internal_duplicates
+                totals["duplicates_db"] += db_duplicates
+                totals["historical_matches_ge_threshold"] += hist_count
+                coverage[key]["parsed"] += total_parsed
+                rows.append({
+                    **meta,
+                    "path": str(path),
+                    "relative_path": rel,
+                    "filename": path.name,
+                    "extension": path.suffix.lower(),
+                    "account_id": acc[0],
+                    "account_name": acc[1],
+                    "already_imported": bool(imported),
+                    "imported_at": imported[6] if imported else None,
+                    "total_parsed": total_parsed,
+                    "duplicates_internal": internal_duplicates,
+                    "duplicates_db": db_duplicates,
+                    "new_records": max(0, total_parsed - db_duplicates),
+                    "historical_matches_ge_threshold": hist_count,
+                    "best_historical_probability": best_prob,
+                    "rejected_lines": preview.get("rejected_lines", []),
+                    "discarded_lines": preview.get("discarded_lines", []),
+                    "warnings": preview.get("warnings", []),
+                    "error": "",
+                })
+            except Exception as exc:
+                totals["files_with_error"] += 1
+                coverage[key]["errors"] += 1
+                rows.append({
+                    **meta,
+                    "path": str(path),
+                    "relative_path": rel,
+                    "filename": path.name,
+                    "extension": path.suffix.lower(),
+                    "account_id": acc[0],
+                    "account_name": acc[1],
+                    "already_imported": bool(imported),
+                    "total_parsed": 0,
+                    "duplicates_internal": 0,
+                    "duplicates_db": 0,
+                    "new_records": 0,
+                    "historical_matches_ge_threshold": 0,
+                    "best_historical_probability": 0,
+                    "rejected_lines": [],
+                    "discarded_lines": [],
+                    "warnings": [],
+                    "error": f"{type(exc).__name__}: {exc}",
+                })
+
+    coverage_rows = []
+    for item in coverage.values():
+        item["accounts"] = sorted(item["accounts"])
+        coverage_rows.append(item)
+    coverage_rows.sort(key=lambda x: (x["year"], x["month"], x["source_kind"], x["bank"]))
+    rows.sort(key=lambda x: (x["year"], x["month"], x["source_kind"], x["bank"], x["filename"]))
+
+    return jsonify({
+        "root": str(root),
+        "threshold": threshold,
+        "totals": totals,
+        "coverage": coverage_rows,
+        "files": rows,
+    })
+
+
+@app.route("/api/v1/import/seed", methods=["POST"])
+def import_seed():
+    f = request.files.get("file")
+    if not f or not f.filename:
+        return jsonify({"detail": "Arquivo obrigatorio", "code": "VALIDATION_ERROR"}), 400
+    p = UPLOADS / f"{int(dt.datetime.now().timestamp())}-seed-{f.filename}"
+    f.save(p)
+    try:
+        if p.suffix.lower() == ".pdf":
+            data, code = import_seed_pdf(p)
+        else:
+            data, code = import_seed_workbook(p)
+        return jsonify(data), code
+    except Exception as exc:
+        try:
+            if p.exists():
+                p.unlink()
+        except Exception:
+            pass
+        return jsonify({"detail": str(exc), "code": "SEED_IMPORT_FAILED"}), 422
+
+
+TAG_FILTER_ALIASES = {
+    "investimento": ["investimento"],
+    "tax": ["tax", "TAX"],
+    "rendimento": ["rendimento"],
+    "fatura": ["fatura", "CARD_PAYMENT"],
+    "cartao_debito": ["cartao_debito"],
+    "non_count": ["non_count"],
+    "cashback": ["cashback", "CASHBACK"],
+    "movimentacao_interna": ["INTER_ACCOUNT", "inter_account"],
+}
+
+
+def sanitize_transaction_flags(raw: Any) -> str:
+    if isinstance(raw, list):
+        parts = raw
+    else:
+        parts = str(raw or "").split(",")
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for part in parts:
+        flag = norm_text(str(part)).strip().replace(" ", "_")
+        flag = re.sub(r"[^a-z0-9_]+", "", flag)
+        if not flag or flag in seen:
+            continue
+        seen.add(flag)
+        cleaned.append(flag)
+    return ",".join(cleaned)
+
+
+def add_tag_filters(where: list[str], params: list[Any], raw_tags: str, tag_mode: str) -> None:
+    tags = [sanitize_transaction_flags(tag) for tag in (raw_tags or "").split(",")]
+    tags = [tag for tag in tags if tag]
+    if not tags:
+        return
+
+    tag_mode = (tag_mode or "include").strip().lower()
+    flag_expr = "',' || LOWER(REPLACE(IFNULL(t.flags,''),' ','')) || ','"
+    clauses: list[str] = []
+    local_params: list[Any] = []
+    for tag in tags:
+        if tag in {"__empty__", "empty", "sem_tag", "vazia"}:
+            clauses.append("TRIM(IFNULL(t.flags,''))=''")
+            continue
+        aliases = TAG_FILTER_ALIASES.get(tag, [tag])
+        alias_clauses: list[str] = []
+        for alias in aliases:
+            alias_clauses.append(f"{flag_expr} LIKE ?")
+            local_params.append(f"%,{alias.lower().replace(' ', '')},%")
+        clauses.append("(" + " OR ".join(alias_clauses) + ")")
+    if not clauses:
+        return
+    group = "(" + " OR ".join(clauses) + ")"
+    if tag_mode == "exclude":
+        group = f"NOT {group}"
+    where.append(group)
+    params.extend(local_params)
+
+
+@app.route("/api/v1/transactions")
+def transactions():
+    page = max(1, int(request.args.get("page", 1)))
+    page_size = min(500, max(1, int(request.args.get("page_size", 100))))
+    where = ["1=1"]
+    params: list[Any] = []
+
+    status = (request.args.get("status") or "").strip()
+    if status:
+        where.append("t.status=?")
+        params.append(status)
+    tx_type = (request.args.get("type") or "").strip()
+    if tx_type:
+        where.append("t.type=?")
+        params.append(tx_type)
+    account_id = (request.args.get("account_id") or "").strip()
+    if account_id:
+        where.append("t.account_id=?")
+        params.append(account_id)
+    ledger_filter = (request.args.get("ledger_id") if "ledger_id" in request.args else "none")
+    ledger_filter = (ledger_filter or "").strip()
+    if ledger_filter == "none":
+        where.append("t.ledger_id IS NULL")
+    elif ledger_filter and ledger_filter != "all":
+        where.append("t.ledger_id=?")
+        params.append(ledger_filter)
+    category_id = (request.args.get("category_id") or "").strip()
+    if category_id:
+        where.append("t.category_id=?")
+        params.append(category_id)
+    subcategory_id = (request.args.get("subcategory_id") or "").strip()
+    if subcategory_id:
+        where.append("t.subcategory_id=?")
+        params.append(subcategory_id)
+    is_installment = (request.args.get("is_installment") or "").strip().lower()
+    if is_installment in {"1", "true", "yes", "sim"}:
+        where.append("t.installment_current IS NOT NULL AND t.installment_total IS NOT NULL")
+    elif is_installment in {"0", "false", "no", "nao", "não"}:
+        where.append("(t.installment_current IS NULL OR t.installment_total IS NULL)")
+    competence_month = (request.args.get("competence_month") or "").strip()
+    if competence_month:
+        where.append("t.competence_month=?")
+        params.append(competence_month)
+    date_from = (request.args.get("date_from") or "").strip()
+    if date_from:
+        where.append("t.date>=?")
+        params.append(parse_date(date_from) or date_from)
+    date_to = (request.args.get("date_to") or "").strip()
+    if date_to:
+        where.append("t.date<=?")
+        params.append(parse_date(date_to) or date_to)
+    add_tag_filters(
+        where,
+        params,
+        request.args.get("tags") or request.args.get("tag") or "",
+        request.args.get("tag_mode") or "include",
+    )
+    search = (request.args.get("search") or "").strip()
+    if search:
+        s = f"%{norm_text(search)}%"
+        where.append(
+            "("
+            "t.description_norm LIKE ? OR "
+            "LOWER(a.name) LIKE ? OR "
+            "LOWER(IFNULL(c.name,'')) LIKE ? OR "
+            "LOWER(IFNULL(s.name,'')) LIKE ? OR "
+            "LOWER(IFNULL(t.notes,'')) LIKE ? OR "
+            "t.date LIKE ? OR "
+            "t.competence_month LIKE ? OR "
+            "CAST(t.amount AS TEXT) LIKE ? OR "
+            "LOWER(t.status) LIKE ? OR "
+            "LOWER(t.type) LIKE ?"
+            ")"
+        )
+        params.extend([s, f"%{search}%", f"%{search}%", f"%{search}%", f"%{search}%", f"%{search}%", f"%{search}%", f"%{search}%", f"%{search}%", f"%{search}%"])
+
+    sort_by = (request.args.get("sort_by") or "date").strip()
+    sort_order = (request.args.get("sort_order") or "desc").strip().lower()
+    order = "DESC" if sort_order != "asc" else "ASC"
+    allowed = {
+        "date": "t.date",
+        "amount": "t.amount",
+        "description": "t.description",
+        "account": "a.name",
+        "category": "c.name",
+        "subcategory": "s.name",
+        "notes": "t.notes",
+        "status": "t.status",
+        "type": "t.type",
+        "match_probability": "t.match_probability",
+        "identity_score": "t.identity_score",
+    }
+    order_by = allowed.get(sort_by, "t.date")
+
+    with db_connect() as conn:
+        total = conn.execute(
+            f"""
+            SELECT COUNT(1)
+            FROM transactions t
+            JOIN accounts a ON a.id=t.account_id
+            LEFT JOIN categories c ON c.id=t.category_id
+            LEFT JOIN subcategories s ON s.id=t.subcategory_id
+            WHERE {' AND '.join(where)}
+            """,
+            params,
+        ).fetchone()[0]
+        off = (page - 1) * page_size
+        rows = conn.execute(
+            f"""
+            SELECT t.id,t.date,t.competence_month,t.description,t.amount,t.type,t.status,
+                   t.account_id,a.name,a.color,
+                   t.category_id,c.name,c.color,c.text_color,
+                   t.subcategory_id,s.name,
+                   t.notes,t.imported_file_id,
+                   t.suggested_category_id,sc.name,
+                   t.suggested_subcategory_id,ss.name,
+                   t.installment_current,t.installment_total,t.flags,
+                   t.match_probability,t.match_notes,
+                   t.history_match_id,t.identity_score,
+                   hm.date,hm.description,ABS(hm.amount),hm.type,
+                   t.ledger_id,l.name,l.color,
+                   t.locked,t.classified_by,t.classified_at
+            FROM transactions t
+            JOIN accounts a ON a.id=t.account_id
+            LEFT JOIN ledgers l ON l.id=t.ledger_id
+            LEFT JOIN categories c ON c.id=t.category_id
+            LEFT JOIN subcategories s ON s.id=t.subcategory_id
+            LEFT JOIN categories sc ON sc.id=t.suggested_category_id
+            LEFT JOIN subcategories ss ON ss.id=t.suggested_subcategory_id
+            LEFT JOIN classification_history hm ON hm.id=t.history_match_id
+            WHERE {' AND '.join(where)}
+            ORDER BY {order_by} {order}
+            LIMIT ? OFFSET ?
+            """,
+            params + [page_size, off],
+        ).fetchall()
+
+        sum_row = conn.execute(
+            f"""
+            SELECT IFNULL(SUM(CASE WHEN t.type='income' THEN t.amount ELSE 0 END),0),
+                   IFNULL(SUM(CASE WHEN t.type='expense' THEN t.amount ELSE 0 END),0),
+                   SUM(CASE WHEN t.status='pending' THEN 1 ELSE 0 END),
+                   SUM(CASE WHEN t.status='reconciled' THEN 1 ELSE 0 END)
+            FROM transactions t
+            JOIN accounts a ON a.id=t.account_id
+            LEFT JOIN categories c ON c.id=t.category_id
+            LEFT JOIN subcategories s ON s.id=t.subcategory_id
+            WHERE {' AND '.join(where)}
+            """,
+            params,
+        ).fetchone()
+
+    items = [
+        {
+            "id": r[0],
+            "date": r[1],
+            "competence_month": r[2],
+            "description": r[3],
+            "amount": r[4],
+            "type": r[5],
+            "status": r[6],
+            "account_id": r[7],
+            "account_name": r[8],
+            "account_color": r[9],
+            "category_id": r[10],
+            "category_name": r[11],
+            "category_color": r[12],
+            "category_text_color": r[13],
+            "subcategory_id": r[14],
+            "subcategory_name": r[15],
+            "notes": r[16] or "",
+            "imported_file_id": r[17],
+            "suggested_category_id": r[18],
+            "suggested_category_name": r[19],
+            "suggested_subcategory_id": r[20],
+            "suggested_subcategory_name": r[21],
+            "installment_current": r[22],
+            "installment_total": r[23],
+            "installment_label": installment_label(r[22], r[23]),
+            "is_installment": bool(r[22] and r[23]),
+            "flags": r[24] or "",
+            "flags_list": [flag for flag in (r[24] or "").split(",") if flag],
+            "match_probability": float(r[25] or 0.0),
+            "match_notes": r[26] or "",
+            "history_match_id": r[27],
+            "identity_score": float(r[28] or 0.0),
+            "match_category_id": r[18],
+            "match_category_name": r[19],
+            "match_subcategory_id": r[20],
+            "match_subcategory_name": r[21],
+            "match_history_date": r[29],
+            "match_history_description": r[30],
+            "match_history_amount": float(r[31] or 0.0),
+            "match_history_type": r[32],
+            "ledger_id": r[33],
+            "ledger_name": r[34],
+            "ledger_color": r[35],
+            "locked": bool(r[36]),
+            "classified_by": r[37] or "",
+            "classified_at": r[38] or "",
+        }
+        for r in rows
+    ]
+    total_pages = (total + page_size - 1) // page_size
+    total_income = float(sum_row[0] or 0)
+    total_expense = float(sum_row[1] or 0)
+    pending_count = int(sum_row[2] or 0)
+    rec_count = int(sum_row[3] or 0)
+    return jsonify(
+        {
+            "items": items,
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+            "total_pages": total_pages,
+            "summary": {
+                "total_income": total_income,
+                "total_expense": total_expense,
+                "balance": total_income + total_expense,
+                "pending_count": pending_count,
+                "reconciled_count": rec_count,
+            },
+        }
+    )
+
+
+@app.route("/api/v1/transactions/<tx_id>/classify", methods=["PATCH"])
+def classify(tx_id: str):
+    data = request.get_json(force=True)
+    cat = data.get("category_id")
+    sub = data.get("subcategory_id")
+    notes = data.get("notes", "")
+    source = data.get("classification_source", "manual")
+    if not cat:
+        return jsonify({"detail": "category_id obrigatorio", "code": "VALIDATION_ERROR"}), 400
+    status = "auto_classified" if source == "auto" else "reconciled"
+    user = current_user()
+    now = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
+    with db_connect() as conn:
+        tx = conn.execute(
+            """
+            SELECT id,account_id,date,description,description_norm,amount,type,
+                   locked,category_id,subcategory_id,notes,status
+            FROM transactions
+            WHERE id=?
+            """,
+            (tx_id,),
+        ).fetchone()
+        if not tx:
+            return jsonify({"detail": "Nao encontrado", "code": "NOT_FOUND"}), 404
+        if int(tx[7] or 0) == 1:
+            # Protegido: exige desbloqueio explicito (endpoint /unlock) antes de editar.
+            return jsonify({
+                "detail": "Lancamento protegido. Desbloqueie explicitamente para alterar.",
+                "code": "TX_LOCKED",
+            }), 423
+        old_cat, old_sub, old_notes, old_status = tx[8], tx[9], tx[10] or "", tx[11]
+        conn.execute(
+            """
+            UPDATE transactions
+            SET category_id=?, subcategory_id=?, notes=?, status=?,
+                locked=1, classified_by=?, classified_at=?
+            WHERE id=?
+            """,
+            (cat, sub, notes, status, user.get("username") or "", now, tx_id),
+        )
+        if old_cat != cat:
+            record_audit(user, "classify", "transaction", tx_id, "category_id", old_cat, cat, conn=conn)
+        if old_sub != sub:
+            record_audit(user, "classify", "transaction", tx_id, "subcategory_id", old_sub, sub, conn=conn)
+        if (old_notes or "") != (notes or ""):
+            record_audit(user, "classify", "transaction", tx_id, "notes", old_notes, notes, conn=conn)
+        if old_status != status:
+            record_audit(user, "classify", "transaction", tx_id, "status", old_status, status, conn=conn)
+        if source not in ("auto", "identity"):
+            history_source = f"manual:{tx_id}"
+            conn.execute("DELETE FROM classification_history WHERE source_file_id=?", (history_source,))
+            conn.execute(
+                """
+                INSERT INTO classification_history(
+                  id,source_file_id,account_id,date,description,description_norm,amount,type,category_id,subcategory_id
+                ) VALUES (?,?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    str(uuid.uuid4()),
+                    history_source,
+                    tx[1],
+                    tx[2],
+                    tx[3],
+                    tx[4],
+                    abs(float(tx[5] or 0)),
+                    tx[6],
+                    cat,
+                    sub,
+                ),
+            )
+    return jsonify({
+        "id": tx_id, "ok": True, "status": status,
+        "locked": True, "classified_by": user.get("username") or "", "classified_at": now,
+    })
+
+
+@app.route("/api/v1/transactions/<tx_id>/unlock", methods=["POST", "OPTIONS"])
+def unlock_transaction(tx_id: str):
+    """Desbloqueio explicito de um lancamento protegido (somente admin, com auditoria)."""
+    forbidden = require_admin()
+    if forbidden:
+        return forbidden
+    data = request.get_json(silent=True) or {}
+    reason = (data.get("reason") or "").strip()
+    user = current_user()
+    with db_connect() as conn:
+        tx = conn.execute("SELECT id, locked FROM transactions WHERE id=?", (tx_id,)).fetchone()
+        if not tx:
+            return jsonify({"detail": "Nao encontrado", "code": "NOT_FOUND"}), 404
+        if int(tx[1] or 0) == 0:
+            return jsonify({"id": tx_id, "locked": False, "ok": True})
+        conn.execute("UPDATE transactions SET locked=0 WHERE id=?", (tx_id,))
+        record_audit(user, "unlock", "transaction", tx_id, "locked", 1, 0, detail=reason, conn=conn)
+    return jsonify({"id": tx_id, "locked": False, "ok": True})
+
+
+@app.route("/api/v1/transactions/<tx_id>/unlink-history", methods=["PATCH"])
+def unlink_history_match(tx_id: str):
+    with db_connect() as conn:
+        exists = conn.execute("SELECT id FROM transactions WHERE id=?", (tx_id,)).fetchone()
+        if not exists:
+            return jsonify({"detail": "Nao encontrado", "code": "NOT_FOUND"}), 404
+        conn.execute(
+            """
+            UPDATE transactions
+            SET history_match_id=NULL,
+                identity_score=0,
+                match_probability=0,
+                match_notes='',
+                suggested_category_id=NULL,
+                suggested_subcategory_id=NULL
+            WHERE id=?
+            """,
+            (tx_id,),
+        )
+    return jsonify({"id": tx_id, "ok": True})
+
+
+@app.route("/api/v1/transactions/clear-links", methods=["POST"])
+def clear_transaction_links():
+    with db_connect() as conn:
+        cur = conn.execute(
+            """
+            UPDATE transactions
+            SET history_match_id=NULL,
+                identity_score=0,
+                match_probability=0,
+                match_notes=''
+            WHERE history_match_id IS NOT NULL
+               OR identity_score<>0
+               OR match_probability<>0
+               OR match_notes<>''
+            """
+        )
+        updated = cur.rowcount if cur.rowcount is not None else 0
+    return jsonify({"updated": updated})
+
+
+@app.route("/api/v1/transactions/clear-classifications", methods=["POST"])
+def clear_transaction_classifications():
+    with db_connect() as conn:
+        cur = conn.execute(
+            """
+            UPDATE transactions
+            SET category_id=NULL,
+                subcategory_id=NULL,
+                notes='',
+                status='pending',
+                history_match_id=NULL,
+                identity_score=0,
+                match_probability=0,
+                match_notes=''
+            WHERE status NOT IN ('duplicate','ignored') AND locked=0
+            """
+        )
+        updated = cur.rowcount if cur.rowcount is not None else 0
+        deleted = conn.execute(
+            "DELETE FROM classification_history WHERE source_file_id LIKE 'manual:%'"
+        ).rowcount
+    return jsonify({"updated": updated, "manual_history_deleted": deleted or 0})
+
+
+@app.route("/api/v1/transactions/<tx_id>/flags", methods=["PATCH"])
+def update_transaction_flags(tx_id: str):
+    data = request.get_json(force=True) or {}
+    flags_text = sanitize_transaction_flags(data.get("flags", ""))
+    with db_connect() as conn:
+        exists = conn.execute("SELECT id, flags FROM transactions WHERE id=?", (tx_id,)).fetchone()
+        if not exists:
+            return jsonify({"detail": "Nao encontrado", "code": "NOT_FOUND"}), 404
+        conn.execute("UPDATE transactions SET flags=? WHERE id=?", (flags_text, tx_id))
+        if (exists[1] or "") != flags_text:
+            record_audit(current_user(), "update_flags", "transaction", tx_id, "flags", exists[1] or "", flags_text, conn=conn)
+    return jsonify({
+        "id": tx_id,
+        "flags": flags_text,
+        "flags_list": [flag for flag in flags_text.split(",") if flag],
+    })
+
+
+@app.route("/api/v1/transactions/<tx_id>/suggestions")
+def tx_suggestions(tx_id: str):
+    with db_connect() as conn:
+        sugg = build_suggestions_for_tx(conn, tx_id)
+    if sugg is None:
+        return jsonify({"detail": "Nao encontrado", "code": "NOT_FOUND"}), 404
+    return jsonify(sugg)
+
+
+@app.route("/api/v1/transactions/recalculate-probabilities", methods=["POST"])
+def recalculate_probabilities():
+    return jsonify(_recalculate_probabilities_impl())
+
+
+def _recalculate_probabilities_impl():
+    updated = 0
+    linked_classified = 0
+    with db_connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT id,date,description,description_norm,amount,type,account_id,status
+            FROM transactions
+            WHERE status IN ('pending','reconciled','auto_classified')
+            """
+        ).fetchall()
+        hist_cache: dict[str, list[tuple[Any, ...]]] = {}
+        for tx_type in ("expense", "income"):
+            hist_cache[tx_type] = conn.execute(
+                """
+                SELECT id,date,description_norm,ABS(amount),account_id,category_id,subcategory_id
+                FROM classification_history
+                WHERE type=?
+                """,
+                (tx_type,),
+            ).fetchall()
+        for r in rows:
+            tx = {
+                "id": r[0],
+                "date": r[1],
+                "description": r[2],
+                "description_norm": r[3],
+                "amount": r[4],
+                "type": r[5],
+                "account_id": r[6],
+            }
+            status = r[7]
+            identity = find_identity_match(conn, tx, hist_cache=hist_cache)
+            if not identity:
+                if status == "pending":
+                    conn.execute(
+                        """
+                        UPDATE transactions
+                        SET match_probability=0,
+                            match_notes='',
+                            history_match_id=NULL,
+                            identity_score=0
+                        WHERE id=?
+                        """,
+                        (r[0],),
+                    )
+                continue
+            if status == "pending":
+                conn.execute(
+                    """
+                    UPDATE transactions
+                    SET match_probability=?,
+                        suggested_category_id=?,
+                        suggested_subcategory_id=?,
+                        match_notes=?,
+                        history_match_id=?,
+                        identity_score=?
+                    WHERE id=?
+                    """,
+                    (
+                        float(identity.get("identity_score") or 0),
+                        identity.get("category_id"),
+                        identity.get("subcategory_id"),
+                        "Match com base historica",
+                        identity.get("history_match_id"),
+                        float(identity.get("identity_score") or 0),
+                        r[0],
+                    ),
+                )
+            else:
+                conn.execute(
+                    """
+                    UPDATE transactions
+                    SET match_probability=?,
+                        match_notes=?,
+                        history_match_id=?,
+                        identity_score=?
+                    WHERE id=?
+                    """,
+                    (
+                        float(identity.get("identity_score") or 0),
+                        "Match com base historica",
+                        identity.get("history_match_id"),
+                        float(identity.get("identity_score") or 0),
+                        r[0],
+                    ),
+                )
+                linked_classified += 1
+            updated += 1
+    return {"updated": updated, "total": len(rows), "linked_classified": linked_classified}
+
+
+@app.route("/api/v1/transactions/auto-classify", methods=["POST"])
+def auto_classify_by_probability():
+    return jsonify({
+        "detail": "match_probability agora representa vinculo com a base historica, nao classificacao automatica.",
+        "code": "DISABLED_BY_PRODUCT_RULE",
+    }), 409
+
+
+@app.route("/api/v1/history")
+def classification_history_list():
+    page = max(1, int(request.args.get("page", 1)))
+    page_size = min(500, max(1, int(request.args.get("page_size", 50))))
+    where = ["1=1"]
+    params: list[Any] = []
+
+    tx_type = (request.args.get("type") or "").strip()
+    if tx_type:
+        where.append("h.type=?")
+        params.append(tx_type)
+    account_id = (request.args.get("account_id") or "").strip()
+    if account_id:
+        where.append("h.account_id=?")
+        params.append(account_id)
+    category_id = (request.args.get("category_id") or "").strip()
+    if category_id:
+        where.append("h.category_id=?")
+        params.append(category_id)
+    subcategory_id = (request.args.get("subcategory_id") or "").strip()
+    if subcategory_id:
+        where.append("h.subcategory_id=?")
+        params.append(subcategory_id)
+    linked_filter = (request.args.get("linked") or "").strip().lower()
+    if linked_filter in ("true", "1", "yes", "linked"):
+        where.append("EXISTS (SELECT 1 FROM transactions tx WHERE tx.history_match_id=h.id AND tx.status='reconciled')")
+    elif linked_filter in ("false", "0", "no", "unlinked"):
+        where.append("NOT EXISTS (SELECT 1 FROM transactions tx WHERE tx.history_match_id=h.id AND tx.status='reconciled')")
+    sheet_filter = (request.args.get("sheet") or "").strip().lower()
+    if sheet_filter in {"saidas", "entradas", "helcio_smartek"}:
+        where.append("h.source_file_id LIKE ?")
+        params.append(f"%:sheet:{sheet_filter}")
+    search = (request.args.get("search") or "").strip()
+    if search:
+        s_norm = f"%{norm_text(search)}%"
+        s_raw = f"%{search}%"
+        where.append(
+            "("
+            "h.description_norm LIKE ? OR "
+            "LOWER(h.description) LIKE ? OR "
+            "LOWER(IFNULL(a.name,'')) LIKE ? OR "
+            "LOWER(IFNULL(c.name,'')) LIKE ? OR "
+            "LOWER(IFNULL(sc.name,'')) LIKE ? OR "
+            "h.date LIKE ? OR "
+            "CAST(h.amount AS TEXT) LIKE ?"
+            ")"
+        )
+        s_lower = f"%{search.lower()}%"
+        params.extend([s_norm, s_lower, s_lower, s_lower, s_lower, s_raw, s_raw])
+
+    sort_by = (request.args.get("sort_by") or "date").strip()
+    sort_order = (request.args.get("sort_order") or "desc").strip().lower()
+    order = "DESC" if sort_order != "asc" else "ASC"
+    allowed = {
+        "date": "h.date",
+        "description": "h.description",
+        "amount": "h.amount",
+        "type": "h.type",
+        "account": "a.name",
+        "category": "c.name",
+        "subcategory": "sc.name",
+        "linked": "CASE WHEN EXISTS (SELECT 1 FROM transactions tx WHERE tx.history_match_id=h.id AND tx.status='reconciled') THEN 1 ELSE 0 END",
+    }
+    order_by = allowed.get(sort_by, "h.date")
+
+    with db_connect() as conn:
+        total = conn.execute(
+            f"""
+            SELECT COUNT(1)
+            FROM classification_history h
+            LEFT JOIN accounts a ON a.id=h.account_id
+            LEFT JOIN categories c ON c.id=h.category_id
+            LEFT JOIN subcategories sc ON sc.id=h.subcategory_id
+            WHERE {' AND '.join(where)}
+            """,
+            params,
+        ).fetchone()[0]
+        total_linked = conn.execute(
+            f"""
+            SELECT COUNT(DISTINCT h.id)
+            FROM classification_history h
+            LEFT JOIN accounts a ON a.id=h.account_id
+            LEFT JOIN categories c ON c.id=h.category_id
+            LEFT JOIN subcategories sc ON sc.id=h.subcategory_id
+            JOIN transactions t ON t.history_match_id=h.id AND t.status='reconciled'
+            WHERE {' AND '.join(where)}
+            """,
+            params,
+        ).fetchone()[0]
+        off = (page - 1) * page_size
+        rows = conn.execute(
+            f"""
+            SELECT h.id,h.date,h.description,h.amount,h.type,
+                   h.account_id,IFNULL(a.name,''),
+                   h.category_id,IFNULL(c.name,''),IFNULL(c.color,''),
+                   h.subcategory_id,IFNULL(sc.name,''),
+                   h.source_file_id,
+                   CASE
+                     WHEN h.source_file_id LIKE '%:sheet:saidas' THEN 'saidas'
+                     WHEN h.source_file_id LIKE '%:sheet:entradas' THEN 'entradas'
+                     WHEN h.source_file_id LIKE '%:sheet:helcio_smartek' THEN 'helcio_smartek'
+                     ELSE ''
+                   END,
+                   t.id,t.description,t.date,ABS(t.amount)
+            FROM classification_history h
+            LEFT JOIN accounts a ON a.id=h.account_id
+            LEFT JOIN categories c ON c.id=h.category_id
+            LEFT JOIN subcategories sc ON sc.id=h.subcategory_id
+            LEFT JOIN transactions t ON t.id=(
+                SELECT tx.id
+                FROM transactions tx
+                WHERE tx.history_match_id=h.id AND tx.status='reconciled'
+                ORDER BY tx.date DESC, tx.id ASC
+                LIMIT 1
+            )
+            WHERE {' AND '.join(where)}
+            ORDER BY {order_by} {order}, h.description ASC
+            LIMIT ? OFFSET ?
+            """,
+            params + [page_size, off],
+        ).fetchall()
+
+    return jsonify({
+        "items": [
+            {
+                "id": r[0],
+                "date": r[1] or "",
+                "description": r[2],
+                "amount": r[3],
+                "type": r[4],
+                "account_id": r[5],
+                "account_name": r[6],
+                "category_id": r[7],
+                "category_name": r[8],
+                "category_color": r[9],
+                "subcategory_id": r[10],
+                "subcategory_name": r[11],
+                "source_file_id": r[12],
+                "seed_sheet": r[13],
+                "linked_tx_id": r[14],
+                "linked_tx_description": r[15],
+                "linked_tx_date": r[16],
+                "linked_tx_amount": r[17],
+            }
+            for r in rows
+        ],
+        "total": total,
+        "total_linked": total_linked,
+        "page": page,
+        "page_size": page_size,
+        "total_pages": (total + page_size - 1) // page_size,
+    })
+
+
+@app.route("/api/v1/transactions/bulk-classify", methods=["PATCH"])
+def bulk_classify():
+    data = request.get_json(force=True)
+    ids = data.get("ids") or []
+    cat = data.get("category_id")
+    sub = data.get("subcategory_id")
+    if not ids or not cat:
+        return jsonify({"detail": "ids e category_id obrigatorios", "code": "VALIDATION_ERROR"}), 400
+    user = current_user()
+    now = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
+    with db_connect() as conn:
+        qmarks = ",".join(["?"] * len(ids))
+        locked_rows = conn.execute(
+            f"SELECT id FROM transactions WHERE locked=1 AND id IN ({qmarks})", ids
+        ).fetchall()
+        locked_ids = {r[0] for r in locked_rows}
+        target_ids = [i for i in ids if i not in locked_ids]
+        updated = 0
+        if target_ids:
+            qmarks2 = ",".join(["?"] * len(target_ids))
+            cursor = conn.execute(
+                f"""
+                UPDATE transactions
+                SET category_id=?, subcategory_id=?, status='reconciled',
+                    locked=1, classified_by=?, classified_at=?
+                WHERE id IN ({qmarks2})
+                """,
+                [cat, sub, user.get("username") or "", now] + target_ids,
+            )
+            updated = cursor.rowcount or 0
+            for tid in target_ids:
+                record_audit(user, "bulk_classify", "transaction", tid, "category_id", "", cat, conn=conn)
+    return jsonify({"updated": updated, "skipped_locked": len(locked_ids)})
+
+
+@app.route("/api/v1/transactions/bulk-vincular", methods=["POST"])
+def bulk_vincular():
+    return jsonify({
+        "detail": "Vinculo com a base historica foi descontinuado. A base historica agora serve apenas para sugestoes de categoria/subcategoria.",
+        "code": "DISABLED_BY_PRODUCT_RULE",
+    }), 409
+
+
+def _bulk_vincular_desativado():
+    data = request.get_json(force=True) or {}
+    threshold = float(data.get("threshold", 70.0))
+    account_id = (data.get("account_id") or "").strip()
+    competence_month = (data.get("competence_month") or "").strip()
+
+    where = [
+        "t.status='pending'",
+        "t.locked=0",
+        "t.history_match_id IS NOT NULL",
+        "t.history_match_id != ''",
+        "t.identity_score >= ?",
+    ]
+    params: list[Any] = [threshold]
+
+    if account_id:
+        where.append("t.account_id=?")
+        params.append(account_id)
+    if competence_month:
+        where.append("t.competence_month=?")
+        params.append(competence_month)
+
+    with db_connect() as conn:
+        candidates = conn.execute(
+            f"""
+            SELECT t.id,t.history_match_id,h.category_id,h.subcategory_id
+            FROM transactions t
+            JOIN classification_history h ON h.id=t.history_match_id
+            WHERE {' AND '.join(where)}
+            """,
+            params,
+        ).fetchall()
+
+        vinculados = 0
+        for tx_id, _history_id, category_id, subcategory_id in candidates:
+            if not category_id:
+                continue
+            conn.execute(
+                """
+                UPDATE transactions
+                SET category_id=?,
+                    subcategory_id=?,
+                    notes=?,
+                    status='reconciled'
+                WHERE id=?
+                """,
+                (category_id, subcategory_id, "Vinculado ao historico", tx_id),
+            )
+            vinculados += 1
+
+    return jsonify({"vinculados": vinculados, "total_candidatos": len(candidates)})
+
+
+@app.route("/api/v1/transactions/months")
+def months():
+    with db_connect() as conn:
+        rows = conn.execute("SELECT DISTINCT competence_month FROM transactions ORDER BY competence_month DESC").fetchall()
+    return jsonify([r[0] for r in rows])
+
+
+@app.route("/api/v1/reports/summary")
+def report_summary():
+    competence_month = (request.args.get("competence_month") or "").strip()
+    if competence_month:
+        where = "WHERE competence_month=? AND status NOT IN ('duplicate','ignored')"
+        params: list[Any] = [competence_month]
+    else:
+        where = "WHERE status NOT IN ('duplicate','ignored') AND locked=0"
+        params: list[Any] = []
+    with db_connect() as conn:
+        row = conn.execute(
+            f"""
+            SELECT COUNT(1),
+                   SUM(CASE WHEN status='pending' THEN 1 ELSE 0 END),
+                   SUM(CASE WHEN status='reconciled' THEN 1 ELSE 0 END),
+                   IFNULL(SUM(CASE WHEN type='income' THEN amount ELSE 0 END),0),
+                   IFNULL(SUM(CASE WHEN type='expense' THEN amount ELSE 0 END),0)
+            FROM transactions
+            {where}
+            """,
+            params,
+        ).fetchone()
+    income = float(row[3] or 0)
+    expense = float(row[4] or 0)
+    return jsonify(
+        {
+            "total_transactions": int(row[0] or 0),
+            "pending": int(row[1] or 0),
+            "reconciled": int(row[2] or 0),
+            "total_income": income,
+            "total_expense": expense,
+            "balance": income + expense,
+        }
+    )
+
+
+@app.route("/api/v1/reports/by-category")
+def report_by_category():
+    tx_type = (request.args.get("type") or "expense").strip()
+    competence_month = (request.args.get("competence_month") or "").strip()
+    where = ["t.type=?", "t.status NOT IN ('duplicate','ignored')"]
+    params: list[Any] = [tx_type]
+    if competence_month:
+        where.append("t.competence_month=?")
+        params.append(competence_month)
+    with db_connect() as conn:
+        rows = conn.execute(
+            f"""
+            SELECT t.category_id, IFNULL(c.name,'SEM CATEGORIA'), IFNULL(c.color,'#6b7280'),
+                   IFNULL(SUM(t.amount),0), COUNT(1)
+            FROM transactions t
+            LEFT JOIN categories c ON c.id=t.category_id
+            WHERE {' AND '.join(where)}
+            GROUP BY t.category_id, c.name, c.color
+            ORDER BY ABS(SUM(t.amount)) DESC
+            """
+            ,
+            params,
+        ).fetchall()
+    total_abs = sum(abs(float(r[3] or 0)) for r in rows) or 1.0
+    out = []
+    for r in rows:
+        val = float(r[3] or 0)
+        out.append(
+            {
+                "category_id": r[0],
+                "category_name": r[1],
+                "category_color": r[2],
+                "total": val,
+                "count": int(r[4] or 0),
+                "percentage": round((abs(val) / total_abs) * 100, 2),
+            }
+        )
+    return jsonify(out)
+
+
+@app.route("/api/v1/reports/monthly")
+def report_monthly():
+    with db_connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT competence_month,
+                   IFNULL(SUM(CASE WHEN type='income' THEN amount ELSE 0 END),0) as income,
+                   IFNULL(SUM(CASE WHEN type='expense' THEN amount ELSE 0 END),0) as expense,
+                   COUNT(1)
+            FROM transactions
+            WHERE status NOT IN ('duplicate','ignored') AND locked=0
+            GROUP BY competence_month
+            ORDER BY competence_month DESC
+            """
+        ).fetchall()
+    return jsonify(
+        [
+            {
+                "month": r[0],
+                "income": float(r[1] or 0),
+                "expense": float(r[2] or 0),
+                "balance": float(r[1] or 0) + float(r[2] or 0),
+                "transaction_count": int(r[3] or 0),
+            }
+            for r in rows
+        ]
+    )
+
+
+def init_app() -> None:
+    """Inicializacao completa (usada tanto no dev local quanto no gunicorn).
+
+    No Postgres, um advisory lock serializa a criacao/migracao do schema quando
+    varios workers do gunicorn sobem ao mesmo tempo.
+    """
+    lock_conn = None
+    try:
+        if IS_POSTGRES:
+            lock_conn = db_connect(direct=True)
+            lock_conn.execute("SELECT pg_advisory_lock(815501)")
+        init_db()
+        auth_mod.init_auth_db()
+        auth_mod.bootstrap_admin()
+        seed()
+    finally:
+        if lock_conn is not None:
+            lock_conn.close()  # encerrar a sessao libera o advisory lock
+
+
+# Executa na importacao para que `gunicorn app:app` ja suba com o banco pronto.
+init_app()
+
+
+if __name__ == "__main__":
+    import os as _os
+    _port = int(_os.environ.get("PORT") or "5061")
+    app.run(host=_os.environ.get("HOST") or "127.0.0.1", port=_port, debug=False, use_reloader=False)
