@@ -127,13 +127,48 @@ def create_session(user_id: str) -> str:
 
 
 def destroy_session(token: str) -> None:
+    invalidate_token_cache(token)
     with db_connect() as conn:
         conn.execute("DELETE FROM sessions WHERE token=?", (token,))
+
+
+_TOKEN_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+_TOKEN_CACHE_TTL = 120.0  # segundos
+_TOKEN_CACHE_MAX = 500
+
+
+def _cache_get(token: str) -> dict[str, Any] | None:
+    item = _TOKEN_CACHE.get(token)
+    if not item:
+        return None
+    ts, user = item
+    import time
+    if time.monotonic() - ts > _TOKEN_CACHE_TTL:
+        _TOKEN_CACHE.pop(token, None)
+        return None
+    return user
+
+
+def _cache_put(token: str, user: dict[str, Any]) -> None:
+    import time
+    if len(_TOKEN_CACHE) >= _TOKEN_CACHE_MAX:
+        _TOKEN_CACHE.clear()
+    _TOKEN_CACHE[token] = (time.monotonic(), user)
+
+
+def invalidate_token_cache(token: str | None = None) -> None:
+    if token is None:
+        _TOKEN_CACHE.clear()
+    else:
+        _TOKEN_CACHE.pop(token, None)
 
 
 def user_for_token(token: str) -> dict[str, Any] | None:
     if not token:
         return None
+    cached = _cache_get(token)
+    if cached is not None:
+        return cached
     with db_connect() as conn:
         row = conn.execute(
             """
@@ -150,7 +185,9 @@ def user_for_token(token: str) -> dict[str, Any] | None:
         if str(row[4]) < _now():
             conn.execute("DELETE FROM sessions WHERE token=?", (token,))
             return None
-    return {"id": row[0], "username": row[1], "role": row[2]}
+    user = {"id": row[0], "username": row[1], "role": row[2]}
+    _cache_put(token, user)
+    return user
 
 
 def authenticate(username: str, password: str) -> dict[str, Any] | None:

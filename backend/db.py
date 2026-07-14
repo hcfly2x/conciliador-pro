@@ -34,10 +34,32 @@ IS_POSTGRES = DATABASE_URL.startswith(("postgres://", "postgresql://"))
 
 if IS_POSTGRES:
     import psycopg  # type: ignore
+    from psycopg_pool import ConnectionPool  # type: ignore
 
     # Neon/Heroku usam postgres:// ; psycopg aceita postgresql://
     if DATABASE_URL.startswith("postgres://"):
         DATABASE_URL = "postgresql://" + DATABASE_URL[len("postgres://"):]
+
+    # Pool de conexoes: abrir uma conexao nova a cada requisicao custa ~0,5-1s
+    # quando banco e backend estao em regioes diferentes (TLS + auth a cada vez).
+    # O pool reutiliza conexoes ja abertas. prepare_threshold=None evita bugs com
+    # poolers (Supavisor/pgbouncer). max_idle recicla conexoes ociosas antes que
+    # o pooler as derrube.
+    _POOL = ConnectionPool(
+        DATABASE_URL,
+        min_size=0,
+        max_size=int(os.environ.get("DB_POOL_MAX", "10")),
+        max_idle=180,
+        kwargs={"prepare_threshold": None},
+        open=False,
+    )
+    _POOL_OPENED = False
+
+    def _ensure_pool():
+        global _POOL_OPENED
+        if not _POOL_OPENED:
+            _POOL.open()
+            _POOL_OPENED = True
 
 
 def _make_row_class(fields: tuple[str, ...]):
@@ -127,8 +149,9 @@ class _PgCursor:
 class _PgConnection:
     """Imita a interface minima de sqlite3.Connection usada pelo app."""
 
-    def __init__(self, conn):
+    def __init__(self, conn, pooled: bool = False):
         self._conn = conn
+        self._pooled = pooled
         self.row_factory = None  # compat: atribuicoes sao ignoradas (chaves sempre disponiveis)
 
     def execute(self, sql: str, params: Iterable[Any] | None = None) -> _PgCursor:
@@ -155,7 +178,14 @@ class _PgConnection:
         self._conn.rollback()
 
     def close(self):
-        self._conn.close()
+        if self._pooled:
+            try:
+                self._conn.rollback()
+            except Exception:
+                pass
+            _POOL.putconn(self._conn)
+        else:
+            self._conn.close()
 
     def __enter__(self):
         return self
@@ -167,13 +197,23 @@ class _PgConnection:
             else:
                 self._conn.rollback()
         finally:
-            self._conn.close()
+            if self._pooled:
+                _POOL.putconn(self._conn)
+            else:
+                self._conn.close()
         return False
 
 
-def db_connect():
-    """Abre uma conexao nova. Usar sempre como context manager: with db_connect() as conn."""
+def db_connect(direct: bool = False):
+    """Obtem uma conexao (do pool no Postgres). Usar como context manager.
+
+    direct=True abre uma conexao dedicada fora do pool (ex.: advisory locks na
+    inicializacao, que nao devem voltar para o pool carregando o lock).
+    """
     if IS_POSTGRES:
-        return _PgConnection(psycopg.connect(DATABASE_URL))
+        if direct:
+            return _PgConnection(psycopg.connect(DATABASE_URL, prepare_threshold=None), pooled=False)
+        _ensure_pool()
+        return _PgConnection(_POOL.getconn(), pooled=True)
     DATA.mkdir(parents=True, exist_ok=True)
     return sqlite3.connect(DB_PATH)

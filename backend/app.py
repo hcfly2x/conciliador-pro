@@ -202,6 +202,7 @@ def auth_user_update(user_id: str):
             conn.execute("UPDATE users SET is_active=? WHERE id=?", (active, user_id))
             if not active:
                 conn.execute("DELETE FROM sessions WHERE user_id=?", (user_id,))
+                auth_mod.invalidate_token_cache()
             record_audit(current_user(), "set_active", "user", user_id, "is_active", row[3], active, conn=conn)
     return jsonify({"ok": True})
 
@@ -4410,7 +4411,7 @@ def init_app() -> None:
     lock_conn = None
     try:
         if IS_POSTGRES:
-            lock_conn = db_connect()
+            lock_conn = db_connect(direct=True)
             lock_conn.execute("SELECT pg_advisory_lock(815501)")
         init_db()
         auth_mod.init_auth_db()
