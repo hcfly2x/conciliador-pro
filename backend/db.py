@@ -45,21 +45,27 @@ if IS_POSTGRES:
     # O pool reutiliza conexoes ja abertas. prepare_threshold=None evita bugs com
     # poolers (Supavisor/pgbouncer). max_idle recicla conexoes ociosas antes que
     # o pooler as derrube.
-    _POOL = ConnectionPool(
-        DATABASE_URL,
-        min_size=0,
-        max_size=int(os.environ.get("DB_POOL_MAX", "10")),
-        max_idle=180,
-        kwargs={"prepare_threshold": None},
-        open=False,
-    )
-    _POOL_OPENED = False
+    _POOL = None
+    _POOL_PID = None
 
-    def _ensure_pool():
-        global _POOL_OPENED
-        if not _POOL_OPENED:
-            _POOL.open()
-            _POOL_OPENED = True
+    def _get_pool():
+        """Cria o pool sob demanda, por processo (seguro com fork do gunicorn)."""
+        global _POOL, _POOL_PID
+        pid = os.getpid()
+        if _POOL is None or _POOL_PID != pid:
+            _POOL = ConnectionPool(
+                DATABASE_URL,
+                min_size=0,
+                max_size=int(os.environ.get("DB_POOL_MAX", "10")),
+                max_idle=120,
+                # check: testa a conexao antes de entregar; descarta conexoes que o
+                # pooler do Supabase tenha derrubado (evita 500 apos ociosidade).
+                check=ConnectionPool.check_connection,
+                kwargs={"prepare_threshold": None},
+                open=True,
+            )
+            _POOL_PID = pid
+        return _POOL
 
 
 def _make_row_class(fields: tuple[str, ...]):
@@ -183,7 +189,7 @@ class _PgConnection:
                 self._conn.rollback()
             except Exception:
                 pass
-            _POOL.putconn(self._conn)
+            _get_pool().putconn(self._conn)
         else:
             self._conn.close()
 
@@ -198,7 +204,7 @@ class _PgConnection:
                 self._conn.rollback()
         finally:
             if self._pooled:
-                _POOL.putconn(self._conn)
+                _get_pool().putconn(self._conn)
             else:
                 self._conn.close()
         return False
@@ -213,7 +219,10 @@ def db_connect(direct: bool = False):
     if IS_POSTGRES:
         if direct:
             return _PgConnection(psycopg.connect(DATABASE_URL, prepare_threshold=None), pooled=False)
-        _ensure_pool()
-        return _PgConnection(_POOL.getconn(), pooled=True)
+        try:
+            return _PgConnection(_get_pool().getconn(timeout=15), pooled=True)
+        except Exception:
+            # Resiliencia: se o pool falhar por qualquer motivo, abre conexao direta.
+            return _PgConnection(psycopg.connect(DATABASE_URL, prepare_threshold=None), pooled=False)
     DATA.mkdir(parents=True, exist_ok=True)
     return sqlite3.connect(DB_PATH)
