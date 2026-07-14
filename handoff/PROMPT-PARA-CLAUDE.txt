@@ -1,0 +1,32 @@
+﻿Quero que voce assuma este projeto como base de contexto e crie uma versao web simples e confiavel do meu Conciliador Pro.
+
+Leia primeiro:
+1. AGENTS.md
+2. handoff/BRIEFING-CLAUDE-WEB.md
+3. backend/app.py
+4. frontend/components/import/ImportPage.tsx
+5. frontend/lib/api.ts
+6. frontend/types/index.ts
+
+Objetivo:
+Criar um conciliador financeiro web, com banco de dados web/hosted, para que eu e minha funcionaria possamos acessar sem depender da minha maquina local.
+
+Regras importantes:
+- Lancamentos reais so nascem de extratos/faturas importados.
+- Base historica nao cria lancamentos reais; ela serve apenas para sugestoes de categoria/subcategoria.
+- Cartao e saida por padrao, exceto estorno/reembolso/cashback/credito/devolucao.
+- Extratos podem ter entradas e saidas.
+- Antes de salvar importacao, mostrar validacao visual dos lancamentos.
+- Duplicado interno no mesmo arquivo pode ser legitimo.
+- Duplicado contra banco existente nao deve ser reinserido por padrao.
+- Depois que um lancamento for classificado/salvo, adicionar trava para evitar mudanca acidental.
+- Para alterar lancamento protegido, exigir acao explicita de editar/desbloquear.
+- Registrar auditoria de alteracoes importantes.
+
+Prioridade:
+1. Propor arquitetura simples e robusta para web + banco hosted.
+2. Implementar base funcional: importar, revisar, salvar, classificar, travar/destravar, auditar.
+3. Manter UX limpa e operacional, sem complicar.
+4. Documentar como rodar e como fazer deploy.
+
+Evite gastar energia tentando resolver o erro local antigo de Next.js spawn EPERM. Use o codigo e as regras como referencia, mas pode redesenhar a implementacao se isso simplificar a versao web.

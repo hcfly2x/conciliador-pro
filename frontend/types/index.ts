@@ -1,0 +1,230 @@
+export type AccountType = 'checking' | 'credit_card' | 'savings'
+export type TransactionType = 'income' | 'expense'
+export type TransactionStatus = 'pending' | 'reconciled' | 'auto_classified' | 'duplicate' | 'ignored'
+
+export interface Account {
+  id: string
+  name: string
+  type: AccountType
+  color: string
+  is_active: boolean
+  created_at: string
+}
+
+export interface Ledger {
+  id: string
+  name: string
+  description: string
+  color: string
+  is_active: boolean
+  created_at: string
+  transaction_count?: number
+  pending_count?: number
+  total_income?: number
+  total_expense?: number
+  balance?: number
+}
+
+export interface Category {
+  id: string
+  name: string
+  color: string
+  text_color: string
+  type: TransactionType
+}
+
+export interface Subcategory {
+  id: string
+  name: string
+}
+
+export interface Transaction {
+  id: string
+  date: string
+  competence_month: string
+  description: string
+  amount: number
+  type: TransactionType
+  status: TransactionStatus
+  account_id: string
+  account_name: string
+  account_color: string
+  category_id: string | null
+  category_name: string | null
+  category_color: string | null
+  category_text_color: string | null
+  subcategory_id: string | null
+  subcategory_name: string | null
+  notes: string | null
+  imported_file_id: string
+  installment_current?: number | null
+  installment_total?: number | null
+  installment_label?: string | null
+  is_installment?: boolean
+  flags?: string
+  flags_list?: string[]
+  match_probability?: number
+  match_notes?: string
+  history_match_id?: string | null
+  identity_score?: number
+  match_category_id?: string | null
+  match_category_name?: string | null
+  match_subcategory_id?: string | null
+  match_subcategory_name?: string | null
+  match_history_date?: string | null
+  match_history_description?: string | null
+  match_history_amount?: number | null
+  match_history_type?: TransactionType | null
+  ledger_id?: string | null
+  ledger_name?: string | null
+  ledger_color?: string | null
+  locked?: boolean
+  classified_by?: string
+  classified_at?: string
+}
+
+export interface TransactionSummary {
+  total_income: number
+  total_expense: number
+  balance: number
+  pending_count: number
+  reconciled_count: number
+}
+
+export interface TransactionFilters {
+  page?: number
+  page_size?: number
+  status?: string
+  type?: string
+  search?: string
+  competence_month?: string
+  date_from?: string
+  date_to?: string
+  account_id?: string
+  category_id?: string
+  subcategory_id?: string
+  is_installment?: string
+  tags?: string
+  tag_mode?: 'include' | 'exclude'
+  ledger_id?: string
+  sort_by?: string
+  sort_order?: 'asc' | 'desc'
+}
+
+export interface PaginatedResponse<T> {
+  items: T[]
+  total: number
+  total_linked?: number
+  page: number
+  page_size: number
+  total_pages: number
+  summary?: TransactionSummary
+}
+
+export interface ImportPreviewRow {
+  date: string
+  description: string
+  amount: number
+  type: TransactionType
+  installment_current?: number | null
+  installment_total?: number | null
+  installment_label?: string | null
+  is_installment?: boolean
+  flags?: string
+  duplicate_db: boolean
+  duplicate_internal: boolean
+  occurrence: number
+  match_probability?: number
+  history_match_id?: string
+}
+
+export interface ImportBalanceCheck {
+  ok?: boolean
+  saldo_anterior?: number | null
+  saldo_final_declarado?: number | null
+  saldo_calculado?: number | null
+  diferenca?: number | null
+  message?: string
+}
+
+export interface ImportPreviewResult {
+  preview_id: string
+  filename: string
+  account_name: string
+  detected_type: string
+  detection_confidence: number
+  total_parsed: number
+  duplicates_db: number
+  duplicates_internal: number
+  new_records: number
+  historical_matches?: number
+  warnings?: string[]
+  balance_check?: ImportBalanceCheck
+  import_meta?: Record<string, unknown>
+  rejected_lines?: string[]
+  discarded_lines?: string[]
+  rows: ImportPreviewRow[]
+}
+
+export interface ImportResult {
+  imported_file_id: string
+  filename: string
+  account_name: string
+  total_parsed: number
+  total_inserted: number
+  total_duplicates: number
+  total_errors: number
+  warnings?: string[]
+  balance_check?: ImportBalanceCheck
+  import_meta?: Record<string, unknown>
+  rejected_lines?: string[]
+  discarded_lines?: string[]
+  transactions_preview: Transaction[]
+}
+
+export interface ReportSummary {
+  total_transactions: number
+  pending: number
+  reconciled: number
+  total_income: number
+  total_expense: number
+  balance: number
+}
+
+export interface CategoryReport {
+  category_id: string | null
+  category_name: string
+  category_color: string | null
+  total: number
+  count: number
+  percentage: number
+}
+
+export interface MonthlyReport {
+  month: string
+  income: number
+  expense: number
+  balance: number
+  transaction_count: number
+}
+
+export type UserRole = 'admin' | 'colaborador'
+
+export interface AuthUser {
+  id: string | null
+  username: string
+  role: UserRole
+}
+
+export interface AuditEntry {
+  id: string
+  username: string
+  action: string
+  entity: string
+  entity_id: string
+  field: string
+  old_value: string
+  new_value: string
+  detail: string
+  created_at: string
+}
