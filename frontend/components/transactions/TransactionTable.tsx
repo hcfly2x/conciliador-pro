@@ -2,7 +2,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Search, RefreshCw, ChevronUp, ChevronDown } from 'lucide-react'
 import { useStore } from '@/store/app'
-import { getTransactions, bulkClassify, classifyTransaction, getTransactionSuggestions, bulkVincular, unlinkHistoricalMatch, getLedgers, includeTransactionsInLedger, excludeTransactionsFromLedger, unlockTransaction, isAdmin } from '@/lib/api'
+import { getTransactions, bulkClassify, classifyTransaction, getTransactionSuggestions, getLedgers, includeTransactionsInLedger, excludeTransactionsFromLedger, unlockTransaction, isAdmin } from '@/lib/api'
 import { Lock, LockOpen } from 'lucide-react'
 import { formatCurrencyAbs, formatDate } from '@/lib/utils'
 import type { Ledger, Transaction, TransactionFilters, TransactionStatus } from '@/types'
@@ -83,7 +83,6 @@ export default function TransactionTable({
   const [sortBy, setSortBy] = useState(defaultSortBy)
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>(defaultSortOrder)
   const [pageSize, setPageSize] = useState(50)
-  const [autoThreshold, setAutoThreshold] = useState(70)
   const [ledgers, setLedgers] = useState<Ledger[]>([])
 
   const [selected, setSelected] = useState<Set<string>>(new Set())
@@ -102,7 +101,6 @@ export default function TransactionTable({
     subcategory_probability: number
     frequency: number
   }>>>({})
-  const [unlinkMenu, setUnlinkMenu] = useState<{ txId: string; x: number; y: number } | null>(null)
 
   useEffect(() => {
     const next: Record<string, { category_id: string; subcategory_id: string; notes: string }> = {}
@@ -248,19 +246,6 @@ export default function TransactionTable({
     getLedgers().then(setLedgers).catch(() => undefined)
   }, [refreshKey])
   useEffect(() => {
-    if (!unlinkMenu) return
-    function close() { setUnlinkMenu(null) }
-    function onKey(e: KeyboardEvent) {
-      if (e.key === 'Escape') close()
-    }
-    window.addEventListener('click', close)
-    window.addEventListener('keydown', onKey)
-    return () => {
-      window.removeEventListener('click', close)
-      window.removeEventListener('keydown', onKey)
-    }
-  }, [unlinkMenu])
-  useEffect(() => {
     const pending = txs.filter(tx => tx.status === 'pending')
     if (!pending.length) return
 
@@ -315,23 +300,6 @@ export default function TransactionTable({
     setTagFilters(current => current.includes(tag) ? current.filter(item => item !== tag) : [...current, tag])
   }
 
-  async function handleAutoClassifyAll() {
-    if (visibleAutoCandidates === 0) {
-      addToast('Nenhum lancamento com match suficiente nesta tela', 'err')
-      return
-    }
-    try {
-      const { vinculados } = await bulkVincular(autoThreshold, {
-        account_id: accountFilter || undefined,
-        competence_month: monthFilter || undefined,
-      })
-      addToast(`${vinculados} lancamentos vinculados ao historico`)
-      load(page)
-    } catch {
-      addToast('Erro ao vincular em lote', 'err')
-    }
-  }
-
   async function handleBulkClassify() {
     if (!bulkCatId || !selected.size) return
     try {
@@ -360,34 +328,6 @@ export default function TransactionTable({
       addToast('Erro ao mover para razao', 'err')
     }
   }
-
-  async function handleUnlinkHistory(txId: string) {
-    try {
-      await unlinkHistoricalMatch(txId)
-      setTxs(prev => prev.map(tx => tx.id === txId ? {
-        ...tx,
-        history_match_id: null,
-        identity_score: 0,
-        match_probability: 0,
-        match_notes: '',
-        match_category_id: null,
-        match_category_name: null,
-        match_subcategory_id: null,
-        match_subcategory_name: null,
-      } : tx))
-      setUnlinkMenu(null)
-      addToast('Vinculo historico removido')
-    } catch {
-      addToast('Erro ao desvincular', 'err')
-    }
-  }
-
-  const visibleAutoCandidates = txs.filter(tx =>
-    tx.status === 'pending' &&
-    !!tx.history_match_id &&
-    !!tx.match_category_id &&
-    Number(tx.match_probability || 0) >= autoThreshold
-  ).length
 
   const thCls = 'px-3 py-2.5 text-left text-[11px] font-semibold text-[#5a5f73] uppercase tracking-widest select-none cursor-pointer hover:text-[#8b90a4] transition-colors'
 
@@ -517,42 +457,6 @@ export default function TransactionTable({
         )}
       </div>
 
-      <div className="flex items-center gap-3 mb-4 px-4 py-3 rounded-lg" style={{ background: 'rgba(96,165,250,0.08)', border: '1px solid rgba(96,165,250,0.22)' }}>
-        <span className="text-sm font-semibold text-[#93c5fd]">Match com base historica</span>
-        <label className="flex items-center gap-2 text-xs text-[#8b90a4]">
-          Probabilidade minima do vinculo
-          <input
-            type="number"
-            min={0}
-            max={100}
-            step={5}
-            className="h-8 w-16 rounded-md px-2 text-sm text-[#e8eaf0] outline-none"
-            style={{ background: '#1a1e28', border: '1px solid rgba(255,255,255,0.12)' }}
-            value={autoThreshold}
-            onChange={e => setAutoThreshold(Math.max(0, Math.min(100, Number(e.target.value) || 0)))}
-          />
-          %
-        </label>
-        <input
-          type="range"
-          min={0}
-          max={100}
-          step={5}
-          value={autoThreshold}
-          onChange={e => setAutoThreshold(Number(e.target.value))}
-          className="w-36"
-        />
-        <span className="text-xs text-[#5a5f73]">{visibleAutoCandidates} matches nesta tela</span>
-        <button
-          onClick={handleAutoClassifyAll}
-          disabled={visibleAutoCandidates === 0}
-          className="ml-auto h-8 px-3 rounded-md text-xs font-semibold disabled:opacity-40"
-          style={{ background: '#3ecf8e', color: '#08111f' }}
-        >
-          Vincular todos ({visibleAutoCandidates})
-        </button>
-      </div>
-
       {selected.size > 0 && (
         <div className="flex items-center gap-3 mb-3 px-4 py-2.5 rounded-lg" style={{ background: 'rgba(201,168,76,0.08)', border: '1px solid rgba(201,168,76,0.25)' }}>
           <span className="text-sm text-[#e8c96e] font-medium">{selected.size} selecionados</span>
@@ -592,15 +496,13 @@ export default function TransactionTable({
                 <th className={thCls} onClick={() => toggleSort('subcategory')}><span className="flex items-center gap-1">Subcategoria <SortIcon col="subcategory" /></span></th>
                 <th className={thCls} onClick={() => toggleSort('notes')}><span className="flex items-center gap-1">Obs <SortIcon col="notes" /></span></th>
                 <th className={thCls} onClick={() => toggleSort('status')}><span className="flex items-center gap-1">Status <SortIcon col="status" /></span></th>
-                <th className={thCls} onClick={() => toggleSort('match_probability')}><span className="flex items-center gap-1">Historico <SortIcon col="match_probability" /></span></th>
               </tr>
             </thead>
             <tbody>
-              {loading && <tr><td colSpan={10} className="text-center py-12 text-[#5a5f73]"><div className="inline-block w-5 h-5 border-2 border-[#22273a] border-t-[#c9a84c] rounded-full animate-spin" /></td></tr>}
-              {!loading && txs.length === 0 && <tr><td colSpan={10} className="text-center py-12 text-[#5a5f73]">Nenhum lancamento encontrado</td></tr>}
+              {loading && <tr><td colSpan={9} className="text-center py-12 text-[#5a5f73]"><div className="inline-block w-5 h-5 border-2 border-[#22273a] border-t-[#c9a84c] rounded-full animate-spin" /></td></tr>}
+              {!loading && txs.length === 0 && <tr><td colSpan={9} className="text-center py-12 text-[#5a5f73]">Nenhum lancamento encontrado</td></tr>}
               {!loading && txs.map(tx => {
                 const st = STATUS_STYLES[tx.status] || STATUS_STYLES.pending
-                const matchProb = Number((tx as any).match_probability || 0)
                 return (
                   <tr key={tx.id} style={{ borderBottom: '1px solid rgba(255,255,255,0.04)' }} className="hover:brightness-110 transition-all">
                     <td className="px-3 py-2.5"><input type="checkbox" checked={selected.has(tx.id)} onChange={() => toggleOne(tx.id)} className="cursor-pointer" /></td>
@@ -783,86 +685,6 @@ export default function TransactionTable({
                         )}
                       </div>
                     </td>
-                    <td className="px-3 py-2.5 min-w-[150px]">
-                      {(() => {
-                        const matchNotes = tx.match_notes || ''
-                        const canVincular = tx.status === 'pending' && !!tx.history_match_id && !!tx.match_category_id && matchProb >= autoThreshold
-                        const historyDescription = tx.match_history_description || tx.match_category_name || 'Historico'
-                        const historyDate = tx.match_history_date ? formatDate(tx.match_history_date) : '-'
-                        const historyAmount = tx.match_history_amount != null ? formatCurrencyAbs(tx.match_history_amount) : ''
-                        return (
-                          <div className="flex flex-col gap-1">
-                            {matchProb > 0 && (
-                              <div className="flex items-center gap-1.5">
-                                <div className="h-1.5 rounded-full overflow-hidden flex-1" style={{ background: '#22273a', maxWidth: 60 }}>
-                                  <div
-                                    className="h-full rounded-full"
-                                    style={{
-                                      width: `${Math.max(0, Math.min(100, matchProb))}%`,
-                                      background: matchProb >= autoThreshold ? '#3ecf8e' : '#5a5f73',
-                                    }}
-                                  />
-                                </div>
-                                <span className="text-[10px]" style={{ color: matchProb >= autoThreshold ? '#3ecf8e' : '#5a5f73', fontWeight: 600 }}>
-                                  {matchProb.toFixed(0)}%
-                                </span>
-                              </div>
-                            )}
-                            {tx.history_match_id && tx.status !== 'pending' && (
-                              <span
-                                onContextMenu={(e) => {
-                                  e.preventDefault()
-                                  setUnlinkMenu({ txId: tx.id, x: e.clientX, y: e.clientY })
-                                }}
-                                className="inline-flex w-fit rounded px-1.5 py-0.5 text-[10px] font-semibold cursor-context-menu"
-                                title="Clique com o botao auxiliar para desvincular"
-                                style={{ background: 'rgba(62,207,142,0.10)', color: '#86efac', border: '1px solid rgba(62,207,142,0.22)' }}
-                              >
-                                vinculado
-                              </span>
-                            )}
-                            {canVincular && (
-                              <button
-                                type="button"
-                                title={`Historico: ${tx.match_category_name || ''}${matchNotes ? ` - "${matchNotes}"` : ''}`}
-                                onClick={async () => {
-                                  await autoSaveRow(tx, {
-                                    category_id: tx.match_category_id || '',
-                                    subcategory_id: tx.match_subcategory_id || '',
-                                    notes: matchNotes || 'Vinculado ao historico',
-                                    classification_source: 'identity',
-                                  })
-                                }}
-                                className="flex flex-col items-start px-2.5 py-1.5 rounded text-left transition-all hover:opacity-80"
-                                style={{
-                                  background: 'rgba(62,207,142,0.12)',
-                                  border: '1px solid rgba(62,207,142,0.35)',
-                                  minWidth: 120,
-                                }}
-                              >
-                                <span className="text-[11px] font-bold" style={{ color: '#3ecf8e' }}>
-                                  Vincular
-                                </span>
-                                <span className="text-[10px] opacity-90 truncate" style={{ color: '#8b90a4', maxWidth: 170 }} title={historyDescription}>
-                                  {historyDescription}
-                                </span>
-                                <span className="text-[10px]" style={{ color: '#5a5f73' }}>
-                                  {historyDate}{historyAmount ? ` · ${historyAmount}` : ''}
-                                </span>
-                                <span className="text-[10px] opacity-80 truncate" style={{ color: '#3ecf8e', maxWidth: 170 }} title={`${tx.match_category_name || ''}${tx.match_subcategory_name ? ` / ${tx.match_subcategory_name}` : ''}`}>
-                                  {tx.match_category_name || 'Sem categoria'}{tx.match_subcategory_name ? ` / ${tx.match_subcategory_name}` : ''} · {matchProb.toFixed(0)}%
-                                </span>
-                              </button>
-                            )}
-                            {!canVincular && tx.status === 'pending' && (
-                              <span className="text-[10px] text-[#5a5f73]">
-                                {tx.history_match_id ? 'Match abaixo do limite' : 'Sem match'}
-                              </span>
-                            )}
-                          </div>
-                        )
-                      })()}
-                    </td>
                   </tr>
                 )
               })}
@@ -934,21 +756,6 @@ export default function TransactionTable({
           </div>
         )}
       </div>
-      {unlinkMenu && (
-        <div
-          className="fixed z-50 rounded-lg p-1 shadow-xl"
-          style={{ left: unlinkMenu.x, top: unlinkMenu.y, background: '#13161d', border: '1px solid rgba(255,255,255,0.12)' }}
-          onClick={(e) => e.stopPropagation()}
-        >
-          <button
-            type="button"
-            onClick={() => handleUnlinkHistory(unlinkMenu.txId)}
-            className="block w-full rounded-md px-3 py-2 text-left text-xs font-semibold text-[#fca5a5] hover:bg-[#1a1e28]"
-          >
-            Desvincular
-          </button>
-        </div>
-      )}
     </div>
   )
 }
