@@ -23,21 +23,33 @@ const USER_KEY = 'conciliador_user'
 
 export function getToken(): string {
   if (typeof window === 'undefined') return ''
-  return window.localStorage.getItem(TOKEN_KEY) || ''
+  const current = window.sessionStorage.getItem(TOKEN_KEY)
+  if (current) return current
+  const legacy = window.localStorage.getItem(TOKEN_KEY) || ''
+  if (legacy) {
+    window.sessionStorage.setItem(TOKEN_KEY, legacy)
+    const legacyUser = window.localStorage.getItem(USER_KEY)
+    if (legacyUser) window.sessionStorage.setItem(USER_KEY, legacyUser)
+    window.localStorage.removeItem(TOKEN_KEY)
+    window.localStorage.removeItem(USER_KEY)
+  }
+  return legacy
 }
 export function getStoredUser(): AuthUser | null {
   if (typeof window === 'undefined') return null
-  try { return JSON.parse(window.localStorage.getItem(USER_KEY) || 'null') } catch { return null }
+  try { return JSON.parse(window.sessionStorage.getItem(USER_KEY) || 'null') } catch { return null }
 }
 export function isAdmin(): boolean {
   return getStoredUser()?.role === 'admin'
 }
 function setSession(token: string, user: AuthUser) {
-  window.localStorage.setItem(TOKEN_KEY, token)
-  window.localStorage.setItem(USER_KEY, JSON.stringify(user))
+  window.sessionStorage.setItem(TOKEN_KEY, token)
+  window.sessionStorage.setItem(USER_KEY, JSON.stringify(user))
 }
 export function clearSession() {
   if (typeof window === 'undefined') return
+  window.sessionStorage.removeItem(TOKEN_KEY)
+  window.sessionStorage.removeItem(USER_KEY)
   window.localStorage.removeItem(TOKEN_KEY)
   window.localStorage.removeItem(USER_KEY)
 }
@@ -80,7 +92,9 @@ export async function logout(): Promise<void> {
   clearSession()
 }
 export async function getMe(): Promise<AuthUser> {
-  return http<AuthUser>('GET', '/auth/me')
+  const user = await http<AuthUser>('GET', '/auth/me')
+  if (typeof window !== 'undefined') window.sessionStorage.setItem(USER_KEY, JSON.stringify(user))
+  return user
 }
 export async function listUsers(): Promise<Array<AuthUser & { is_active: boolean; created_at: string }>> {
   return http('GET', '/auth/users')
@@ -236,20 +250,24 @@ export async function unlinkHistoricalMatch(id: string): Promise<{ id: string; o
   return http('PATCH', `/transactions/${id}/unlink-history`, {})
 }
 
-export async function getTransactionSuggestions(id: string): Promise<Array<{
+export interface TransactionSuggestion {
   category_id: string
   category_name: string
   subcategory_id: string | null
   subcategory_name: string
   best_notes?: string
   probability: number
+  relative_score?: number
+  confidence?: number
   category_probability: number
   subcategory_probability: number
   frequency: number
   history_evidence: number
   transaction_evidence: number
   justification: string
-}>> {
+}
+
+export async function getTransactionSuggestions(id: string): Promise<TransactionSuggestion[]> {
   if (USE_MOCK) {
     await delay()
     return []
@@ -257,9 +275,17 @@ export async function getTransactionSuggestions(id: string): Promise<Array<{
   return http('GET', `/transactions/${id}/suggestions`)
 }
 
+export async function getTransactionSuggestionsBatch(ids: string[]): Promise<Record<string, TransactionSuggestion[]>> {
+  if (USE_MOCK) { await delay(); return Object.fromEntries(ids.map(id => [id, []])) }
+  const response = await http<{ items: Record<string, TransactionSuggestion[]> }>(
+    'POST', '/transactions/suggestions/batch', { transaction_ids: ids },
+  )
+  return response.items
+}
+
 export async function recalculateProbabilities(): Promise<{ job_id: string; status: string }> {
   if (USE_MOCK) { await delay(800); return { job_id: 'mock-job', status: 'queued' } }
-  return http('POST', '/transactions/recalculate-probabilities', {})
+  return http('POST', '/transactions/recalculate-history-links', {})
 }
 
 export interface RecalculationJob {
@@ -273,32 +299,6 @@ export interface RecalculationJob {
 
 export async function getRecalculationJob(id: string): Promise<RecalculationJob> {
   return http('GET', `/recalculation-jobs/${id}`)
-}
-
-export async function clearTransactionLinks(): Promise<{ updated: number }> {
-  if (USE_MOCK) { await delay(500); return { updated: 12 } }
-  return http('POST', '/transactions/clear-links', {})
-}
-
-export async function clearTransactionClassifications(): Promise<{ updated: number; manual_history_deleted: number }> {
-  if (USE_MOCK) { await delay(500); return { updated: 12, manual_history_deleted: 0 } }
-  return http('POST', '/transactions/clear-classifications', {})
-}
-
-export async function autoClassifyByProbability(
-  min_probability: number,
-  filters: TransactionFilters = {}
-): Promise<{ updated: number; min_probability: number }> {
-  if (USE_MOCK) { await delay(800); return { updated: 12, min_probability } }
-  return http('POST', '/transactions/auto-classify', { min_probability, filters })
-}
-
-export async function bulkVincular(threshold: number, filters?: {
-  account_id?: string
-  competence_month?: string
-}): Promise<{ vinculados: number; total_candidatos: number }> {
-  if (USE_MOCK) { await delay(800); return { vinculados: 10, total_candidatos: 12 } }
-  return http('POST', '/transactions/bulk-vincular', { threshold, ...filters })
 }
 
 export interface HistoryFilters {
@@ -347,46 +347,12 @@ export async function bulkClassify(ids: string[], category_id: string, subcatego
   return http<{ updated: number; skipped_locked?: number }>('PATCH', '/transactions/bulk-classify', { ids, category_id, subcategory_id })
 }
 
-export async function updateTransactionStatus(id: string, status: string): Promise<Transaction> {
-  if (USE_MOCK) { await delay(); const t = mockTransactions.find(x => x.id === id)!; return { ...t, status: status as any } }
-  return http<Transaction>('PATCH', `/transactions/${id}/status`, { status })
-}
-
-export async function deleteTransaction(id: string): Promise<void> {
-  if (USE_MOCK) { await delay(); return }
-  return http<void>('DELETE', `/transactions/${id}`)
-}
-
 export async function getMonths(): Promise<string[]> {
   if (USE_MOCK) { await delay(); return mockMonths }
   return http<string[]>('GET', '/transactions/months')
 }
 
-// Import
-export async function importFile(file: File, account_id?: string, confirmDuplicates?: boolean): Promise<ImportResult> {
-  if (USE_MOCK) {
-    await delay(1200)
-    return {
-      imported_file_id: Date.now().toString(),
-      filename: file.name,
-      account_name: mockAccounts.find(a => a.id === account_id)?.name || '',
-      total_parsed: 45,
-      total_inserted: 43,
-      total_duplicates: 2,
-      total_errors: 0,
-      transactions_preview: mockTransactions.slice(0, 5),
-    }
-  }
-  const form = new FormData()
-  form.append('file', file)
-  if (account_id) form.append('account_id', account_id)
-  if (confirmDuplicates) form.append('confirm_duplicates', '1')
-  const res = await fetch(`${BASE}/import/upload`, { method: 'POST', body: form, headers: authHeaders() })
-  if (!res.ok) { const err = await res.json().catch(() => ({})); throw { status: res.status, ...err } }
-  return res.json()
-}
-
-
+// Importacao sempre usa preview e confirmacao.
 export async function previewImportFile(file: File, account_id?: string): Promise<ImportPreviewResult> {
   if (USE_MOCK) {
     await delay(600)
@@ -556,13 +522,17 @@ export async function getCoverageFiles(account_id: string, year_month: string): 
   return http<{ files: CoverageFile[] }>('GET', `/coverage/files?${params}`)
 }
 
-export async function deleteCoverageFile(path: string): Promise<{
+export async function deleteCoverageFile(path: string, deleteTransactions = false): Promise<{
   ok: boolean
   deleted_file: string
   deleted_imported_files: number
   deleted_transactions: number
 }> {
-  return http('DELETE', '/coverage/files', { path })
+  return http('DELETE', '/coverage/files', {
+    path,
+    delete_transactions: deleteTransactions,
+    ...(deleteTransactions && { confirm_delete_transactions: 'EXCLUIR LANCAMENTOS' }),
+  })
 }
 
 export async function dispenseCoverage(account_id: string, year_month: string, reason = ''): Promise<{ ok: boolean }> {

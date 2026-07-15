@@ -3,7 +3,8 @@
 Tabelas: users, sessions, audit_log (criadas em init_auth_db).
 
 - Senhas: PBKDF2-SHA256 com salt aleatorio (stdlib, sem dependencia extra).
-- Sessoes: token aleatorio (Bearer) com expiracao deslizante de 30 dias.
+- Sessoes: token aleatorio (Bearer), hash SHA-256 persistido e expiracao
+  deslizante de 30 dias.
 - Bootstrap: se nao existir nenhum usuario, cria o admin a partir das variaveis
   de ambiente ADMIN_USERNAME / ADMIN_PASSWORD (obrigatorias em producao).
 - Dev local: exportar AUTH_DISABLED=1 para pular autenticacao.
@@ -33,6 +34,10 @@ _PBKDF2_ITERATIONS = 260_000
 
 def _now() -> str:
     return dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
+
+
+def _session_token_digest(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
 def hash_password(password: str) -> str:
@@ -178,7 +183,7 @@ def create_session(user_id: str) -> str:
     with db_connect() as conn:
         conn.execute(
             "INSERT INTO sessions(token, user_id, created_at, expires_at) VALUES (?,?,?,?)",
-            (token, user_id, now.isoformat(timespec="seconds"), expires.isoformat(timespec="seconds")),
+            (_session_token_digest(token), user_id, now.isoformat(timespec="seconds"), expires.isoformat(timespec="seconds")),
         )
     return token
 
@@ -186,11 +191,11 @@ def create_session(user_id: str) -> str:
 def destroy_session(token: str) -> None:
     invalidate_token_cache(token)
     with db_connect() as conn:
-        conn.execute("DELETE FROM sessions WHERE token=?", (token,))
+        conn.execute("DELETE FROM sessions WHERE token=? OR token=?", (token, _session_token_digest(token)))
 
 
 _TOKEN_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
-_TOKEN_CACHE_TTL = 120.0  # segundos
+_TOKEN_CACHE_TTL = 10.0  # reduz janela de revogacao entre multiplos workers
 _TOKEN_CACHE_MAX = 500
 
 
@@ -231,17 +236,22 @@ def user_for_token(token: str) -> dict[str, Any] | None:
             """
             SELECT u.id, u.username, u.role, u.is_active, s.expires_at
             FROM sessions s JOIN users u ON u.id = s.user_id
-            WHERE s.token=?
+            WHERE s.token=? OR s.token=?
             """,
-            (token,),
+            (_session_token_digest(token), token),
         ).fetchone()
         if not row:
             return None
         if int(row[3]) != 1:
             return None
         if str(row[4]) < _now():
-            conn.execute("DELETE FROM sessions WHERE token=?", (token,))
+            conn.execute("DELETE FROM sessions WHERE token=? OR token=?", (_session_token_digest(token), token))
             return None
+        expires = dt.datetime.now(dt.timezone.utc) + dt.timedelta(days=SESSION_DAYS)
+        conn.execute(
+            "UPDATE sessions SET token=?, expires_at=? WHERE token=? OR token=?",
+            (_session_token_digest(token), expires.isoformat(timespec="seconds"), _session_token_digest(token), token),
+        )
     user = {"id": row[0], "username": row[1], "role": row[2]}
     _cache_put(token, user)
     return user

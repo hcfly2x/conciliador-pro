@@ -149,13 +149,17 @@ export default function ArquivosPage() {
     }
   }
 
-  async function removeFile(file: CoverageFile) {
+  async function removeFile(file: CoverageFile, deleteTransactions = false) {
     if (!selected) return
-    const ok = window.confirm(`Remover este arquivo do cofre?\n\n${file.filename}`)
-    if (!ok) return
+    if (deleteTransactions) {
+      const confirmation = window.prompt(
+        `Esta acao apaga o arquivo e todos os lancamentos importados dele.\n\n${file.filename}\n\nDigite EXCLUIR LANCAMENTOS para continuar.`,
+      )
+      if (confirmation !== 'EXCLUIR LANCAMENTOS') return
+    } else if (!window.confirm(`Remover somente o arquivo do cofre? Os lancamentos permanecerao.\n\n${file.filename}`)) return
     setBusy(true)
     try {
-      const result = await deleteCoverageFile(file.path)
+      const result = await deleteCoverageFile(file.path, deleteTransactions)
       const txMsg = result.deleted_transactions > 0 ? ` e ${result.deleted_transactions} lancamentos` : ''
       addToast(`Arquivo removido${txMsg}`)
       bumpRefresh()
@@ -287,9 +291,17 @@ export default function ArquivosPage() {
                     onClick={() => removeFile(file)}
                     disabled={busy}
                     className="h-8 w-8 rounded-md bg-red-500/10 text-red-300 border border-red-400/20 flex items-center justify-center hover:bg-red-500/20 disabled:opacity-50"
-                    title="Remover arquivo"
+                    title="Remover somente o arquivo"
                   >
                     <Trash2 size={14} />
+                  </button>
+                  <button
+                    onClick={() => removeFile(file, true)}
+                    disabled={busy}
+                    className="h-8 rounded-md bg-red-500/10 px-2 text-[10px] font-semibold text-red-200 border border-red-400/20 hover:bg-red-500/20 disabled:opacity-50"
+                    title="Remover arquivo e os lancamentos importados dele"
+                  >
+                    Arquivo + lanç.
                   </button>
                 </div>
               ))}

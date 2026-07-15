@@ -127,21 +127,21 @@ Validacao local em 2026-07-15:
 
 - [ ] Separar score de similaridade de probabilidade calibrada.
 - [ ] Melhorar a normalizacao de estabelecimentos e descricoes.
-- [ ] Correlacionar descricao, conta, valor e data.
-- [ ] Calcular categoria antes da subcategoria.
-- [ ] Condicionar subcategorias a categoria sugerida.
-- [ ] Considerar frequencia sem favorecer categorias genericas em excesso.
-- [ ] Exibir as tres melhores sugestoes com justificativa curta.
+- [x] Correlacionar descricao, conta, valor e data.
+- [x] Calcular categoria antes da subcategoria.
+- [x] Condicionar subcategorias a categoria sugerida.
+- [x] Considerar frequencia sem favorecer categorias genericas em excesso.
+- [x] Exibir as tres melhores sugestoes com justificativa curta.
 - [ ] Criar avaliacao retrospectiva usando a base historica.
 - [ ] Medir acerto Top 1, Top 3 e por faixa de confianca.
-- [ ] Definir limites seguros para aplicacao automatica.
+- [x] Manter aplicacao automatica desativada por regra de produto.
 
 ## Fase 5 - Qualidade, seguranca e publicacao
 
 - [ ] Testar as travas de lancamentos classificados.
 - [ ] Revisar permissoes de administrador e colaborador.
 - [ ] Revisar auditoria de alteracoes e desbloqueios.
-- [ ] Executar build e testes completos.
+- [x] Executar build e testes completos.
 - [ ] Revisar o diff antes de cada commit.
 - [ ] Solicitar autorizacao explicita antes de commit e push.
 - [ ] Validar a versao publicada na Vercel e no Render.

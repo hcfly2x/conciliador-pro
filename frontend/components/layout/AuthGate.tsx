@@ -4,7 +4,7 @@ import { usePathname, useRouter } from 'next/navigation'
 import Sidebar from '@/components/layout/Sidebar'
 import Topbar from '@/components/layout/Topbar'
 import DataLoader from '@/components/layout/DataLoader'
-import { getToken } from '@/lib/api'
+import { clearSession, getMe, getToken } from '@/lib/api'
 
 const AUTH_DISABLED = (process.env.NEXT_PUBLIC_AUTH_DISABLED ?? 'false').toLowerCase() === 'true'
 
@@ -21,7 +21,14 @@ export default function AuthGate({ children }: { children: React.ReactNode }) {
       router.replace('/login')
       return
     }
-    setReady(true)
+    let cancelled = false
+    getMe()
+      .then(() => { if (!cancelled) setReady(true) })
+      .catch(() => {
+        clearSession()
+        if (!cancelled) router.replace('/login')
+      })
+    return () => { cancelled = true }
   }, [pathname, isLogin, router])
 
   if (isLogin) return <>{children}</>

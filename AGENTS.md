@@ -3,7 +3,7 @@
 ## Contexto Fixo
 - Projeto: conciliador financeiro pessoal.
 - Stack: Flask + SQLite no backend, Next.js no frontend.
-- Pasta oficial do projeto: `C:\Users\hcfly\Desktop\conciliador-pro`.
+- Pasta oficial do projeto: `C:\Users\hcfly\Downloads\conciliador-pro-github`.
 - Nao criar novas pastas de projeto fora da pasta oficial.
 - Qualquer arquivo temporario, log, zip ou documentacao deve ficar dentro da pasta do projeto, salvo pedido explicito do usuario.
 
@@ -53,15 +53,14 @@
 - Nunca alterar regras de deduplicacao sem avisar o usuario.
 
 ## Estado Atual Importante
-- Backend funciona quando rodado pelo `.venv`.
-- Frontend esta bloqueado no Windows com `Error: spawn EPERM` ao iniciar Next.js.
-- `npm install` passou depois de usar permissao elevada/rede liberada.
-- O erro remanescente e ambiente/permissao de spawn do Node/Next, nao o backend.
-- Ha um zip de revisao criado em `C:\Users\hcfly\Downloads\conciliador-pro-review-package.zip`.
+- Repositorio principal: branch `main` do projeto `conciliador-pro-github`.
+- Backend usa PostgreSQL em producao e SQLite apenas no desenvolvimento/testes.
+- Frontend Next.js compila normalmente no Windows e e publicado na Vercel.
+- Backend e publicado no Render; o commit publicado deve ser registrado a cada release.
 
 ## Cuidados De Trabalho
-- Nao criar copias como `conciliador-pro-...` no Desktop.
-- Se precisar gerar entregaveis, criar uma subpasta dentro de `C:\Users\hcfly\Desktop\conciliador-pro`.
+- Nao criar copias paralelas do repositorio.
+- Se precisar gerar entregaveis, criar uma subpasta dentro da pasta oficial.
 - Nao remover dados do banco sem pedido explicito.
 - Antes de limpar arquivos, conferir se nao sao usados pelo app.
 - Preferir mudancas pequenas e verificaveis por patch.
@@ -71,6 +70,6 @@
 - Autenticacao: `backend/auth.py` + guard em `app.py`; perfis admin e colaborador.
 - Protecao pos-classificacao: colunas `locked/classified_by/classified_at` em `transactions`; erro 423 TX_LOCKED; desbloqueio via `POST /transactions/<id>/unlock` (admin, auditado).
 - Auditoria: tabela `audit_log`; consulta em `GET /api/v1/audit`.
-- Frontend: pagina `/login`, token Bearer no `lib/api.ts`, cadeado + Desbloquear na tabela de lancamentos.
+- Frontend: pagina `/login`, token Bearer em `sessionStorage`, validacao por `/auth/me`, cadeado + Desbloquear na tabela de lancamentos.
 - Dev local sem login: `AUTH_DISABLED=1` no backend e `NEXT_PUBLIC_AUTH_DISABLED=true` no frontend.
 - Documentacao: `docs/ARQUITETURA-WEB.md` e `docs/DEPLOY.md`.

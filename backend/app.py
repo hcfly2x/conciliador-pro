@@ -60,7 +60,13 @@ ALLOWED_IMPORT_EXTENSIONS = {".csv", ".xls", ".xlsx", ".pdf"}
 # ---------------------------------------------------------------------------
 # CORS + Autenticacao (versao web)
 # ---------------------------------------------------------------------------
-CORS_ORIGINS = [o.strip() for o in (os.environ.get("CORS_ORIGINS") or "*").split(",") if o.strip()]
+_cors_setting = os.environ.get("CORS_ORIGINS")
+if _cors_setting is None:
+    CORS_ORIGINS = [] if IS_POSTGRES else ["http://localhost:3000", "http://127.0.0.1:3000"]
+else:
+    CORS_ORIGINS = [o.strip().rstrip("/") for o in _cors_setting.split(",") if o.strip()]
+if IS_POSTGRES and "*" in CORS_ORIGINS:
+    raise RuntimeError("CORS_ORIGINS='*' nao e permitido com PostgreSQL/ambiente hospedado")
 PUBLIC_PATHS = {"/api/v1/health", "/api/v1/auth/login"}
 
 # Rotas de escrita liberadas para o perfil colaborador (classificacao do dia a dia).
@@ -401,26 +407,38 @@ def archive_target_path(source: Path, account_name: str, txs: list[Any]) -> Path
     return target
 
 
-def store_document_in_db(source: Path, account_name: str, year_month: str, filename: str) -> str | None:
+def store_document_in_db(
+    source: Path,
+    account_name: str,
+    year_month: str,
+    filename: str,
+    conn=None,
+) -> str:
     """Guarda o conteudo do arquivo no banco (base64) para sobreviver a redeploys."""
     try:
         content = base64.b64encode(source.read_bytes()).decode("ascii")
-    except Exception:
-        return None
+        size = source.stat().st_size
+    except Exception as exc:
+        raise RuntimeError(f"Nao foi possivel preservar o documento original: {exc}") from exc
     doc_id = str(uuid.uuid4())
-    with db_connect() as conn:
-        dup = conn.execute(
+    def persist(active_conn):
+        dup = active_conn.execute(
             "SELECT id FROM stored_documents WHERE account_name=? AND year_month=? AND filename=? LIMIT 1",
             (account_name, year_month, filename),
         ).fetchone()
         if dup:
-            conn.execute("UPDATE stored_documents SET content_b64=?, size=? WHERE id=?", (content, source.stat().st_size, dup[0]))
+            active_conn.execute("UPDATE stored_documents SET content_b64=?, size=? WHERE id=?", (content, size, dup[0]))
             return dup[0]
-        conn.execute(
+        active_conn.execute(
             "INSERT INTO stored_documents(id,account_name,year_month,filename,size,content_b64,created_at) VALUES (?,?,?,?,?,?,?)",
-            (doc_id, account_name, year_month, filename, source.stat().st_size, content, dt.datetime.now().isoformat(timespec="seconds")),
+            (doc_id, account_name, year_month, filename, size, content, dt.datetime.now().isoformat(timespec="seconds")),
         )
-    return doc_id
+        return doc_id
+
+    if conn is not None:
+        return persist(conn)
+    with db_connect() as own_conn:
+        return persist(own_conn)
 
 
 def archive_import_file(source: Path, target: Path) -> None:
@@ -706,6 +724,7 @@ def build_scored_evidence(
     exclude_tx_id: str | None = None,
     include_transactions: bool = False,
     include_history: bool = True,
+    evidence_rows: list[tuple[Any, ...]] | None = None,
 ) -> list[dict[str, Any]]:
     """
     Usa o melhor match por categoria, com bonus pequeno de frequencia.
@@ -719,8 +738,8 @@ def build_scored_evidence(
     tx_type = tx.get("type") or ""
     tx_account_id = tx.get("account_id")
 
-    all_rows: list[tuple[Any, ...]] = []
-    if include_transactions:
+    all_rows: list[tuple[Any, ...]] = list(evidence_rows or [])
+    if evidence_rows is None and include_transactions:
         all_rows += conn.execute(
             """
             SELECT t.category_id, c.name, t.subcategory_id, IFNULL(s.name,''),
@@ -735,7 +754,7 @@ def build_scored_evidence(
             (tx_type, exclude_tx_id, exclude_tx_id),
         ).fetchall()
 
-    if include_history:
+    if evidence_rows is None and include_history:
         history_filter = "AND h.source_file_id NOT LIKE 'manual:%'" if include_transactions else ""
         all_rows += conn.execute(
             f"""
@@ -1540,29 +1559,19 @@ def init_db() -> None:
               )
             """
         )
-        cleanup_id = "20260715_clear_imported_historical_base"
-        if IS_POSTGRES and not conn.execute("SELECT 1 FROM maintenance_log WHERE id=?", (cleanup_id,)).fetchone():
-            history_deleted = conn.execute(
-                "DELETE FROM classification_history WHERE source_file_id NOT LIKE 'manual:%'"
-            ).rowcount or 0
-            files_deleted = conn.execute(
-                "DELETE FROM imported_files WHERE account_name='IMPORT_SEED' OR account_id='seed'"
-            ).rowcount or 0
-            conn.execute("DELETE FROM seed_import_jobs")
-            conn.execute(
-                """
-                UPDATE transactions
-                SET history_match_id=NULL, history_match_confirmed=0,
-                    history_match_rejected_id=NULL, identity_score=0,
-                    match_probability=0, match_notes='',
-                    suggested_category_id=NULL, suggested_subcategory_id=NULL
-                """
-            )
-            conn.execute(
-                "INSERT INTO maintenance_log(id,executed_at,detail) VALUES (?,?,?)",
-                (cleanup_id, dt.datetime.now().isoformat(timespec="seconds"),
-                 f"historical_rows={history_deleted};seed_files={files_deleted}"),
-            )
+        # Manutencoes destrutivas nunca devem rodar implicitamente no startup.
+        # A limpeza pontual da base historica de 2026-07-15 foi removida depois
+        # de executada; ambientes restaurados nao podem repetir essa operacao.
+        conn.execute(
+            """
+            UPDATE recalculation_jobs
+            SET status='failed',
+                error='Processamento interrompido por reinicializacao do servidor',
+                finished_at=?
+            WHERE status IN ('queued','running')
+            """,
+            (dt.datetime.now().isoformat(timespec="seconds"),),
+        )
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS account_file_coverage(
@@ -2394,7 +2403,35 @@ def build_import_preview(path: Path, acc: tuple[Any, ...], detection_sample: str
     }
 
 
-def build_suggestions_for_tx(conn: sqlite3.Connection, tx_id: str):
+def load_suggestion_evidence(conn) -> dict[str, list[tuple[Any, ...]]]:
+    evidence: dict[str, list[tuple[Any, ...]]] = {"expense": [], "income": []}
+    rows = conn.execute(
+        """
+        SELECT t.type,t.category_id,c.name,t.subcategory_id,IFNULL(s.name,''),
+               t.date,t.description_norm,ABS(t.amount),t.account_id,t.notes,'transaction'
+        FROM transactions t
+        LEFT JOIN categories c ON c.id=t.category_id
+        LEFT JOIN subcategories s ON s.id=t.subcategory_id
+        WHERE t.category_id IS NOT NULL
+        UNION ALL
+        SELECT h.type,h.category_id,c.name,h.subcategory_id,IFNULL(s.name,''),
+               h.date,h.description_norm,ABS(h.amount),h.account_id,'','history'
+        FROM classification_history h
+        LEFT JOIN categories c ON c.id=h.category_id
+        LEFT JOIN subcategories s ON s.id=h.subcategory_id
+        WHERE h.source_file_id NOT LIKE 'manual:%'
+        """
+    ).fetchall()
+    for row in rows:
+        evidence.setdefault(row[0] or "", []).append(tuple(row[1:]))
+    return evidence
+
+
+def build_suggestions_for_tx(
+    conn: sqlite3.Connection,
+    tx_id: str,
+    evidence_by_type: dict[str, list[tuple[Any, ...]]] | None = None,
+):
     tx_row = conn.execute(
         """
         SELECT id, date, description, description_norm, amount, type, account_id
@@ -2414,7 +2451,14 @@ def build_suggestions_for_tx(conn: sqlite3.Connection, tx_id: str):
         "type": tx_row[5],
         "account_id": tx_row[6],
     }
-    ranked = build_scored_evidence(conn, tx, tx_id, include_transactions=True, include_history=True)
+    ranked = build_scored_evidence(
+        conn,
+        tx,
+        tx_id,
+        include_transactions=True,
+        include_history=True,
+        evidence_rows=evidence_by_type.get(tx["type"], []) if evidence_by_type is not None else None,
+    )
     if not ranked:
         return []
     return [
@@ -2425,6 +2469,8 @@ def build_suggestions_for_tx(conn: sqlite3.Connection, tx_id: str):
             "subcategory_name": r.get("subcategory_name") or "",
             "best_notes": r.get("best_notes") or "",
             "probability": round(float(r["probability"]), 2),
+            "relative_score": round(float(r["probability"]), 2),
+            "confidence": round(float(r.get("confidence", 0.0)), 2),
             "category_probability": round(float(r.get("category_probability", r["probability"])), 2),
             "subcategory_probability": round(float(r.get("subcategory_probability", 0.0)), 2),
             "frequency": int(r.get("frequency", 0)),
@@ -3139,15 +3185,22 @@ def import_document(
             ),
         )
 
-    # Persistir o arquivo original no banco ANTES de arquivar (o disco e efemero no hosting).
-    # Ano/mes e nome vem do proprio destino de arquivamento para manter cofre e disco identicos.
-    store_document_in_db(
-        path,
-        acc[1],
-        f"{archived_target.parents[2].name}/{archived_target.parents[1].name}",
-        archived_target.name,
-    )
-    archive_import_file(path, archived_target)
+        # O documento e os lancamentos pertencem a mesma transacao. Se o cofre
+        # persistente falhar, todo o lote e revertido.
+        store_document_in_db(
+            path,
+            acc[1],
+            f"{archived_target.parents[2].name}/{archived_target.parents[1].name}",
+            archived_target.name,
+            conn=conn,
+        )
+
+    # A copia em disco e secundaria no hosting. O original persistente ja foi
+    # confirmado atomicamente com o lote no banco.
+    try:
+        archive_import_file(path, archived_target)
+    except Exception as exc:
+        warnings.append(f"Documento preservado no cofre, mas a copia local falhou: {type(exc).__name__}")
 
     return {
         "imported_file_id": imported_file_id,
@@ -3225,7 +3278,11 @@ def accounts():
         ])
     data = request.get_json(force=True)
     now = dt.datetime.now().isoformat(timespec="seconds")
-    item = (str(uuid.uuid4()), data.get("name", "").strip(), data.get("type", "checking"), data.get("color", "#2563eb"), 1, now)
+    name = data.get("name", "").strip()
+    account_type = data.get("type", "checking")
+    if not name or account_type not in ("checking", "credit_card", "savings"):
+        return jsonify({"detail": "Nome e tipo de conta validos sao obrigatorios", "code": "VALIDATION_ERROR"}), 400
+    item = (str(uuid.uuid4()), name, account_type, data.get("color", "#2563eb"), 1, now)
     with db_connect() as conn:
         conn.execute("INSERT INTO accounts(id,name,type,color,is_active,created_at) VALUES (?,?,?,?,?,?)", item)
     return jsonify({"id": item[0], "name": item[1], "type": item[2], "color": item[3], "is_active": True, "created_at": now}), 201
@@ -3237,17 +3294,34 @@ def account_detail(account_id: str):
         return jsonify({}), 200
     with db_connect() as conn:
         if request.method == "DELETE":
-            n = conn.execute("SELECT COUNT(1) FROM transactions WHERE account_id=?", (account_id,)).fetchone()[0]
-            if n > 0:
-                return jsonify({"detail": f"Conta tem {n} lancamentos. Remova os lancamentos primeiro.", "code": "HAS_TRANSACTIONS"}), 400
+            references = {
+                "lancamentos": conn.execute("SELECT COUNT(1) FROM transactions WHERE account_id=?", (account_id,)).fetchone()[0],
+                "historico": conn.execute("SELECT COUNT(1) FROM classification_history WHERE account_id=?", (account_id,)).fetchone()[0],
+                "parcelamentos": conn.execute("SELECT COUNT(1) FROM installment_plans WHERE account_id=?", (account_id,)).fetchone()[0],
+                "arquivos importados": conn.execute("SELECT COUNT(1) FROM imported_files WHERE account_id=?", (account_id,)).fetchone()[0],
+                "previews": conn.execute("SELECT COUNT(1) FROM import_previews WHERE account_id=?", (account_id,)).fetchone()[0],
+                "coberturas": conn.execute("SELECT COUNT(1) FROM account_file_coverage WHERE account_id=?", (account_id,)).fetchone()[0],
+            }
+            used = {name: int(total or 0) for name, total in references.items() if int(total or 0) > 0}
+            if used:
+                detail = ", ".join(f"{name}: {total}" for name, total in used.items())
+                return jsonify({
+                    "detail": f"Conta ainda possui referencias ({detail}). Remova ou migre os dados primeiro.",
+                    "code": "ACCOUNT_IN_USE",
+                    "references": used,
+                }), 400
             conn.execute("DELETE FROM accounts WHERE id=?", (account_id,))
             return jsonify({"ok": True})
         data = request.get_json(force=True)
+        name = (data.get("name") or "").strip()
+        account_type = data.get("type", "checking")
+        if not name or account_type not in ("checking", "credit_card", "savings"):
+            return jsonify({"detail": "Nome e tipo de conta validos sao obrigatorios", "code": "VALIDATION_ERROR"}), 400
         conn.execute(
             "UPDATE accounts SET name=?, type=?, color=?, is_active=? WHERE id=?",
             (
-                (data.get("name") or "").strip(),
-                data.get("type", "checking"),
+                name,
+                account_type,
                 data.get("color", "#2563eb"),
                 int(bool(data.get("is_active", True))),
                 account_id,
@@ -3412,8 +3486,15 @@ def categories():
                 rows = conn.execute("SELECT id,name,color,text_color,type FROM categories ORDER BY name").fetchall()
         return jsonify([{"id":r[0],"name":r[1],"color":r[2],"text_color":r[3],"type":r[4]} for r in rows])
     data = request.get_json(force=True)
-    item = (str(uuid.uuid4()), data.get("name", "").strip(), data.get("color", "#334155"), data.get("text_color", "#ffffff"), data.get("type", "expense"))
+    name = data.get("name", "").strip()
+    category_type = data.get("type", "expense")
+    if not name or category_type not in ("expense", "income"):
+        return jsonify({"detail": "Nome e tipo de categoria validos sao obrigatorios", "code": "VALIDATION_ERROR"}), 400
+    item = (str(uuid.uuid4()), name, data.get("color", "#334155"), data.get("text_color", "#ffffff"), category_type)
     with db_connect() as conn:
+        duplicate = conn.execute("SELECT id FROM categories WHERE UPPER(name)=UPPER(?) AND type=?", (name, category_type)).fetchone()
+        if duplicate:
+            return jsonify({"detail": "Categoria ja existe", "code": "DUPLICATE_CATEGORY"}), 409
         conn.execute("INSERT INTO categories(id,name,color,text_color,type) VALUES (?,?,?,?,?)", item)
     return jsonify({"id":item[0],"name":item[1],"color":item[2],"text_color":item[3],"type":item[4]}), 201
 
@@ -3424,19 +3505,52 @@ def category_detail(cat_id: str):
         return jsonify({}), 200
     with db_connect() as conn:
         if request.method == "DELETE":
-            n = conn.execute("SELECT COUNT(1) FROM transactions WHERE category_id=?", (cat_id,)).fetchone()[0]
-            if n > 0:
-                return jsonify({"detail": f"Categoria tem {n} lancamentos. Reclassifique-os primeiro.", "code": "HAS_TRANSACTIONS"}), 400
+            references = {
+                "lancamentos": conn.execute("SELECT COUNT(1) FROM transactions WHERE category_id=?", (cat_id,)).fetchone()[0],
+                "historico": conn.execute("SELECT COUNT(1) FROM classification_history WHERE category_id=?", (cat_id,)).fetchone()[0],
+                "parcelamentos": conn.execute("SELECT COUNT(1) FROM installment_plans WHERE category_id=?", (cat_id,)).fetchone()[0],
+            }
+            used = {name: int(total or 0) for name, total in references.items() if int(total or 0) > 0}
+            if used:
+                detail = ", ".join(f"{name}: {total}" for name, total in used.items())
+                return jsonify({
+                    "detail": f"Categoria ainda possui referencias ({detail}). Reclassifique os dados primeiro.",
+                    "code": "CATEGORY_IN_USE",
+                    "references": used,
+                }), 400
+            conn.execute(
+                "UPDATE transactions SET suggested_category_id=NULL,suggested_subcategory_id=NULL WHERE suggested_category_id=?",
+                (cat_id,),
+            )
             conn.execute("DELETE FROM categories WHERE id=?", (cat_id,))
             return jsonify({"ok": True})
         data = request.get_json(force=True)
+        name = (data.get("name") or "").strip()
+        if not name:
+            return jsonify({"detail": "Nome da categoria e obrigatorio", "code": "VALIDATION_ERROR"}), 400
+        new_type = data.get("type", "expense")
+        if new_type not in ("expense", "income"):
+            return jsonify({"detail": "Tipo de categoria invalido", "code": "VALIDATION_ERROR"}), 400
+        incompatible = conn.execute(
+            """
+            SELECT
+              (SELECT COUNT(1) FROM transactions WHERE category_id=? AND type<>?) +
+              (SELECT COUNT(1) FROM classification_history WHERE category_id=? AND type<>?)
+            """,
+            (cat_id, new_type, cat_id, new_type),
+        ).fetchone()[0]
+        if int(incompatible or 0) > 0:
+            return jsonify({
+                "detail": "O tipo da categoria conflita com lancamentos ou registros historicos existentes.",
+                "code": "CATEGORY_TYPE_IN_USE",
+            }), 400
         conn.execute(
             "UPDATE categories SET name=?, color=?, text_color=?, type=? WHERE id=?",
             (
-                (data.get("name") or "").strip(),
+                name,
                 data.get("color", "#334155"),
                 data.get("text_color", "#ffffff"),
-                data.get("type", "expense"),
+                new_type,
                 cat_id,
             ),
         )
@@ -3473,9 +3587,20 @@ def subcategory_delete(sub_id: str):
         row = conn.execute("SELECT id, name FROM subcategories WHERE id=?", (sub_id,)).fetchone()
         if not row:
             return jsonify({"detail": "Nao encontrado", "code": "NOT_FOUND"}), 404
-        n = conn.execute("SELECT COUNT(1) FROM transactions WHERE subcategory_id=?", (sub_id,)).fetchone()[0]
-        if int(n) > 0:
-            return jsonify({"detail": f"Subcategoria usada em {n} lancamentos. Reclassifique-os primeiro.", "code": "HAS_TRANSACTIONS"}), 400
+        references = {
+            "lancamentos": conn.execute("SELECT COUNT(1) FROM transactions WHERE subcategory_id=?", (sub_id,)).fetchone()[0],
+            "historico": conn.execute("SELECT COUNT(1) FROM classification_history WHERE subcategory_id=?", (sub_id,)).fetchone()[0],
+            "parcelamentos": conn.execute("SELECT COUNT(1) FROM installment_plans WHERE subcategory_id=?", (sub_id,)).fetchone()[0],
+        }
+        used = {name: int(total or 0) for name, total in references.items() if int(total or 0) > 0}
+        if used:
+            detail = ", ".join(f"{name}: {total}" for name, total in used.items())
+            return jsonify({
+                "detail": f"Subcategoria ainda possui referencias ({detail}). Reclassifique os dados primeiro.",
+                "code": "SUBCATEGORY_IN_USE",
+                "references": used,
+            }), 400
+        conn.execute("UPDATE transactions SET suggested_subcategory_id=NULL WHERE suggested_subcategory_id=?", (sub_id,))
         conn.execute("DELETE FROM subcategories WHERE id=?", (sub_id,))
         record_audit(current_user(), "delete_subcategory", "subcategory", sub_id, "name", row[1], "", conn=conn)
     return jsonify({"ok": True})
@@ -3483,34 +3608,10 @@ def subcategory_delete(sub_id: str):
 
 @app.route("/api/v1/import/upload", methods=["POST"])
 def import_upload():
-    f = request.files.get("file")
-    account_id = (request.form.get("account_id") or "").strip()
-    confirm_duplicates = (request.form.get("confirm_duplicates") or "").strip().lower() in {"1", "true", "yes", "sim"}
-    competence_month = (request.form.get("competence_month") or "").strip()
-    if competence_month and not re.match(r"^\d{4}/\d{2}$", competence_month):
-        return jsonify({"detail": "competence_month deve estar no formato YYYY/MM", "code": "VALIDATION_ERROR"}), 400
-    if not f or not f.filename:
-        return jsonify({"detail": "Arquivo obrigatorio", "code": "VALIDATION_ERROR"}), 400
-    if not account_id:
-        return jsonify({"detail": "Conta/cartao obrigatorio", "code": "ACCOUNT_REQUIRED"}), 400
-    safe_name = secure_filename(f.filename) or "arquivo"
-    p = UPLOADS / f"{int(dt.datetime.now().timestamp())}-{safe_name}"
-    f.save(p)
-    try:
-        data, code = import_document(
-            p,
-            account_id,
-            confirm_duplicates=confirm_duplicates,
-            competence_month_override=competence_month,
-        )
-        return jsonify(data), code
-    except Exception as exc:
-        try:
-            if p.exists():
-                p.unlink()
-        except Exception:
-            pass
-        return jsonify({"detail": f"{type(exc).__name__}: {exc}", "code": "PARSE_FAILED"}), 422
+    return jsonify({
+        "detail": "Importacao direta desativada. Use preview e confirmacao.",
+        "code": "IMPORT_PREVIEW_REQUIRED",
+    }), 410
 
 
 @app.route("/api/v1/import/preview", methods=["POST"])
@@ -4094,6 +4195,13 @@ def system_reset():
 
 @app.route("/api/v1/import/scan-folder", methods=["POST"])
 def import_scan_folder():
+    return jsonify({
+        "detail": "Importacao automatica por pasta foi descontinuada.",
+        "code": "FOLDER_IMPORT_DISABLED",
+    }), 410
+
+    # Codigo mantido temporariamente abaixo apenas para facilitar a remocao
+    # mecanica em uma etapa posterior de modularizacao.
     data = request.get_json(force=True) or {}
     root = Path(data.get("root") or str(IMPORT_SCAN_DEFAULT_ROOT))
     threshold = float(data.get("threshold") or 70)
@@ -4265,7 +4373,8 @@ def import_seed():
             "detail": f"Ja existe uma importacao em andamento: {active[2]}",
             "code": "SEED_IMPORT_IN_PROGRESS", "job_id": active[0], "status": active[1],
         }), 409
-    p = UPLOADS / f"{int(dt.datetime.now().timestamp())}-seed-{f.filename}"
+    safe_name = secure_filename(f.filename) or "base-historica.xlsx"
+    p = UPLOADS / f"{int(dt.datetime.now().timestamp())}-seed-{safe_name}"
     f.save(p)
     job_id = str(uuid.uuid4())
     now = dt.datetime.now().isoformat(timespec="seconds")
@@ -4936,59 +5045,14 @@ def review_history_link(tx_id: str):
             """
             UPDATE transactions
             SET history_match_id=NULL,history_match_confirmed=0,history_match_rejected_id=?,
-                identity_score=0,match_probability=0,match_notes=''
+                identity_score=0,match_probability=0,match_notes='',
+                suggested_category_id=NULL,suggested_subcategory_id=NULL
             WHERE id=?
             """,
             (match_id, tx_id),
         )
         record_audit(current_user(), "reject_history_link", "transaction", tx_id, "history_match_id", match_id, "", conn=conn)
     return jsonify({"id": tx_id, "history_match_id": None, "history_match_confirmed": False, "ok": True})
-
-
-@app.route("/api/v1/transactions/clear-links", methods=["POST"])
-def clear_transaction_links():
-    with db_connect() as conn:
-        cur = conn.execute(
-            """
-            UPDATE transactions
-            SET history_match_id=NULL,
-                history_match_confirmed=0,
-                history_match_rejected_id=NULL,
-                identity_score=0,
-                match_probability=0,
-                match_notes=''
-            WHERE history_match_id IS NOT NULL
-               OR identity_score<>0
-               OR match_probability<>0
-               OR match_notes<>''
-            """
-        )
-        updated = cur.rowcount if cur.rowcount is not None else 0
-    return jsonify({"updated": updated})
-
-
-@app.route("/api/v1/transactions/clear-classifications", methods=["POST"])
-def clear_transaction_classifications():
-    with db_connect() as conn:
-        cur = conn.execute(
-            """
-            UPDATE transactions
-            SET category_id=NULL,
-                subcategory_id=NULL,
-                notes='',
-                status='pending',
-                history_match_id=NULL,
-                identity_score=0,
-                match_probability=0,
-                match_notes=''
-            WHERE status NOT IN ('duplicate','ignored') AND locked=0
-            """
-        )
-        updated = cur.rowcount if cur.rowcount is not None else 0
-        deleted = conn.execute(
-            "DELETE FROM classification_history WHERE source_file_id LIKE 'manual:%'"
-        ).rowcount
-    return jsonify({"updated": updated, "manual_history_deleted": deleted or 0})
 
 
 @app.route("/api/v1/transactions/<tx_id>/flags", methods=["PATCH"])
@@ -5009,6 +5073,24 @@ def update_transaction_flags(tx_id: str):
     })
 
 
+@app.route("/api/v1/transactions/suggestions/batch", methods=["POST"])
+def tx_suggestions_batch():
+    data = request.get_json(force=True) or {}
+    tx_ids = list(dict.fromkeys(str(item).strip() for item in (data.get("transaction_ids") or []) if str(item).strip()))
+    if not tx_ids:
+        return jsonify({"items": {}})
+    if len(tx_ids) > 100:
+        return jsonify({"detail": "No maximo 100 lancamentos por lote", "code": "BATCH_TOO_LARGE"}), 400
+    with db_connect() as conn:
+        evidence_by_type = load_suggestion_evidence(conn)
+        items = {}
+        for tx_id in tx_ids:
+            suggestion = build_suggestions_for_tx(conn, tx_id, evidence_by_type=evidence_by_type)
+            if suggestion is not None:
+                items[tx_id] = suggestion
+    return jsonify({"items": items})
+
+
 @app.route("/api/v1/transactions/<tx_id>/suggestions")
 def tx_suggestions(tx_id: str):
     with db_connect() as conn:
@@ -5019,9 +5101,12 @@ def tx_suggestions(tx_id: str):
 
 
 @app.route("/api/v1/transactions/recalculate-probabilities", methods=["POST"])
+@app.route("/api/v1/transactions/recalculate-history-links", methods=["POST"])
 def recalculate_probabilities():
     job_id = enqueue_probability_recalculation()
-    return jsonify({"job_id": job_id, "status": "queued"}), 202
+    with db_connect() as conn:
+        row = conn.execute("SELECT status FROM recalculation_jobs WHERE id=?", (job_id,)).fetchone()
+    return jsonify({"job_id": job_id, "status": row[0] if row else "queued"}), 202
 
 
 def _run_probability_recalculation_job(job_id: str) -> None:
@@ -5170,7 +5255,9 @@ def _recalculate_probabilities_impl(job_id: str | None = None, batch_size: int =
                         match_notes='',
                         history_match_id=NULL,
                         history_match_confirmed=0,
-                        identity_score=0
+                        identity_score=0,
+                        suggested_category_id=NULL,
+                        suggested_subcategory_id=NULL
                     WHERE id=?
                     """,
                     (r[0],),
@@ -5229,14 +5316,6 @@ def _recalculate_probabilities_impl(job_id: str | None = None, batch_size: int =
                 (len(rows), updated, dt.datetime.now().isoformat(timespec="seconds"), job_id),
             )
     return {"updated": updated, "total": len(rows), "linked_classified": linked_classified}
-
-
-@app.route("/api/v1/transactions/auto-classify", methods=["POST"])
-def auto_classify_by_probability():
-    return jsonify({
-        "detail": "match_probability agora representa vinculo com a base historica, nao classificacao automatica.",
-        "code": "DISABLED_BY_PRODUCT_RULE",
-    }), 409
 
 
 @app.route("/api/v1/history")
@@ -5438,67 +5517,6 @@ def bulk_classify():
             for tid in target_ids:
                 record_audit(user, "bulk_classify", "transaction", tid, "category_id", "", cat, conn=conn)
     return jsonify({"updated": updated, "skipped_locked": len(locked_ids)})
-
-
-@app.route("/api/v1/transactions/bulk-vincular", methods=["POST"])
-def bulk_vincular():
-    return jsonify({
-        "detail": "Vinculo com a base historica foi descontinuado. A base historica agora serve apenas para sugestoes de categoria/subcategoria.",
-        "code": "DISABLED_BY_PRODUCT_RULE",
-    }), 409
-
-
-def _bulk_vincular_desativado():
-    data = request.get_json(force=True) or {}
-    threshold = float(data.get("threshold", 70.0))
-    account_id = (data.get("account_id") or "").strip()
-    competence_month = (data.get("competence_month") or "").strip()
-
-    where = [
-        "t.status='pending'",
-        "t.locked=0",
-        "t.history_match_id IS NOT NULL",
-        "t.history_match_id != ''",
-        "t.identity_score >= ?",
-    ]
-    params: list[Any] = [threshold]
-
-    if account_id:
-        where.append("t.account_id=?")
-        params.append(account_id)
-    if competence_month:
-        where.append("t.competence_month=?")
-        params.append(competence_month)
-
-    with db_connect() as conn:
-        candidates = conn.execute(
-            f"""
-            SELECT t.id,t.history_match_id,h.category_id,h.subcategory_id
-            FROM transactions t
-            JOIN classification_history h ON h.id=t.history_match_id
-            WHERE {' AND '.join(where)}
-            """,
-            params,
-        ).fetchall()
-
-        vinculados = 0
-        for tx_id, _history_id, category_id, subcategory_id in candidates:
-            if not category_id:
-                continue
-            conn.execute(
-                """
-                UPDATE transactions
-                SET category_id=?,
-                    subcategory_id=?,
-                    notes=?,
-                    status='reconciled'
-                WHERE id=?
-                """,
-                (category_id, subcategory_id, "Vinculado ao historico", tx_id),
-            )
-            vinculados += 1
-
-    return jsonify({"vinculados": vinculados, "total_candidatos": len(candidates)})
 
 
 @app.route("/api/v1/transactions/months")

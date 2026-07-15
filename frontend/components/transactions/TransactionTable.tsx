@@ -2,7 +2,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Search, RefreshCw, ChevronUp, ChevronDown, Link2, X } from 'lucide-react'
 import { useStore } from '@/store/app'
-import { getTransactions, bulkClassify, classifyTransaction, getTransactionSuggestions, getLedgers, includeTransactionsInLedger, excludeTransactionsFromLedger, unlockTransaction, isAdmin, reviewHistoricalMatch } from '@/lib/api'
+import { getTransactions, bulkClassify, classifyTransaction, getTransactionSuggestionsBatch, getLedgers, includeTransactionsInLedger, excludeTransactionsFromLedger, unlockTransaction, isAdmin, reviewHistoricalMatch, type TransactionSuggestion } from '@/lib/api'
 import { Lock, LockOpen } from 'lucide-react'
 import { formatCurrencyAbs, formatDate } from '@/lib/utils'
 import type { Ledger, Transaction, TransactionFilters } from '@/types'
@@ -60,7 +60,7 @@ export default function TransactionTable({
   moveTargetLedgerId = '',
   moveTargetLedgerName = '',
 }: Props) {
-  const { months, accounts, categories, subcategories, addToast, refreshKey } = useStore()
+  const { months, accounts, categories, subcategories, addToast, refreshKey, bumpRefresh } = useStore()
   const [txs, setTxs] = useState<Transaction[]>([])
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
@@ -93,20 +93,8 @@ export default function TransactionTable({
   const [bulkLedgerId, setBulkLedgerId] = useState('')
   const [rowDraft, setRowDraft] = useState<Record<string, { category_id: string; subcategory_id: string; notes: string }>>({})
   const [savingRow, setSavingRow] = useState<Record<string, boolean>>({})
-  const [rowSuggestions, setRowSuggestions] = useState<Record<string, Array<{
-    category_id: string
-    category_name: string
-    subcategory_id: string | null
-    subcategory_name: string
-    best_notes?: string
-    probability: number
-    category_probability: number
-    subcategory_probability: number
-    frequency: number
-    history_evidence: number
-    transaction_evidence: number
-    justification: string
-  }>>>({})
+  const [rowSuggestions, setRowSuggestions] = useState<Record<string, TransactionSuggestion[]>>({})
+  const [suggestionErrors, setSuggestionErrors] = useState<Set<string>>(new Set())
 
   useEffect(() => {
     const next: Record<string, { category_id: string; subcategory_id: string; notes: string }> = {}
@@ -151,6 +139,7 @@ export default function TransactionTable({
           locked: true,
         }
       }))
+      bumpRefresh()
     } catch (err: unknown) {
       if ((err as { code?: string })?.code === 'TX_LOCKED') {
         addToast('Lancamento protegido. Use Desbloquear para alterar.', 'err')
@@ -211,6 +200,7 @@ export default function TransactionTable({
       }))
       setLinkReviewId(null)
       addToast(action === 'confirm' ? 'Vinculo confirmado e classificacao historica aplicada' : 'Sugestao de vinculo rejeitada')
+      bumpRefresh()
     } catch {
       addToast('Nao foi possivel revisar o vinculo', 'err')
     } finally {
@@ -243,6 +233,8 @@ export default function TransactionTable({
       setTotalPages(data.total_pages)
       if (data.summary) setSummary(data.summary)
       setPage(p)
+    } catch {
+      addToast('Nao foi possivel carregar os lancamentos', 'err')
     } finally {
       setLoading(false)
     }
@@ -256,22 +248,23 @@ export default function TransactionTable({
     const needingSuggestions = txs.filter(tx => !tx.locked && !tx.category_id)
     if (!needingSuggestions.length) return
 
-    const batchSize = 10
     let cancelled = false
 
     async function loadPendingSuggestions() {
-      for (let i = 0; i < needingSuggestions.length && !cancelled; i += batchSize) {
-        await Promise.allSettled(
-          needingSuggestions.slice(i, i + batchSize).map(async tx => {
-            if (rowSuggestions[tx.id] !== undefined) return
-            try {
-              const data = await getTransactionSuggestions(tx.id)
-              if (!cancelled) setRowSuggestions(s => ({ ...s, [tx.id]: data }))
-            } catch {
-              if (!cancelled) setRowSuggestions(s => ({ ...s, [tx.id]: [] }))
-            }
+      const ids = needingSuggestions.filter(tx => rowSuggestions[tx.id] === undefined).map(tx => tx.id)
+      if (!ids.length) return
+      try {
+        const data = await getTransactionSuggestionsBatch(ids)
+        if (!cancelled) {
+          setRowSuggestions(current => ({ ...current, ...data }))
+          setSuggestionErrors(current => {
+            const next = new Set(current)
+            ids.forEach(id => next.delete(id))
+            return next
           })
-        )
+        }
+      } catch {
+        if (!cancelled) setSuggestionErrors(current => new Set([...current, ...ids]))
       }
     }
 
@@ -279,7 +272,7 @@ export default function TransactionTable({
     return () => { cancelled = true }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [txs])
-  useEffect(() => { setRowSuggestions({}) }, [refreshKey])
+  useEffect(() => { setRowSuggestions({}); setSuggestionErrors(new Set()) }, [refreshKey])
   useEffect(() => { setStatusFilter(defaultStatus || '') }, [defaultStatus])
   useEffect(() => {
     setSortBy(defaultSortBy)
@@ -577,7 +570,7 @@ export default function TransactionTable({
                                   title={`${sg.justification} Clique para selecionar a categoria; a subcategoria sera escolhida separadamente.`}
                                 >
                                   {sg.category_name}
-                                  <span style={{ opacity: 0.65 }}>{(sg.category_probability ?? sg.probability ?? 0).toFixed(0)}%</span>
+                                  <span style={{ opacity: 0.65 }}>score {(sg.confidence ?? sg.category_probability ?? 0).toFixed(0)}</span>
                                 </button>
                               ))}
                             </div>
@@ -605,7 +598,9 @@ export default function TransactionTable({
                         }
                         return (
                           <p className="mb-1 text-[10px] text-[#5a5f73]">
-                            {suggestions === undefined ? 'Buscando sugestoes...' : 'Sem sugestao confiavel'}
+                            {suggestionErrors.has(tx.id)
+                              ? 'Falha ao calcular sugestoes. Atualize para tentar novamente.'
+                              : suggestions === undefined ? 'Buscando sugestoes...' : 'Sem evidencia suficiente'}
                           </p>
                         )
                       })()}
@@ -620,7 +615,7 @@ export default function TransactionTable({
                         {(rowSuggestions[tx.id] || []).length > 0 && <option value="" disabled>-- Sugeridas --</option>}
                         {(rowSuggestions[tx.id] || []).map((sg, i) => (
                           <option key={`sg-cat-${tx.id}-${i}-${sg.category_id}`} value={sg.category_id}>
-                            {sg.category_name} ({(sg.category_probability ?? sg.probability).toFixed(0)}%)
+                            {sg.category_name} (score {(sg.confidence ?? sg.category_probability).toFixed(0)})
                           </option>
                         ))}
                         {(rowSuggestions[tx.id] || []).length > 0 && <option value="" disabled>-- Todas --</option>}
@@ -668,7 +663,7 @@ export default function TransactionTable({
                           .filter(sg => !!sg.subcategory_id)
                           .map((sg, i) => (
                             <option key={`sg-sub-${tx.id}-${i}-${sg.subcategory_id}`} value={sg.subcategory_id || ''}>
-                              {sg.subcategory_name} ({(sg.subcategory_probability ?? sg.probability).toFixed(1)}%)
+                              {sg.subcategory_name} (score {(sg.subcategory_probability ?? 0).toFixed(0)})
                             </option>
                           ))}
                         {subcategories.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}

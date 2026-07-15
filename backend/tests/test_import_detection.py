@@ -121,6 +121,7 @@ class CompetenceDetectionTests(unittest.TestCase):
 class HistoricalLinkCandidateTests(unittest.TestCase):
     def make_history_db(self) -> sqlite3.Connection:
         conn = sqlite3.connect(":memory:")
+        self.addCleanup(conn.close)
         conn.execute(
             """
             CREATE TABLE classification_history(
@@ -170,6 +171,7 @@ class HistoricalLinkCandidateTests(unittest.TestCase):
 class ClassificationValidationTests(unittest.TestCase):
     def make_db(self) -> sqlite3.Connection:
         conn = sqlite3.connect(":memory:")
+        self.addCleanup(conn.close)
         conn.execute("CREATE TABLE categories(id TEXT, type TEXT)")
         conn.execute("CREATE TABLE subcategories(id TEXT)")
         conn.execute("INSERT INTO categories VALUES ('expense-cat','expense')")
@@ -205,6 +207,7 @@ class ClassificationValidationTests(unittest.TestCase):
 class SuggestionEvidenceTests(unittest.TestCase):
     def test_classified_transactions_are_used_as_evidence(self) -> None:
         conn = sqlite3.connect(":memory:")
+        self.addCleanup(conn.close)
         conn.execute("CREATE TABLE categories(id TEXT, name TEXT)")
         conn.execute("CREATE TABLE subcategories(id TEXT, name TEXT)")
         conn.execute(
@@ -235,16 +238,20 @@ class SuggestionEvidenceTests(unittest.TestCase):
             ("target", None, None, "2026-03-10", "MERCADO CENTRAL", "mercado central", -105.0, "expense", "acc", ""),
         )
 
-        suggestions = app.build_suggestions_for_tx(conn, "target")
+        evidence = app.load_suggestion_evidence(conn)
+        suggestions = app.build_suggestions_for_tx(conn, "target", evidence_by_type=evidence)
 
         self.assertTrue(suggestions)
         self.assertEqual(suggestions[0]["category_id"], "food")
         self.assertEqual(suggestions[0]["transaction_evidence"], 1)
         self.assertEqual(suggestions[0]["history_evidence"], 0)
         self.assertIn("lancamentos classificados", suggestions[0]["justification"])
+        self.assertIn("relative_score", suggestions[0])
+        self.assertIn("confidence", suggestions[0])
 
     def test_imported_history_suggests_category_and_its_subcategory(self) -> None:
         conn = sqlite3.connect(":memory:")
+        self.addCleanup(conn.close)
         conn.execute("CREATE TABLE categories(id TEXT, name TEXT)")
         conn.execute("CREATE TABLE subcategories(id TEXT, name TEXT)")
         conn.execute(
@@ -305,6 +312,7 @@ class InstallmentTests(unittest.TestCase):
 
     def make_plan_db(self) -> sqlite3.Connection:
         conn = sqlite3.connect(":memory:")
+        self.addCleanup(conn.close)
         conn.execute(
             """
             CREATE TABLE installment_plans(
