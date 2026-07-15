@@ -246,6 +246,9 @@ export async function getTransactionSuggestions(id: string): Promise<Array<{
   category_probability: number
   subcategory_probability: number
   frequency: number
+  history_evidence: number
+  transaction_evidence: number
+  justification: string
 }>> {
   if (USE_MOCK) {
     await delay()

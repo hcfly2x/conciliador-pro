@@ -103,6 +103,9 @@ export default function TransactionTable({
     category_probability: number
     subcategory_probability: number
     frequency: number
+    history_evidence: number
+    transaction_evidence: number
+    justification: string
   }>>>({})
 
   useEffect(() => {
@@ -538,14 +541,13 @@ export default function TransactionTable({
                         if (suggestions && suggestions.length > 0) {
                           return (
                             <div className="mb-1 flex flex-wrap gap-1">
-                              {suggestions.slice(0, 2).map((sg, i) => (
+                              {suggestions.slice(0, 3).map((sg, i) => (
                                 <button
                                   key={`chip-cat-${tx.id}-${i}`}
                                   type="button"
                                   onClick={() => patchRowDraft(tx, {
                                     category_id: sg.category_id,
-                                    subcategory_id: sg.subcategory_id || '',
-                                    notes: sg.best_notes || '',
+                                    subcategory_id: '',
                                   })}
                                   className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-semibold transition-all hover:opacity-80"
                                   style={{
@@ -554,7 +556,7 @@ export default function TransactionTable({
                                     color: i === 0 ? '#e8c96e' : '#8b90a4',
                                     cursor: 'pointer',
                                   }}
-                                  title={`Aplicar: ${sg.category_name} (${(sg.category_probability ?? sg.probability ?? 0).toFixed(0)}%)`}
+                                  title={`${sg.justification} Clique para selecionar a categoria; a subcategoria sera escolhida separadamente.`}
                                 >
                                   {sg.category_name}
                                   <span style={{ opacity: 0.65 }}>{(sg.category_probability ?? sg.probability ?? 0).toFixed(0)}%</span>
@@ -596,6 +598,7 @@ export default function TransactionTable({
                     <td className="px-3 py-2.5">
                       {tx.status === 'pending' && !rowDraft[tx.id]?.subcategory_id && (() => {
                         const subSuggestions = (rowSuggestions[tx.id] || [])
+                          .filter(sg => sg.category_id === rowDraft[tx.id]?.category_id)
                           .filter(sg => !!sg.subcategory_id && !!sg.subcategory_name)
                           .filter((sg, i, arr) => arr.findIndex(x => x.subcategory_id === sg.subcategory_id) === i)
                           .slice(0, 2)
@@ -812,6 +815,20 @@ export default function TransactionTable({
                     {field('Subcategoria', tx.match_history_subcategory_name || '')}
                   </div>
                 </section>
+              </div>
+              <div className="mt-4 grid gap-3 sm:grid-cols-3">
+                <div className="rounded-lg p-3" style={{ background: '#0f1320', border: '1px solid rgba(255,255,255,0.08)' }}>
+                  <p className="text-[10px] uppercase tracking-wider text-[#5a5f73]">Diferenca de data</p>
+                  <p className="mt-1 text-sm font-semibold text-[#e8eaf0]">{tx.match_date_difference_days == null ? 'Nao calculada' : `${tx.match_date_difference_days} dia(s)`}</p>
+                </div>
+                <div className="rounded-lg p-3" style={{ background: '#0f1320', border: '1px solid rgba(255,255,255,0.08)' }}>
+                  <p className="text-[10px] uppercase tracking-wider text-[#5a5f73]">Diferenca de valor</p>
+                  <p className="mt-1 text-sm font-semibold text-[#e8eaf0]">{formatCurrencyAbs(tx.match_amount_difference || 0)}</p>
+                </div>
+                <div className="rounded-lg p-3" style={{ background: '#0f1320', border: '1px solid rgba(255,255,255,0.08)' }}>
+                  <p className="text-[10px] uppercase tracking-wider text-[#5a5f73]">Similaridade da descricao</p>
+                  <p className="mt-1 text-sm font-semibold text-[#e8eaf0]">{Number(tx.match_description_similarity || 0).toFixed(1)}%</p>
+                </div>
               </div>
               <p className="mt-4 text-xs text-[#8b90a4]">Confirmar cria apenas o vinculo de identidade. Categoria e subcategoria continuam dependendo da sua acao.</p>
               <div className="mt-5 flex justify-end gap-2">
