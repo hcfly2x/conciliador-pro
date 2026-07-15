@@ -17,7 +17,7 @@ class WorkflowIntegrationTests(unittest.TestCase):
         self.conn.executescript(
             """
             CREATE TABLE categories(id TEXT PRIMARY KEY, type TEXT);
-            CREATE TABLE subcategories(id TEXT PRIMARY KEY);
+            CREATE TABLE subcategories(id TEXT PRIMARY KEY, name TEXT);
             CREATE TABLE transactions(
               id TEXT PRIMARY KEY, account_id TEXT, date TEXT, description TEXT,
               description_norm TEXT, amount REAL, type TEXT, locked INTEGER,
@@ -25,7 +25,8 @@ class WorkflowIntegrationTests(unittest.TestCase):
               installment_plan_id TEXT, installment_current INTEGER, installment_total INTEGER,
               classified_by TEXT, classified_at TEXT,
               history_match_id TEXT, identity_score REAL, history_match_confirmed INTEGER,
-              history_match_rejected_id TEXT, match_probability REAL, match_notes TEXT
+              history_match_rejected_id TEXT, match_probability REAL, match_notes TEXT,
+              suggested_category_id TEXT, suggested_subcategory_id TEXT
             );
             CREATE TABLE installment_plans(
               id TEXT PRIMARY KEY, category_id TEXT, subcategory_id TEXT,
@@ -42,12 +43,12 @@ class WorkflowIntegrationTests(unittest.TestCase):
               detail TEXT, created_at TEXT
             );
             INSERT INTO categories VALUES ('cat-expense','expense');
-            INSERT INTO subcategories VALUES ('sub-market');
+            INSERT INTO subcategories VALUES ('sub-market','MERCADO');
             INSERT INTO installment_plans VALUES ('plan-1',NULL,NULL,'','','');
             INSERT INTO transactions VALUES
-              ('tx-1','acc','2026-01-10','LOJA','loja',-100,'expense',0,NULL,NULL,'','pending','plan-1',1,3,'','',NULL,0,0,NULL,0,''),
-              ('tx-2','acc','2026-02-10','LOJA','loja',-100,'expense',0,NULL,NULL,'nota individual','pending','plan-1',2,3,'','',NULL,0,0,NULL,0,''),
-              ('tx-link','acc','2026-03-10','MERCADO','mercado',-50,'expense',0,NULL,NULL,'','pending',NULL,NULL,NULL,'','','hist-1',98,0,NULL,98,'');
+              ('tx-1','acc','2026-01-10','LOJA','loja',-100,'expense',0,NULL,NULL,'','pending','plan-1',1,3,'','',NULL,0,0,NULL,0,'',NULL,NULL),
+              ('tx-2','acc','2026-02-10','LOJA','loja',-100,'expense',0,NULL,NULL,'nota individual','pending','plan-1',2,3,'','',NULL,0,0,NULL,0,'',NULL,NULL),
+              ('tx-link','acc','2026-03-10','MERCADO','mercado',-50,'expense',0,NULL,NULL,'','pending',NULL,NULL,NULL,'','','hist-1',98,0,NULL,98,'','cat-expense','sub-market');
             INSERT INTO classification_history VALUES
               ('hist-1','seed:sheet:saidas','acc','2026-03-10','MERCADO','mercado',50,'expense','cat-expense','sub-market');
             """
@@ -93,8 +94,11 @@ class WorkflowIntegrationTests(unittest.TestCase):
 
         rejected = self.client.post("/api/v1/transactions/tx-link/history-link", json={"action": "reject"})
         self.assertEqual(rejected.status_code, 200)
-        row = self.conn.execute("SELECT history_match_id,history_match_rejected_id FROM transactions WHERE id='tx-link'").fetchone()
-        self.assertEqual(row, (None, "hist-1"))
+        row = self.conn.execute(
+            "SELECT history_match_id,history_match_rejected_id,suggested_category_id,suggested_subcategory_id "
+            "FROM transactions WHERE id='tx-link'"
+        ).fetchone()
+        self.assertEqual(row, (None, "hist-1", None, None))
 
     def test_document_transaction_deletion_requires_confirmation(self) -> None:
         response = self.client.delete("/api/v1/coverage/files", json={
@@ -103,6 +107,16 @@ class WorkflowIntegrationTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.get_json()["code"], "DELETE_TRANSACTIONS_CONFIRMATION_REQUIRED")
+
+    def test_historical_references_block_category_and_subcategory_deletion(self) -> None:
+        category = self.client.delete("/api/v1/categories/cat-expense")
+        subcategory = self.client.delete("/api/v1/subcategories/sub-market")
+
+        self.assertEqual(category.status_code, 400)
+        self.assertEqual(category.get_json()["code"], "CATEGORY_IN_USE")
+        self.assertGreater(category.get_json()["references"]["historico"], 0)
+        self.assertEqual(subcategory.status_code, 400)
+        self.assertEqual(subcategory.get_json()["code"], "SUBCATEGORY_IN_USE")
 
 
 if __name__ == "__main__":

@@ -70,10 +70,14 @@ consolidar regras e validar producao.
 - [x] Confirmar a UX de excluir somente o documento ou documento mais lancamentos.
 - [x] Confirmar a remocao definitiva de `import_db_duplicates`.
 - [x] Confirmar se colaboradores podem revisar candidatos de vinculo historico.
-- [ ] Fazer backup verificavel do PostgreSQL de producao antes de migrations.
-- [ ] Registrar commit e schema atualmente publicados em Vercel, Render e Supabase.
+- [ ] Fazer backup verificavel antes da primeira atualizacao que preserve dados
+      entre versoes. Durante a homologacao atual, o banco pode ser reiniciado a
+      cada publicacao e este item nao bloqueia os testes.
+- [ ] Registrar commit e schema publicados quando a aplicacao passar a preservar
+      os dados entre atualizacoes.
 
-**Saida:** decisoes pendentes fechadas e backup restauravel.
+**Saida:** decisoes pendentes fechadas; backup passa a ser obrigatorio antes da
+primeira versao com dados persistentes.
 
 ### Etapa 1 - Corrigir bloqueadores de regra e integridade
 
@@ -149,8 +153,8 @@ consolidar regras e validar producao.
 
 ### Etapa 5 - Consolidar cofre, relatorios e escopo
 
-- [ ] Implementar a UX de exclusao decidida na Etapa 0.
-- [ ] Escolher Base64 no PostgreSQL ou armazenamento de objetos para os originais.
+- [x] Implementar a UX de exclusao decidida na Etapa 0.
+- [x] Escolher Base64 no PostgreSQL ou armazenamento de objetos para os originais.
 - [ ] Testar upload, download, exclusao, cobertura e auditoria no destino escolhido.
 - [ ] Exibir claramente pendentes/sem categoria nos relatorios, se incluidos.
 - [ ] Testar totais e percentuais contra consultas de referencia.
@@ -164,9 +168,9 @@ consolidar regras e validar producao.
 
 - [x] Atualizar Next.js para uma versao 15.5.x sem os alertas do `npm audit` e
       repetir build/testes.
-- [ ] Restringir `CORS_ORIGINS` em producao e falhar de forma segura se estiver `*`.
+- [x] Restringir `CORS_ORIGINS` em producao e falhar de forma segura se estiver `*`.
 - [x] Adicionar rate limit e bloqueio temporario ao login.
-- [ ] Revisar token no `localStorage` e CSP.
+- [x] Migrar token para `sessionStorage`, validar `/auth/me` e adicionar CSP inicial.
 - [x] Adicionar cabecalhos basicos contra MIME sniffing, framing e vazamento de referrer.
 - [ ] Testar expiracao, logout, desativacao e troca de perfil em mais de um worker.
 - [x] Impedir desativar ou rebaixar o ultimo administrador ativo.
@@ -174,7 +178,7 @@ consolidar regras e validar producao.
 - [ ] Adicionar chaves estrangeiras/indices apos auditoria dos dados existentes.
 - [ ] Avaliar migracao de dinheiro para `NUMERIC`, com testes de arredondamento.
 - [ ] Dividir `app.py` gradualmente por dominios, sem reescrever os parsers.
-- [ ] Adicionar CI para testes Python, typecheck, build e auditoria de dependencias.
+- [x] Adicionar CI para testes Python, typecheck, build e auditoria de dependencias.
 
 **Saida:** deploy repetivel, schema versionado e riscos de seguranca reduzidos.
 
@@ -205,7 +209,7 @@ consolidar regras e validar producao.
 
 ## Verificacoes realizadas nesta revisao
 
-- 20 testes Python aprovados.
+- 33 testes Python aprovados.
 - Compilacao Python aprovada.
 - TypeScript sem erros.
 - Build de producao Next.js aprovado.

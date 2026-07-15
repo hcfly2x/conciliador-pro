@@ -6,7 +6,7 @@ import { useStore } from '@/store/app'
 import { formatCurrencyAbs, formatDate } from '@/lib/utils'
 
 export default function Page() {
-  const { accounts, categories, subcategories, addToast } = useStore()
+  const { accounts, categories, subcategories, addToast, bumpRefresh } = useStore()
   const [items, setItems] = useState<HistoryItem[]>([])
   const [total, setTotal] = useState(0)
   const [totalLinked, setTotalLinked] = useState(0)
@@ -29,7 +29,14 @@ export default function Page() {
   useEffect(() => {
     if (!recalcJob?.id || !['queued', 'running'].includes(recalcJob.status)) return
     const timer = setTimeout(async () => {
-      try { setRecalcJob(await getRecalculationJob(recalcJob.id)) } catch { /* tenta novamente no proximo ciclo */ }
+      try {
+        const updated = await getRecalculationJob(recalcJob.id)
+        setRecalcJob(updated)
+        if (updated.status === 'completed') {
+          addToast(`${updated.updated} candidatos de vinculo atualizados`)
+          bumpRefresh()
+        }
+      } catch { /* tenta novamente no proximo ciclo */ }
     }, 2000)
     return () => clearTimeout(timer)
   }, [recalcJob])
@@ -39,7 +46,7 @@ export default function Page() {
       const response = await recalculateProbabilities()
       setRecalcJob({ id: response.job_id, status: 'queued', processed: 0, total: 0, updated: 0, error: '' })
     } catch {
-      addToast('Erro ao iniciar o calculo de sugestoes', 'err')
+      addToast('Erro ao iniciar o calculo de vinculos', 'err')
     }
   }
 
@@ -95,6 +102,7 @@ export default function Page() {
   }
 
   async function handleUnlinkHistory(txId: string) {
+    if (!window.confirm('Desvincular este lancamento da base historica? A classificacao aplicada permanecera protegida.')) return
     try {
       await unlinkHistoricalMatch(txId)
       setUnlinkMenu(null)
@@ -120,7 +128,7 @@ export default function Page() {
           <p className="text-sm text-[#8b90a4] mt-1">Consulta somente leitura usada pelo motor de probabilidades.</p>
         </div>
         <button onClick={startRecalculation} disabled={recalcJob?.status === 'queued' || recalcJob?.status === 'running'} className="h-10 rounded-lg px-4 text-sm font-semibold disabled:opacity-50" style={{ background: '#c9a84c', color: '#0d0f14' }}>
-          {recalcJob?.status === 'queued' || recalcJob?.status === 'running' ? 'Calculando...' : 'Calcular sugestoes'}
+          {recalcJob?.status === 'queued' || recalcJob?.status === 'running' ? 'Calculando...' : 'Calcular vinculos historicos'}
         </button>
       </div>
 
@@ -257,6 +265,13 @@ export default function Page() {
                         >
                           vinculado
                         </span>
+                        <button
+                          type="button"
+                          onClick={() => item.linked_tx_id && handleUnlinkHistory(item.linked_tx_id)}
+                          className="ml-1 text-[10px] text-[#fca5a5] hover:underline"
+                        >
+                          desvincular
+                        </button>
                         <p className="text-[11px] text-[#5a5f73] mt-1 truncate max-w-[190px]" title={item.linked_tx_description || ''}>
                           {item.linked_tx_description || '-'}
                         </p>

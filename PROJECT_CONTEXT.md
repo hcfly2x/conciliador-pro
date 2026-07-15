@@ -15,7 +15,7 @@ A base historica e auxiliar: ela sugere categorias e subcategorias e pode ser vi
 - Banco de producao informado: Supabase/PostgreSQL.
 - Banco local alternativo: SQLite.
 - Build do frontend aprovado na auditoria de 15/07/2026.
-- Vinte testes automatizados do backend aprovados na revisao de 15/07/2026.
+- Trinta e tres testes automatizados do backend aprovados na revisao de 15/07/2026.
 - A validacao completa dos seis tipos de documento ainda nao foi concluida.
 - A producao nao foi validada de ponta a ponta com autenticacao durante a auditoria.
 
