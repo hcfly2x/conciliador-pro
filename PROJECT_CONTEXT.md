@@ -57,6 +57,7 @@ A base historica e auxiliar: ela sugere categorias e subcategorias e pode ser vi
 - Base historica separada dos lancamentos reais.
 - Sugestoes de categoria e subcategoria baseadas na base historica e nos lancamentos classificados.
 - O upload da base historica responde imediatamente e a importacao e o recalculo de vinculos rodam como jobs persistentes, sem manter a requisicao HTTP bloqueada.
+- A importacao historica exibe progresso por linhas e eventos; o calculo de sugestoes e iniciado separadamente por botao na tela Base Historica.
 - Vinculo entre registros da base historica e lancamentos reais.
 - Agrupamento e propagacao de classificacao entre parcelas reconhecidas.
 - Relatorios de resumo, categoria e evolucao mensal.

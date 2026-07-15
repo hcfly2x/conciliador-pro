@@ -448,6 +448,11 @@ export interface SeedImportJob {
   filename: string
   result: ImportResult | null
   error: string
+  phase: string
+  processed: number
+  total: number
+  message: string
+  logs: Array<{ time: string; message: string }>
 }
 
 export async function importSeedFile(file: File): Promise<{ job_id: string; status: string; filename: string }> {

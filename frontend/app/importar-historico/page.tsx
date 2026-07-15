@@ -1,6 +1,6 @@
 'use client'
 import { useEffect, useRef, useState } from 'react'
-import { getRecalculationJob, getSeedImportJob, importSeedFile, type RecalculationJob, type SeedImportJob } from '@/lib/api'
+import { getSeedImportJob, importSeedFile, type SeedImportJob } from '@/lib/api'
 import { useStore } from '@/store/app'
 
 export default function HistoricoPage() {
@@ -8,7 +8,6 @@ export default function HistoricoPage() {
   const [loading, setLoading] = useState(false)
   const [result, setResult] = useState<any>(null)
   const [error, setError] = useState('')
-  const [job, setJob] = useState<RecalculationJob | null>(null)
   const [importJob, setImportJob] = useState<SeedImportJob | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const { addToast } = useStore()
@@ -40,36 +39,14 @@ export default function HistoricoPage() {
     return () => { cancelled = true; if (timer) clearTimeout(timer) }
   }, [importJob?.id, importJob?.status, addToast])
 
-  useEffect(() => {
-    const jobId = result?.recalculation_job_id
-    if (!jobId) return
-    let cancelled = false
-    let timer: ReturnType<typeof setTimeout> | undefined
-    const poll = async () => {
-      try {
-        const current = await getRecalculationJob(jobId)
-        if (cancelled) return
-        setJob(current)
-        if (current.status === 'queued' || current.status === 'running') {
-          timer = setTimeout(poll, 2000)
-        }
-      } catch {
-        if (!cancelled) timer = setTimeout(poll, 4000)
-      }
-    }
-    poll()
-    return () => { cancelled = true; if (timer) clearTimeout(timer) }
-  }, [result?.recalculation_job_id])
-
   async function handleSend() {
     if (!file) return
     setLoading(true)
     setError('')
-    setJob(null)
     setResult(null)
     try {
       const r = await importSeedFile(file)
-      setImportJob({ id: r.job_id, status: 'queued', filename: r.filename, result: null, error: '' })
+      setImportJob({ id: r.job_id, status: 'queued', filename: r.filename, result: null, error: '', phase: 'queued', processed: 0, total: 0, message: 'Arquivo recebido', logs: [] })
     } catch (e: any) {
       setError(e?.detail || 'Erro ao importar planilha base')
       addToast('Falha na importacao da base', 'err')
@@ -97,8 +74,21 @@ export default function HistoricoPage() {
         <div className="rounded-xl p-4 mb-4" style={{ background: 'rgba(201,168,76,0.08)', border: '1px solid rgba(201,168,76,0.25)' }}>
           <p className="text-sm font-semibold text-[#c9a84c]">Arquivo recebido</p>
           <p className="mt-1 text-sm text-[#8b90a4]">
-            {importJob.status === 'queued' ? 'Importacao na fila...' : 'Lendo e salvando a base historica...'}
+            {importJob.message || (importJob.status === 'queued' ? 'Importacao na fila...' : 'Lendo e salvando a base historica...')}
           </p>
+          {importJob.total > 0 && (
+            <>
+              <div className="mt-3 h-2 overflow-hidden rounded bg-[#1a1e28]">
+                <div className="h-full bg-[#c9a84c] transition-all" style={{ width: `${Math.min(100, (importJob.processed / importJob.total) * 100)}%` }} />
+              </div>
+              <p className="mt-1 text-xs text-[#5a5f73]">{importJob.processed} de {importJob.total} linhas ({Math.round((importJob.processed / importJob.total) * 100)}%)</p>
+            </>
+          )}
+          {importJob.logs.length > 0 && (
+            <div className="mt-3 max-h-40 overflow-auto rounded bg-[#0d0f14] p-3 font-mono text-xs text-[#8b90a4]">
+              {importJob.logs.map((entry, index) => <p key={`${entry.time}-${index}`}><span className="text-[#5a5f73]">{entry.time}</span> {entry.message}</p>)}
+            </div>
+          )}
         </div>
       )}
 
@@ -106,21 +96,6 @@ export default function HistoricoPage() {
         <div className="rounded-xl p-4 mb-4" style={{ background: 'rgba(62,207,142,0.06)', border: '1px solid rgba(62,207,142,0.2)' }}>
           <p className="text-sm text-[#3ecf8e] font-semibold mb-2">Importacao concluida</p>
           <p className="text-sm text-[#e8eaf0]">Total: {result.total_parsed} | Inseridos: {result.total_inserted} | Duplicados: {result.total_duplicates}</p>
-          {result.recalculation_job_id && (
-            <div className="mt-3">
-              <p className="text-sm text-[#8b90a4]">
-                {job?.status === 'completed' && `Sugestoes atualizadas para ${job.updated} lancamentos.`}
-                {job?.status === 'failed' && `Falha ao atualizar sugestoes: ${job.error || 'erro interno'}`}
-                {(!job || job.status === 'queued') && 'Base salva. Atualizacao das sugestoes aguardando inicio...'}
-                {job?.status === 'running' && `Atualizando sugestoes: ${job.processed} de ${job.total} lancamentos...`}
-              </p>
-              {job && job.total > 0 && (job.status === 'running' || job.status === 'completed') && (
-                <div className="mt-2 h-2 overflow-hidden rounded bg-[#1a1e28]">
-                  <div className="h-full bg-[#3ecf8e] transition-all" style={{ width: `${Math.min(100, (job.processed / job.total) * 100)}%` }} />
-                </div>
-              )}
-            </div>
-          )}
         </div>
       )}
 

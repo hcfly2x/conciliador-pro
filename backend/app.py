@@ -1396,6 +1396,11 @@ def init_db() -> None:
               id TEXT PRIMARY KEY,
               status TEXT NOT NULL DEFAULT 'queued',
               filename TEXT NOT NULL,
+              phase TEXT NOT NULL DEFAULT 'queued',
+              processed INTEGER NOT NULL DEFAULT 0,
+              total INTEGER NOT NULL DEFAULT 0,
+              message TEXT NOT NULL DEFAULT '',
+              logs_json TEXT NOT NULL DEFAULT '[]',
               result_json TEXT NOT NULL DEFAULT '',
               error TEXT NOT NULL DEFAULT '',
               created_at TEXT NOT NULL,
@@ -1403,6 +1408,26 @@ def init_db() -> None:
               finished_at TEXT NOT NULL DEFAULT ''
             )
             """
+        )
+        seed_job_cols = [r[1] for r in conn.execute("PRAGMA table_info(seed_import_jobs)").fetchall()]
+        for col, definition in (
+            ("phase", "TEXT NOT NULL DEFAULT 'queued'"),
+            ("processed", "INTEGER NOT NULL DEFAULT 0"),
+            ("total", "INTEGER NOT NULL DEFAULT 0"),
+            ("message", "TEXT NOT NULL DEFAULT ''"),
+            ("logs_json", "TEXT NOT NULL DEFAULT '[]'"),
+        ):
+            if col not in seed_job_cols:
+                conn.execute(f"ALTER TABLE seed_import_jobs ADD COLUMN {col} {definition}")
+        conn.execute(
+            """
+            UPDATE seed_import_jobs
+            SET status='failed', phase='interrupted',
+                error='Processamento interrompido por reinicializacao do servidor',
+                message='Processamento interrompido; envie o arquivo novamente', finished_at=?
+            WHERE status IN ('queued','running')
+            """,
+            (dt.datetime.now().isoformat(timespec="seconds"),),
         )
         conn.execute(
             """
@@ -2412,7 +2437,7 @@ def history_sheet_key(sheet_name: str) -> str:
     return normalized.replace(" ", "_") or "historico"
 
 
-def import_seed_workbook(path: Path):
+def import_seed_workbook(path: Path, progress=None):
     if openpyxl is None:
         raise RuntimeError("openpyxl nao encontrado")
     wb = openpyxl.load_workbook(path, data_only=True)
@@ -2430,6 +2455,10 @@ def import_seed_workbook(path: Path):
     total_duplicates = 0
 
     sheets_found = [ws.title for ws in wb.worksheets]
+    total_rows = sum(max(0, ws.max_row - 1) for ws in wb.worksheets if norm_text(ws.title) in wanted)
+    processed_rows = 0
+    if progress:
+        progress("reading", 0, total_rows, f"Planilha aberta: {len(wb.worksheets)} aba(s)")
     sheets_recognized: list[str] = []
     with db_connect() as conn:
         for ws in wb.worksheets:
@@ -2437,6 +2466,8 @@ def import_seed_workbook(path: Path):
             if sname not in wanted:
                 continue
             sheets_recognized.append(ws.title)
+            if progress:
+                progress("importing", processed_rows, total_rows, f"Processando aba {ws.title}")
             sheet_type = wanted.get(sname)
             sheet_source_id = f"{imported_file_id}:sheet:{history_sheet_key(ws.title)}"
             rows = [list(r) for r in ws.iter_rows(values_only=True)]
@@ -2452,6 +2483,11 @@ def import_seed_workbook(path: Path):
             idx = map_headers(rows[header_idx])
             is_smartek_sheet = sname in {"helcio smartek", "smartek"}
             for row in rows[header_idx + 1 :]:
+                processed_rows += 1
+                if processed_rows % 100 == 0:
+                    conn.commit()
+                    if progress:
+                        progress("importing", processed_rows, total_rows, f"{total_inserted} inseridos, {total_duplicates} duplicados")
                 date_raw = row_get(row, idx, ["data", "date", "dia"])
                 desc_raw = row_get(row, idx, ["descricao", "historico", "estabelecimento"])
                 value_raw = row_get(row, idx, ["valor", "value", "total"])
@@ -2532,6 +2568,9 @@ def import_seed_workbook(path: Path):
                     ),
                 )
                 total_inserted += 1
+            conn.commit()
+            if progress:
+                progress("importing", processed_rows, total_rows, f"Aba {ws.title} concluida")
         conn.execute(
             """
             INSERT INTO imported_files(
@@ -2573,7 +2612,6 @@ def import_seed_workbook(path: Path):
             "code": "SEED_NO_ROWS",
             "sheets_found": sheets_found,
         }, 422
-    recalc_job = enqueue_probability_recalculation()
     return {
         "imported_file_id": imported_file_id,
         "filename": path.name,
@@ -2583,18 +2621,18 @@ def import_seed_workbook(path: Path):
         "total_duplicates": total_duplicates,
         "total_errors": 0,
         "sheets_recognized": sheets_recognized,
-        "recalculation_job_id": recalc_job,
-        "recalculation_status": "queued",
         "transactions_preview": [],
     }, 201
 
 
-def import_seed_pdf(path: Path):
+def import_seed_pdf(path: Path, progress=None):
     if PdfReader is None:
         raise RuntimeError("pypdf nao encontrado")
     text = "\n".join((p.extract_text() or "") for p in PdfReader(str(path)).pages)
     lines = [re.sub(r"\s+", " ", (ln or "").strip()) for ln in text.splitlines()]
     lines = [ln for ln in lines if ln]
+    if progress:
+        progress("reading", 0, len(lines), f"PDF extraido: {len(lines)} linha(s)")
 
     now = dt.datetime.now().isoformat(timespec="seconds")
     imported_file_id = str(uuid.uuid4())
@@ -2611,7 +2649,11 @@ def import_seed_pdf(path: Path):
         cat_rows = conn.execute("SELECT id,name,type FROM categories").fetchall()
         cat_map = [(r[0], r[1], r[2], norm_text(r[1])) for r in cat_rows]
 
-        for ln in lines:
+        for line_number, ln in enumerate(lines, start=1):
+            if line_number % 100 == 0:
+                conn.commit()
+                if progress:
+                    progress("importing", line_number, len(lines), f"{total_inserted} inseridos, {total_duplicates} duplicados")
             m = row_re.match(ln)
             if not m:
                 if re.search(r"\d{2}/\d{2}/\d{4}", ln):
@@ -2699,7 +2741,6 @@ def import_seed_pdf(path: Path):
             ),
         )
 
-    recalc_job = enqueue_probability_recalculation()
     return {
         "imported_file_id": imported_file_id,
         "filename": path.name,
@@ -2708,8 +2749,6 @@ def import_seed_pdf(path: Path):
         "total_inserted": total_inserted,
         "total_duplicates": total_duplicates,
         "total_errors": 0,
-        "recalculation_job_id": recalc_job,
-        "recalculation_status": "queued",
         "debug_rejected_sample": rejected[:15],
         "transactions_preview": [],
     }, 201
@@ -4047,6 +4086,15 @@ def import_seed():
     invalid_file = validate_import_filename(f.filename)
     if invalid_file:
         return invalid_file
+    with db_connect() as conn:
+        active = conn.execute(
+            "SELECT id,status,filename FROM seed_import_jobs WHERE status IN ('queued','running') ORDER BY created_at DESC LIMIT 1"
+        ).fetchone()
+    if active:
+        return jsonify({
+            "detail": f"Ja existe uma importacao em andamento: {active[2]}",
+            "code": "SEED_IMPORT_IN_PROGRESS", "job_id": active[0], "status": active[1],
+        }), 409
     p = UPLOADS / f"{int(dt.datetime.now().timestamp())}-seed-{f.filename}"
     f.save(p)
     job_id = str(uuid.uuid4())
@@ -4066,32 +4114,43 @@ def import_seed():
 
 
 def _run_seed_import_job(job_id: str, path: Path) -> None:
+    def progress(phase: str, processed: int, total: int, message: str) -> None:
+        timestamp = dt.datetime.now().strftime("%H:%M:%S")
+        with db_connect() as conn:
+            row = conn.execute("SELECT logs_json FROM seed_import_jobs WHERE id=?", (job_id,)).fetchone()
+            logs = json.loads(row[0] or "[]") if row else []
+            logs = (logs + [{"time": timestamp, "message": message}])[-30:]
+            conn.execute(
+                "UPDATE seed_import_jobs SET phase=?, processed=?, total=?, message=?, logs_json=? WHERE id=?",
+                (phase, processed, total, message, json.dumps(logs, ensure_ascii=False), job_id),
+            )
     try:
         with db_connect() as conn:
             conn.execute(
-                "UPDATE seed_import_jobs SET status='running', started_at=? WHERE id=?",
+                "UPDATE seed_import_jobs SET status='running', phase='starting', message='Abrindo arquivo', started_at=? WHERE id=?",
                 (dt.datetime.now().isoformat(timespec="seconds"), job_id),
             )
         if path.suffix.lower() == ".pdf":
-            data, code = import_seed_pdf(path)
+            data, code = import_seed_pdf(path, progress=progress)
         else:
-            data, code = import_seed_workbook(path)
+            data, code = import_seed_workbook(path, progress=progress)
         status = "completed" if code < 400 else "failed"
         error = "" if code < 400 else str(data.get("detail") or "Falha na importacao")
         with db_connect() as conn:
             conn.execute(
                 """
                 UPDATE seed_import_jobs
-                SET status=?, result_json=?, error=?, finished_at=? WHERE id=?
+                SET status=?, phase=?, result_json=?, error=?, message=?, finished_at=? WHERE id=?
                 """,
-                (status, json.dumps(data, ensure_ascii=False), error,
+                (status, status, json.dumps(data, ensure_ascii=False), error,
+                 "Importacao concluida" if code < 400 else error,
                  dt.datetime.now().isoformat(timespec="seconds"), job_id),
             )
     except Exception as exc:
         with db_connect() as conn:
             conn.execute(
-                "UPDATE seed_import_jobs SET status='failed', error=?, finished_at=? WHERE id=?",
-                (f"{type(exc).__name__}: {exc}"[:1000], dt.datetime.now().isoformat(timespec="seconds"), job_id),
+                "UPDATE seed_import_jobs SET status='failed', phase='failed', error=?, message=?, finished_at=? WHERE id=?",
+                (f"{type(exc).__name__}: {exc}"[:1000], str(exc)[:500], dt.datetime.now().isoformat(timespec="seconds"), job_id),
             )
 
 
@@ -4100,7 +4159,8 @@ def seed_import_job_status(job_id: str):
     with db_connect() as conn:
         row = conn.execute(
             """
-            SELECT id,status,filename,result_json,error,created_at,started_at,finished_at
+            SELECT id,status,filename,result_json,error,created_at,started_at,finished_at,
+                   phase,processed,total,message,logs_json
             FROM seed_import_jobs WHERE id=?
             """,
             (job_id,),
@@ -4111,6 +4171,8 @@ def seed_import_job_status(job_id: str):
     return jsonify({
         "id": row[0], "status": row[1], "filename": row[2], "result": result,
         "error": row[4], "created_at": row[5], "started_at": row[6], "finished_at": row[7],
+        "phase": row[8], "processed": row[9], "total": row[10], "message": row[11],
+        "logs": json.loads(row[12] or "[]"),
     })
 
 
