@@ -211,7 +211,7 @@ export async function getTransactions(filters: TransactionFilters = {}): Promise
   return http<PaginatedResponse<Transaction>>('GET', `/transactions?${params}`)
 }
 
-export async function classifyTransaction(id: string, data: { category_id: string; subcategory_id?: string | null; notes?: string; classification_source?: 'manual' | 'auto' | 'identity' }): Promise<Transaction> {
+export async function classifyTransaction(id: string, data: { category_id: string; subcategory_id?: string | null; notes?: string; classification_source?: 'manual' | 'auto' | 'identity'; apply_to_installments?: boolean }): Promise<Transaction & { affected_ids?: string[]; affected_count?: number; installment_plan_id?: string | null }> {
   if (USE_MOCK) {
     await delay()
     const t = mockTransactions.find(x => x.id === id)!
@@ -371,13 +371,22 @@ export async function importFile(file: File, account_id?: string, confirmDuplica
 }
 
 
-export async function previewImportFile(file: File, account_id: string): Promise<ImportPreviewResult> {
+export async function previewImportFile(file: File, account_id?: string): Promise<ImportPreviewResult> {
   if (USE_MOCK) {
     await delay(600)
+    const detectedAccount = mockAccounts.find(a => a.id === account_id) || mockAccounts[0]
     return {
       preview_id: Date.now().toString(),
       filename: file.name,
-      account_name: mockAccounts.find(a => a.id === account_id)?.name || '',
+      account_id: detectedAccount.id,
+      account_name: detectedAccount.name,
+      account_detection: {
+        bank: 'XP', account_type: detectedAccount.type,
+        suggested_account_id: detectedAccount.id, suggested_account_name: detectedAccount.name,
+        selected_account_id: detectedAccount.id, selected_account_name: detectedAccount.name,
+        confidence: 96, evidence: ['Nome e conteudo identificam a conta'],
+        selection_source: account_id ? 'manual' : 'automatic', conflict: false,
+      },
       detected_type: 'CARTAO XP',
       detection_confidence: 96.5,
       total_parsed: 45,
@@ -397,7 +406,7 @@ export async function previewImportFile(file: File, account_id: string): Promise
   }
   const form = new FormData()
   form.append('file', file)
-  form.append('account_id', account_id)
+  if (account_id) form.append('account_id', account_id)
   const res = await fetch(`${BASE}/import/preview`, { method: 'POST', body: form, headers: authHeaders() })
   if (!res.ok) { const err = await res.json().catch(() => ({})); throw { status: res.status, ...err } }
   return res.json()

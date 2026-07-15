@@ -119,14 +119,18 @@ export default function TransactionTable({
     if (!draft?.category_id) { addToast('Selecione categoria para classificar', 'err'); return }
     setSavingRow(s => ({ ...s, [tx.id]: true }))
     try {
-      await classifyTransaction(tx.id, {
+      const result = await classifyTransaction(tx.id, {
         category_id: draft.category_id,
         subcategory_id: draft.subcategory_id || null,
         notes: draft.notes || '',
+        apply_to_installments: true,
       })
-      addToast('Lançamento classificado')
+      const affected = new Set(result.affected_ids || [tx.id])
+      addToast(result.affected_count && result.affected_count > 1
+        ? `${result.affected_count} parcelas classificadas no plano`
+        : 'Lançamento classificado')
       setTxs(prev => prev.map(item => {
-        if (item.id !== tx.id) return item
+        if (!affected.has(item.id)) return item
         const cat = categories.find(c => c.id === draft.category_id)
         const sub = subcategories.find(s => s.id === draft.subcategory_id)
         return {
@@ -136,7 +140,7 @@ export default function TransactionTable({
           category_color: cat?.color || item.category_color,
           subcategory_id: draft.subcategory_id || null,
           subcategory_name: sub?.name || null,
-          notes: draft.notes || '',
+          notes: item.id === tx.id ? (draft.notes || '') : item.notes,
           status: 'reconciled',
           locked: true,
         }
@@ -163,14 +167,16 @@ export default function TransactionTable({
     if (!merged.category_id) return
     setSavingRow(s => ({ ...s, [tx.id]: true }))
     try {
-      await classifyTransaction(tx.id, {
+      const result = await classifyTransaction(tx.id, {
         category_id: merged.category_id,
         subcategory_id: merged.subcategory_id || null,
         notes: merged.notes || '',
         classification_source: next.classification_source || 'manual',
+        apply_to_installments: true,
       })
+      const affected = new Set(result.affected_ids || [tx.id])
       setTxs(prev => prev.map(item => {
-        if (item.id !== tx.id) return item
+        if (!affected.has(item.id)) return item
         const cat = categories.find(c => c.id === merged.category_id)
         const sub = subcategories.find(s => s.id === merged.subcategory_id)
         return {
@@ -180,11 +186,14 @@ export default function TransactionTable({
           category_color: cat?.color || item.category_color,
           subcategory_id: merged.subcategory_id || null,
           subcategory_name: sub?.name || null,
-          notes: merged.notes || '',
+          notes: item.id === tx.id ? (merged.notes || '') : item.notes,
           status: (next.classification_source === 'auto' ? 'auto_classified' : 'reconciled') as TransactionStatus,
           locked: true,
         }
       }))
+      if (result.affected_count && result.affected_count > 1) {
+        addToast(`${result.affected_count} parcelas classificadas no plano`)
+      }
     } catch (err: unknown) {
       if ((err as { code?: string })?.code === 'TX_LOCKED') {
         addToast('Lancamento protegido. Use Desbloquear para alterar.', 'err')
@@ -521,8 +530,14 @@ export default function TransactionTable({
                         </div>
                       )}
                       {tx.is_installment && (
-                        <span className="mt-1 inline-flex rounded px-1.5 py-0.5 text-[10px] font-semibold" style={{ background: 'rgba(201,168,76,0.12)', color: '#e8c96e', border: '1px solid rgba(201,168,76,0.25)' }}>
-                          {tx.installment_total ? `${tx.installment_total}x` : (tx.installment_label || 'Parcelado')}
+                        <span
+                          className="mt-1 inline-flex rounded px-1.5 py-0.5 text-[10px] font-semibold"
+                          style={{ background: 'rgba(201,168,76,0.12)', color: '#e8c96e', border: '1px solid rgba(201,168,76,0.25)' }}
+                          title="Categoria e subcategoria serao reaproveitadas nas demais parcelas deste plano"
+                        >
+                          {tx.installment_current && tx.installment_total
+                            ? `${tx.installment_current}/${tx.installment_total} · plano com ${tx.installment_plan_members || 1}`
+                            : (tx.installment_label || 'Parcelado')}
                         </span>
                       )}
                     </td>

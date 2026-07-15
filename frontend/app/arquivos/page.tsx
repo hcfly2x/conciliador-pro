@@ -122,7 +122,7 @@ export default function ArquivosPage() {
       const data = await previewImportFile(file, selected.accountId)
       setPreview(data)
       const suggested = String(data.import_meta?.suggested_competence_month || selected.yearMonth || '')
-      setCompetenceMonth((selected.yearMonth || suggested).replace('/', '-'))
+      setCompetenceMonth((suggested || selected.yearMonth).replace('/', '-'))
       addToast('Pre-validacao concluida')
     } catch (err: any) {
       addToast(err?.detail || 'Erro ao analisar arquivo', 'err')
@@ -318,7 +318,7 @@ export default function ArquivosPage() {
                       />
                     </label>
                   </div>
-                  <button onClick={commitPreview} disabled={busy} className="h-9 px-3 rounded-md bg-emerald-500/15 text-emerald-300 text-sm font-semibold flex items-center gap-2">
+                  <button onClick={commitPreview} disabled={busy || preview.quality_gate?.can_commit === false} className="h-9 px-3 rounded-md bg-emerald-500/15 text-emerald-300 text-sm font-semibold flex items-center gap-2 disabled:opacity-40">
                     <Check size={14} /> Confirmar
                   </button>
                 </div>
@@ -329,6 +329,16 @@ export default function ArquivosPage() {
                   <Mini label="Novos" value={preview.new_records} />
                   <Mini label="Match hist." value={preview.historical_matches || 0} />
                 </div>
+                <div className="grid grid-cols-2 gap-2 mb-4">
+                  <Mini label={`Entradas (${preview.income_count || 0})`} value={formatCurrencyAbs(preview.total_income || 0)} />
+                  <Mini label={`Saidas (${preview.expense_count || 0})`} value={formatCurrencyAbs(preview.total_expense || 0)} />
+                </div>
+                {preview.quality_gate && !preview.quality_gate.can_commit && (
+                  <div className="mb-4 rounded-md border border-red-400/30 bg-red-500/10 p-3">
+                    <p className="text-sm font-semibold text-red-300">Importacao bloqueada</p>
+                    {preview.quality_gate.critical_errors.map((item: string, index: number) => <p key={`${item}-${index}`} className="text-sm text-red-200">• {item}</p>)}
+                  </div>
+                )}
                 {preview.balance_check?.ok === false && (
                   <div className="mb-4 rounded-md border border-red-400/25 bg-red-500/10 p-3">
                     <p className="text-sm font-semibold text-red-300">Conferencia de saldo nao bateu</p>
@@ -364,7 +374,7 @@ export default function ArquivosPage() {
                   </details>
                 )}
                 <div className="max-h-80 overflow-auto border border-white/10 rounded-md">
-                  {preview.rows.slice(0, 50).map((row: any, idx: number) => (
+                  {preview.rows.map((row: any, idx: number) => (
                     <div key={`${row.date}-${idx}`} className="grid grid-cols-[88px_1fr_110px_80px_80px] gap-3 border-b border-white/10 px-3 py-2 text-sm">
                       <span className="text-[#b7c4e8]">{row.date}</span>
                       <span className="text-[#e8eaf0] min-w-0">
@@ -406,7 +416,7 @@ function Stat({ label, value, color }: { label: string; value: number; color: st
   )
 }
 
-function Mini({ label, value }: { label: string; value: number }) {
+function Mini({ label, value }: { label: string; value: number | string }) {
   return (
     <div className="rounded-md bg-[#0d0f14] border border-white/10 p-3">
       <p className="text-[10px] text-[#5a5f73] uppercase tracking-widest font-semibold mb-1">{label}</p>

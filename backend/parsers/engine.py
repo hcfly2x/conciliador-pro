@@ -995,12 +995,9 @@ def enrich_transaction(
     else:
         tx_type = raw.tx_type_raw
 
-    # 4. Calcular valor com sinal
-    # Em fatura de cartao, so a parcela 1 sera persistida. Ela representa
-    # a compra inteira, portanto o valor salvo deve ser o total parcelado.
+    # 4. Calcular valor com sinal. Cada linha representa exatamente a parcela
+    # cobrada nesta fatura; nunca multiplicar pelo total de parcelas.
     raw_amount = raw.amount_raw
-    if account_type == "credit_card" and inst_current == 1 and inst_total and inst_total > 1:
-        raw_amount = raw.amount_raw * inst_total
     amount_signed = round(
         raw_amount if tx_type == "income" else -raw_amount, 2
     )
@@ -1588,20 +1585,10 @@ def run_import_pipeline(path: Path, account_name: str, account_type: str) -> Imp
 
     # Enriquecimento
     enriched: list[EnrichedTx] = []
-    skipped_installments = 0
     discarded: list[str] = []
     for raw in raw_txs:
         try:
             tx = enrich_transaction(raw, account_type, fmt.file_format)
-            if (
-                account_type == "credit_card"
-                and tx.is_installment
-                and tx.installment_current
-                and tx.installment_current > 1
-            ):
-                skipped_installments += 1
-                discarded.append((raw.source_line or raw.description_raw or tx.description)[:220])
-                continue
             enriched.append(tx)
         except Exception:
             rejected.append(raw.source_line[:150])
@@ -1635,12 +1622,6 @@ def run_import_pipeline(path: Path, account_name: str, account_type: str) -> Imp
         warnings.append(
             f"{total_inter_account} lançamento(s) com tag de movimentação interna "
             "(fatura, aplicação/resgate ou transferência). Eles serão importados normalmente."
-        )
-
-    if skipped_installments > 0:
-        warnings.append(
-            f"{skipped_installments} parcela(s) 2+ descartada(s). "
-            "Apenas a parcela 1 e salva com o valor total da compra."
         )
 
     return ImportResult(

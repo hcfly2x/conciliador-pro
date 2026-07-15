@@ -61,6 +61,11 @@ export interface Transaction {
   installment_total?: number | null
   installment_label?: string | null
   is_installment?: boolean
+  installment_plan_id?: string | null
+  installment_plan_total?: number | null
+  installment_plan_amount?: number | null
+  installment_plan_members?: number
+  classification_inherited?: boolean
   flags?: string
   flags_list?: string[]
   match_probability?: number
@@ -147,20 +152,57 @@ export interface ImportBalanceCheck {
   message?: string
 }
 
+export interface ImportAccountDetection {
+  bank: string
+  account_type: string
+  suggested_account_id?: string
+  suggested_account_name?: string
+  selected_account_id: string
+  selected_account_name: string
+  confidence: number
+  evidence: string[]
+  selection_source: 'automatic' | 'manual'
+  conflict: boolean
+}
+
+export interface ImportMeta {
+  bank?: string
+  doc_type?: string
+  file_format?: string
+  encoding?: string
+  detection_confidence?: number
+  suggested_competence_month?: string
+  competence_confidence?: number
+  competence_strategy?: string
+  competence_evidence?: string[]
+  competence_warning?: string
+  total_installments?: number
+  total_inter_account?: number
+  total_cashback?: number
+  total_discarded?: number
+}
+
 export interface ImportPreviewResult {
   preview_id: string
   filename: string
+  account_id: string
   account_name: string
+  account_detection?: ImportAccountDetection
   detected_type: string
   detection_confidence: number
   total_parsed: number
   duplicates_db: number
   duplicates_internal: number
   new_records: number
+  income_count?: number
+  expense_count?: number
+  total_income?: number
+  total_expense?: number
   historical_matches?: number
+  quality_gate?: { can_commit: boolean; critical_errors: string[] }
   warnings?: string[]
   balance_check?: ImportBalanceCheck
-  import_meta?: Record<string, unknown>
+  import_meta?: ImportMeta
   rejected_lines?: string[]
   discarded_lines?: string[]
   rows: ImportPreviewRow[]
@@ -176,7 +218,7 @@ export interface ImportResult {
   total_errors: number
   warnings?: string[]
   balance_check?: ImportBalanceCheck
-  import_meta?: Record<string, unknown>
+  import_meta?: ImportMeta
   rejected_lines?: string[]
   discarded_lines?: string[]
   transactions_preview: Transaction[]

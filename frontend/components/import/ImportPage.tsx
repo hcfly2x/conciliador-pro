@@ -39,6 +39,7 @@ export default function ImportPage() {
 
   function resetAll() {
     setFile(null)
+    setAccountId('')
     setPreview(null)
     setCompetenceMonth('')
     setResult(null)
@@ -50,6 +51,7 @@ export default function ImportPage() {
   function pickFile(f: File | undefined) {
     if (!f) return
     setFile(f)
+    setAccountId('')
     setPreview(null)
     setCompetenceMonth('')
     setResult(null)
@@ -60,15 +62,12 @@ export default function ImportPage() {
 
   async function handlePreview() {
     if (!file) return
-    if (!accountId) {
-      setError('Selecione a conta/cartao antes de analisar.')
-      return
-    }
     setPreviewLoading(true)
     setError(null)
     try {
       const data = await previewImportFile(file, accountId)
       setPreview(data)
+      setAccountId(data.account_id)
       const suggested = String(data.import_meta?.suggested_competence_month || '')
       if (/^\d{4}\/\d{2}$/.test(suggested)) setCompetenceMonth(suggested.replace('/', '-'))
       addToast(`Prévia concluída: ${data.total_parsed} lançamentos lidos`)
@@ -134,13 +133,14 @@ export default function ImportPage() {
       </div>
 
       <div className="rounded-xl p-5" style={{ background: '#13161d', border: '1px solid rgba(255,255,255,0.08)' }}>
-        <label className="block text-[11px] font-semibold text-[#5a5f73] uppercase tracking-widest mb-2">Conta / Cartão</label>
-        <select className="w-full h-10 rounded-md px-3 text-sm text-[#e8eaf0] outline-none" style={{ background: '#1a1e28', border: '1px solid rgba(255,255,255,0.12)' }} value={accountId} onChange={e => setAccountId(e.target.value)}>
-          <option value="">Selecione...</option>
+        <label className="block text-[11px] font-semibold text-[#5a5f73] uppercase tracking-widest mb-2">Conta / Cartão (opcional)</label>
+        <select className="w-full h-10 rounded-md px-3 text-sm text-[#e8eaf0] outline-none" style={{ background: '#1a1e28', border: '1px solid rgba(255,255,255,0.12)' }} value={accountId} onChange={e => { setAccountId(e.target.value); setPreview(null); setCompetenceMonth(''); setError(null) }}>
+          <option value="">Detectar automaticamente</option>
           {accounts.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
         </select>
+        <p className="mt-2 text-xs text-[#8b90a4]">O sistema analisa o nome e o conteúdo. Se necessário, escolha uma conta e analise novamente.</p>
         <div className="mt-3 flex gap-2">
-          <button onClick={handlePreview} disabled={!file || !accountId || previewLoading} className="h-10 px-4 rounded-md text-sm font-semibold disabled:opacity-40" style={{ background: '#c9a84c', color: '#0d0f14' }}>
+          <button onClick={handlePreview} disabled={!file || previewLoading} className="h-10 px-4 rounded-md text-sm font-semibold disabled:opacity-40" style={{ background: '#c9a84c', color: '#0d0f14' }}>
             {previewLoading ? 'Analisando...' : 'Analisar arquivo'}
           </button>
           <button onClick={resetAll} className="h-10 px-4 rounded-md text-sm" style={{ background: '#1a1e28', border: '1px solid rgba(255,255,255,0.12)', color: '#8b90a4' }}>
@@ -163,6 +163,14 @@ export default function ImportPage() {
               <p className="text-sm text-[#8b90a4]">Tipo detectado</p>
               <p className="text-lg font-semibold text-[#e8eaf0]">{preview.detected_type} <span className="text-sm text-[#5a5f73]">({preview.detection_confidence.toFixed(1)}%)</span></p>
               <p className="text-sm text-[#8b90a4]">Conta selecionada: {selectedAccount?.name || preview.account_name}</p>
+              {preview.account_detection && (
+                <div className="mt-2 rounded-md p-2 text-xs" style={{ background: '#0f1320', border: '1px solid rgba(255,255,255,0.08)' }}>
+                  <p className={preview.account_detection.conflict ? 'text-[#fbbf24]' : 'text-[#93c5fd]'}>
+                    Conta {preview.account_detection.selection_source === 'automatic' ? 'detectada' : 'confirmada manualmente'}: {preview.account_detection.confidence.toFixed(0)}%
+                  </p>
+                  {preview.account_detection.evidence.map((item, index) => <p key={`${item}-${index}`} className="text-[#8b90a4]">• {item}</p>)}
+                </div>
+              )}
               <label className="mt-3 flex items-center gap-2 text-sm text-[#8b90a4]">
                 Competência
                 <select
@@ -195,6 +203,12 @@ export default function ImportPage() {
               {(!competenceMonth || competenceMonth.split('-').filter(Boolean).length < 2) && (
                 <p className="mt-1 text-xs text-[#fbbf24]">Selecione mês e ano de competência antes de confirmar.</p>
               )}
+              {preview.import_meta?.competence_confidence != null && (
+                <div className="mt-2 text-xs text-[#8b90a4]">
+                  <p>Confiança da competência: {preview.import_meta.competence_confidence.toFixed(0)}%</p>
+                  {preview.import_meta.competence_evidence?.map((item, index) => <p key={`${item}-${index}`}>• {item}</p>)}
+                </div>
+              )}
             </div>
             <div className="flex items-center gap-2 text-[#3ecf8e]"><ShieldCheck size={18} /><span className="text-sm font-medium">Pré-validação concluída</span></div>
           </div>
@@ -206,6 +220,24 @@ export default function ImportPage() {
             <div className="rounded-lg p-3" style={{ background: '#0f1320', border: '1px solid rgba(255,255,255,0.07)' }}><p className="text-xs text-[#8b90a4]">Novos para inserir</p><p className="text-xl text-[#3ecf8e] font-semibold">{preview.new_records}</p></div>
             <div className="rounded-lg p-3" style={{ background: '#0f1320', border: '1px solid rgba(255,255,255,0.07)' }}><p className="text-xs text-[#8b90a4]">Sugestões do histórico</p><p className="text-xl text-[#93c5fd] font-semibold">{preview.historical_matches || 0}</p></div>
           </div>
+
+          <div className="grid grid-cols-2 gap-3 mb-4">
+            <div className="rounded-lg p-3" style={{ background: 'rgba(62,207,142,0.06)', border: '1px solid rgba(62,207,142,0.18)' }}>
+              <p className="text-xs text-[#8b90a4]">Entradas ({preview.income_count || 0})</p>
+              <p className="text-lg text-[#3ecf8e] font-semibold">{fmtCurrency(preview.total_income || 0)}</p>
+            </div>
+            <div className="rounded-lg p-3" style={{ background: 'rgba(248,113,113,0.06)', border: '1px solid rgba(248,113,113,0.18)' }}>
+              <p className="text-xs text-[#8b90a4]">Saídas ({preview.expense_count || 0})</p>
+              <p className="text-lg text-[#f87171] font-semibold">{fmtCurrency(preview.total_expense || 0)}</p>
+            </div>
+          </div>
+
+          {preview.quality_gate && !preview.quality_gate.can_commit && (
+            <div className="mb-4 rounded-lg p-3" style={{ background: 'rgba(248,113,113,0.10)', border: '1px solid rgba(248,113,113,0.35)' }}>
+              <p className="text-sm font-semibold text-[#f87171]">Importação bloqueada</p>
+              {preview.quality_gate.critical_errors.map((item, index) => <p key={`${item}-${index}`} className="text-sm text-[#fecaca]">• {item}</p>)}
+            </div>
+          )}
 
           {preview.warnings && preview.warnings.length > 0 && (
             <div className="mb-4 rounded-lg p-3" style={{ background: 'rgba(251,191,36,0.08)', border: '1px solid rgba(251,191,36,0.25)' }}>
@@ -298,7 +330,7 @@ export default function ImportPage() {
           </div>
 
           <div className="mt-4 flex justify-end">
-            <button onClick={handleCommit} disabled={loading || preview.new_records <= 0} className="h-10 px-5 rounded-md font-semibold text-sm disabled:opacity-40 flex items-center gap-2" style={{ background: '#3ecf8e', color: '#0b1218' }}>
+            <button onClick={handleCommit} disabled={loading || preview.new_records <= 0 || preview.quality_gate?.can_commit === false} className="h-10 px-5 rounded-md font-semibold text-sm disabled:opacity-40 flex items-center gap-2" style={{ background: '#3ecf8e', color: '#0b1218' }}>
               <Database size={16} />
               {loading ? 'Salvando...' : 'Confirmar importação'}
             </button>

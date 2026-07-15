@@ -17,6 +17,7 @@ from typing import Any
 import os
 
 from flask import Flask, g, jsonify, request, send_from_directory
+from werkzeug.utils import secure_filename
 
 from parsers.engine import ImportResult, run_import_pipeline
 
@@ -1269,6 +1270,25 @@ def init_db() -> None:
         )
         conn.execute(
             """
+            CREATE TABLE IF NOT EXISTS installment_plans(
+              id TEXT PRIMARY KEY,
+              account_id TEXT NOT NULL,
+              description TEXT NOT NULL,
+              description_norm TEXT NOT NULL,
+              installment_total INTEGER NOT NULL,
+              installment_amount REAL NOT NULL,
+              first_seen_date TEXT NOT NULL,
+              category_id TEXT,
+              subcategory_id TEXT,
+              classified_by TEXT NOT NULL DEFAULT '',
+              classified_at TEXT NOT NULL DEFAULT '',
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
             CREATE TABLE IF NOT EXISTS import_previews(
               id TEXT PRIMARY KEY,
               filename TEXT NOT NULL,
@@ -1356,7 +1376,14 @@ def init_db() -> None:
             conn.execute("ALTER TABLE transactions ADD COLUMN classified_by TEXT NOT NULL DEFAULT ''")
         if "classified_at" not in tx_cols:
             conn.execute("ALTER TABLE transactions ADD COLUMN classified_at TEXT NOT NULL DEFAULT ''")
+        if "installment_plan_id" not in tx_cols:
+            conn.execute("ALTER TABLE transactions ADD COLUMN installment_plan_id TEXT")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_tx_locked ON transactions(locked)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_tx_installment_plan ON transactions(installment_plan_id)")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_installment_plan_match "
+            "ON installment_plans(account_id,description_norm,installment_total,installment_amount)"
+        )
         # Cofre de arquivos persistente no banco (o disco do hosting e efemero).
         conn.execute(
             """
@@ -1458,6 +1485,132 @@ def detect_account_by_content(conn: sqlite3.Connection, path: Path):
         name = "CARTAO XP" if is_card else "CONTA XP"
         return conn.execute("SELECT id,name,type,color FROM accounts WHERE name=? LIMIT 1", (name,)).fetchone()
     return None
+
+
+def read_detection_sample(path: Path) -> str:
+    """Le uma amostra do documento sem depender da conta selecionada."""
+    ext = path.suffix.lower()
+    try:
+        if ext == ".pdf" and PdfReader is not None:
+            reader = PdfReader(str(path))
+            return "\n".join((page.extract_text() or "") for page in reader.pages[:4])[:50000]
+        if ext == ".csv":
+            raw = path.read_bytes()[:50000]
+            for encoding in ("utf-8-sig", "utf-8", "cp1252", "latin-1"):
+                try:
+                    return raw.decode(encoding)
+                except UnicodeDecodeError:
+                    continue
+        if ext in (".xlsx", ".xls"):
+            sample_rows = load_transactions(path)[:60]
+            return "\n".join(f"{row.date} {row.description} {row.amount}" for row in sample_rows)
+    except Exception:
+        return ""
+    return ""
+
+
+def detect_document_identity(path: Path, sample_text: str | None = None) -> dict[str, Any]:
+    """Infere banco e tipo usando nome e conteudo, com evidencias auditaveis."""
+    filename = norm_text(path.name)
+    content = norm_text(sample_text if sample_text is not None else read_detection_sample(path))
+    bank_scores = {"SANTANDER": 0, "XP": 0, "NUBANK": 0}
+    kind_scores = {"credit_card": 0, "checking": 0}
+    evidence: list[str] = []
+
+    def add_bank(bank: str, points: int, reason: str) -> None:
+        bank_scores[bank] += points
+        evidence.append(reason)
+
+    def add_kind(kind: str, points: int, reason: str) -> None:
+        kind_scores[kind] += points
+        evidence.append(reason)
+
+    if "santander" in filename:
+        add_bank("SANTANDER", 5, "Nome do arquivo menciona Santander")
+    if re.search(r"\bxp\b", filename):
+        add_bank("XP", 5, "Nome do arquivo menciona XP")
+    if "nubank" in filename:
+        add_bank("NUBANK", 5, "Nome do arquivo menciona Nubank")
+
+    if "santander" in content:
+        add_bank("SANTANDER", 5, "Conteudo identifica Santander")
+    if "xp investimentos" in content or "xp invest" in content:
+        add_bank("XP", 5, "Conteudo identifica XP Investimentos")
+    elif re.search(r"\bxp\b", content[:12000]):
+        add_bank("XP", 2, "Conteudo contem identificacao XP")
+    if "nubank" in content:
+        add_bank("NUBANK", 5, "Conteudo identifica Nubank")
+
+    if any(term in filename for term in ("cartao", "fatura")):
+        add_kind("credit_card", 5, "Nome indica fatura de cartao")
+    if "extrato" in filename:
+        add_kind("checking", 5, "Nome indica extrato de conta")
+
+    card_markers = (
+        "detalhamento da fatura",
+        "vencimento da fatura",
+        "pagamento e demais creditos",
+        "limite de credito",
+        "data de compra",
+        "nome no extrato",
+    )
+    statement_markers = (
+        "extrato consolidado",
+        "conta corrente",
+        "saldo em",
+        "saldo anterior",
+        "movimentacao da conta",
+    )
+    card_hits = [marker for marker in card_markers if marker in content]
+    statement_hits = [marker for marker in statement_markers if marker in content]
+    if card_hits:
+        add_kind("credit_card", min(8, 2 + len(card_hits) * 2), f"Conteudo de fatura: {', '.join(card_hits[:3])}")
+    if statement_hits:
+        add_kind("checking", min(8, 2 + len(statement_hits) * 2), f"Conteudo de extrato: {', '.join(statement_hits[:3])}")
+
+    ranked_banks = sorted(bank_scores.items(), key=lambda item: item[1], reverse=True)
+    ranked_kinds = sorted(kind_scores.items(), key=lambda item: item[1], reverse=True)
+    bank, bank_score = ranked_banks[0]
+    kind, kind_score = ranked_kinds[0]
+    bank_margin = bank_score - ranked_banks[1][1]
+    kind_margin = kind_score - ranked_kinds[1][1]
+
+    if bank_score <= 0:
+        bank = "DESCONHECIDO"
+    if kind_score <= 0 or kind_margin == 0:
+        kind = "desconhecido"
+
+    confidence = 0.0
+    if bank != "DESCONHECIDO" and kind != "desconhecido":
+        confidence = min(0.99, 0.45 + min(bank_score, 10) * 0.025 + min(kind_score, 10) * 0.025 + min(bank_margin + kind_margin, 10) * 0.025)
+
+    account_name = ""
+    if bank != "DESCONHECIDO" and kind != "desconhecido":
+        account_name = f"{'CARTAO' if kind == 'credit_card' else 'CONTA'} {bank}"
+
+    return {
+        "bank": bank,
+        "account_type": kind,
+        "suggested_account_name": account_name,
+        "confidence": round(confidence * 100.0, 2),
+        "evidence": evidence,
+        "scores": {"banks": bank_scores, "types": kind_scores},
+    }
+
+
+def detect_account_with_evidence(conn: sqlite3.Connection, path: Path, sample_text: str | None = None) -> tuple[Any | None, dict[str, Any]]:
+    detection = detect_document_identity(path, sample_text)
+    account = None
+    if detection["suggested_account_name"]:
+        account = conn.execute(
+            "SELECT id,name,type,color FROM accounts WHERE name=? LIMIT 1",
+            (detection["suggested_account_name"],),
+        ).fetchone()
+    if account:
+        detection["suggested_account_id"] = account[0]
+    else:
+        detection["suggested_account_id"] = ""
+    return account, detection
 
 
 def suggest_for_desc(conn: sqlite3.Connection, dnorm: str, tx_type: str = "expense"):
@@ -1586,20 +1739,100 @@ def import_metadata_from_account(path: Path, account_name: str) -> dict[str, Any
     return meta
 
 
-def suggested_competence_from_file(path: Path, txs: list[Any] | None = None) -> str:
-    m = re.search(r"(\d{2})\s*[-_/]\s*(\d{2})", strip_accents(path.name).lower())
-    if m:
-        return f"20{m.group(2)}/{m.group(1)}"
-    if txs:
-        months: dict[str, int] = {}
-        for tx in txs:
-            d = getattr(tx, "date", "") or ""
-            if re.match(r"^\d{4}-\d{2}-\d{2}$", d):
-                key = d[:7].replace("-", "/")
-                months[key] = months.get(key, 0) + 1
-        if months:
-            return sorted(months.items(), key=lambda item: item[1], reverse=True)[0][0]
+def competence_from_filename(filename: str) -> str:
+    clean = strip_accents(filename).lower()
+    matches = re.findall(r"(?<!\d)(\d{1,2})\s*[-_/]\s*(\d{2})(?!\d)", clean)
+    valid = [(int(month), 2000 + int(year)) for month, year in matches if 1 <= int(month) <= 12 and 20 <= int(year) <= 40]
+    if not valid:
+        return ""
+    month, year = valid[-1]
+    return f"{year:04d}/{month:02d}"
+
+
+def declared_statement_competence(path: Path, sample_text: str | None = None) -> str:
+    sample = sample_text if sample_text is not None else read_detection_sample(path)
+    text = re.sub(r"\s+", " ", strip_accents(sample).lower())
+    range_patterns = (
+        r"(?:periodo(?: de)?|extrato de)\s*(\d{2}/\d{2}/20\d{2})\s*(?:a|ate|-)\s*(\d{2}/\d{2}/20\d{2})",
+        r"(?:periodo|periodo de|extrato de)\D{0,30}(\d{2}/\d{2}/20\d{2})\D{1,20}(\d{2}/\d{2}/20\d{2})",
+    )
+    for pattern in range_patterns:
+        match = re.search(pattern, text)
+        if not match:
+            continue
+        try:
+            end = dt.datetime.strptime(match.group(2), "%d/%m/%Y").date()
+            return end.strftime("%Y/%m")
+        except ValueError:
+            continue
+
+    month_names = {
+        "janeiro": 1, "fevereiro": 2, "marco": 3, "abril": 4,
+        "maio": 5, "junho": 6, "julho": 7, "agosto": 8,
+        "setembro": 9, "outubro": 10, "novembro": 11, "dezembro": 12,
+    }
+    title = re.search(
+        r"(janeiro|fevereiro|marco|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)\s*[/ -]\s*(20\d{2})",
+        text[:12000],
+    )
+    if title:
+        return f"{int(title.group(2)):04d}/{month_names[title.group(1)]:02d}"
     return ""
+
+
+def detect_competence(path: Path, txs: list[Any] | None, account_type: str, sample_text: str | None = None) -> dict[str, Any]:
+    filename_month = competence_from_filename(path.name)
+    declared_month = declared_statement_competence(path, sample_text) if account_type != "credit_card" else ""
+    evidence: list[str] = []
+    warning = ""
+    valid_dates: list[str] = []
+    for tx in txs or []:
+        value = getattr(tx, "date", "") or ""
+        if re.match(r"^\d{4}-\d{2}-\d{2}$", value):
+            valid_dates.append(value)
+
+    if filename_month:
+        evidence.append(f"Nome do arquivo indica {filename_month}")
+    if declared_month:
+        evidence.append(f"Periodo declarado no documento indica {declared_month}")
+
+    if account_type == "credit_card" and valid_dates:
+        latest_date = max(valid_dates)
+        selected = latest_date[:7].replace("-", "/")
+        evidence.append(f"Ultimo lancamento valido da fatura: {latest_date}")
+        confidence = 96.0 if len(valid_dates) >= 3 else 88.0
+        if filename_month and filename_month != selected:
+            warning = f"Competencia pelo ultimo lancamento ({selected}) difere do nome do arquivo ({filename_month})."
+        return {"month": selected, "confidence": confidence, "strategy": "latest_card_transaction", "evidence": evidence, "warning": warning}
+
+    month_counts: dict[str, int] = {}
+    for value in valid_dates:
+        key = value[:7].replace("-", "/")
+        month_counts[key] = month_counts.get(key, 0) + 1
+    if month_counts:
+        dominant, count = sorted(month_counts.items(), key=lambda item: (item[1], item[0]), reverse=True)[0]
+        share = count / max(1, len(valid_dates))
+        evidence.append(f"Mes predominante nos lancamentos: {dominant} ({share * 100:.0f}%)")
+        if declared_month:
+            if declared_month != dominant and share >= 0.60:
+                warning = f"Periodo declarado ({declared_month}) difere do mes predominante ({dominant})."
+            elif filename_month and filename_month != declared_month:
+                warning = f"Periodo declarado ({declared_month}) difere do nome do arquivo ({filename_month})."
+            return {"month": declared_month, "confidence": 98.0, "strategy": "statement_declared_period", "evidence": evidence, "warning": warning}
+        if filename_month == dominant:
+            return {"month": dominant, "confidence": 98.0, "strategy": "statement_filename_and_transactions", "evidence": evidence, "warning": ""}
+        if filename_month and share < 0.60:
+            evidence.append("Distribuicao de datas nao contradiz de forma forte o nome do arquivo")
+            return {"month": filename_month, "confidence": 82.0, "strategy": "statement_filename", "evidence": evidence, "warning": ""}
+        if filename_month and filename_month != dominant:
+            warning = f"Mes predominante ({dominant}) difere do nome do arquivo ({filename_month})."
+        return {"month": dominant, "confidence": round(75.0 + min(20.0, share * 20.0), 2), "strategy": "statement_transactions", "evidence": evidence, "warning": warning}
+
+    if declared_month:
+        return {"month": declared_month, "confidence": 90.0, "strategy": "statement_declared_period", "evidence": evidence, "warning": "Nao foi possivel confirmar o periodo pelas datas lidas."}
+    if filename_month:
+        return {"month": filename_month, "confidence": 70.0, "strategy": "filename_only", "evidence": evidence, "warning": "Nao foi possivel confirmar a competencia pelas datas lidas."}
+    return {"month": "", "confidence": 0.0, "strategy": "unknown", "evidence": evidence, "warning": "Competencia nao detectada."}
 
 
 def detect_account_for_scan(conn: sqlite3.Connection, path: Path):
@@ -1675,6 +1908,91 @@ def add_csv_flag(flags_text: str, flag: str) -> str:
     return ",".join(flags)
 
 
+def installment_members_are_compatible(
+    existing_date: str,
+    existing_current: int,
+    new_date: str,
+    new_current: int,
+) -> bool:
+    """Aceita datas originais repetidas ou a progressao mensal das parcelas."""
+    if existing_date == new_date:
+        return True
+    try:
+        old = dt.date.fromisoformat(existing_date)
+        new = dt.date.fromisoformat(new_date)
+    except (TypeError, ValueError):
+        return False
+    month_delta = (new.year - old.year) * 12 + new.month - old.month
+    installment_delta = int(new_current) - int(existing_current)
+    return month_delta == installment_delta and abs(new.day - old.day) <= 7
+
+
+def find_or_create_installment_plan(
+    conn: sqlite3.Connection,
+    account_id: str,
+    row: dict[str, Any],
+) -> tuple[str | None, tuple[Any, ...] | None]:
+    """Vincula somente quando existe um unico plano compativel; ambiguidade cria outro."""
+    current = int(row.get("installment_current") or 0)
+    total = int(row.get("installment_total") or 0)
+    if current <= 0 or total <= 1:
+        return None, None
+
+    amount = round(abs(float(row.get("amount_signed") or 0)), 2)
+    plans = conn.execute(
+        """
+        SELECT id,category_id,subcategory_id,classified_by,classified_at
+        FROM installment_plans
+        WHERE account_id=? AND description_norm=? AND installment_total=?
+          AND ROUND(installment_amount,2)=?
+        """,
+        (account_id, row["description_norm"], total, amount),
+    ).fetchall()
+    compatible: list[tuple[Any, ...]] = []
+    for plan in plans:
+        members = conn.execute(
+            "SELECT date,installment_current FROM transactions WHERE installment_plan_id=?",
+            (plan[0],),
+        ).fetchall()
+        if any(int(member[1] or 0) == current for member in members):
+            continue
+        if any(
+            installment_members_are_compatible(member[0], int(member[1] or 0), row["date"], current)
+            for member in members
+        ):
+            compatible.append(plan)
+
+    if len(compatible) == 1:
+        return compatible[0][0], compatible[0]
+
+    now = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
+    plan_id = str(uuid.uuid4())
+    conn.execute(
+        """
+        INSERT INTO installment_plans(
+          id,account_id,description,description_norm,installment_total,installment_amount,
+          first_seen_date,category_id,subcategory_id,classified_by,classified_at,created_at,updated_at
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+        """,
+        (
+            plan_id,
+            account_id,
+            row["description"],
+            row["description_norm"],
+            total,
+            amount,
+            row["date"],
+            None,
+            None,
+            "",
+            "",
+            now,
+            now,
+        ),
+    )
+    return plan_id, None
+
+
 def historical_match_count(conn: sqlite3.Connection, account_id: str, parsed_rows: list[dict[str, Any]], threshold: float = 70.0) -> tuple[int, float]:
     count = 0
     best = 0.0
@@ -1694,7 +2012,7 @@ def historical_match_count(conn: sqlite3.Connection, account_id: str, parsed_row
     return count, round(best, 2)
 
 
-def build_import_preview(path: Path, acc: tuple[Any, ...]) -> dict[str, Any]:
+def build_import_preview(path: Path, acc: tuple[Any, ...], detection_sample: str | None = None) -> dict[str, Any]:
     account_name = acc[1] or ""
     account_type = (acc[2] or "checking").lower()
     result: ImportResult = run_import_pipeline(path, account_name, account_type)
@@ -1730,11 +2048,20 @@ def build_import_preview(path: Path, acc: tuple[Any, ...]) -> dict[str, Any]:
             "sig": sig,
         })
 
+    competence = detect_competence(path, result.txs, account_type, detection_sample)
+    warnings = list(result.warnings)
+    if account_type != "credit_card" and len(parsed_rows) < 15:
+        warnings.append(
+            f"Atencao: o extrato gerou somente {len(parsed_rows)} lancamento(s). Revise a pre-visualizacao antes de importar."
+        )
+    if competence["warning"]:
+        warnings.append(competence["warning"])
+
     return {
         "txs": result.txs,
         "parsed_rows": parsed_rows,
         "internal_counter": internal_counter,
-        "warnings": result.warnings,
+        "warnings": warnings,
         "balance_check": {
             "ok": result.balance_check.ok,
             "message": result.balance_check.message,
@@ -1749,7 +2076,11 @@ def build_import_preview(path: Path, acc: tuple[Any, ...]) -> dict[str, Any]:
             "file_format": result.format_detection.file_format,
             "encoding": result.format_detection.encoding,
             "detection_confidence": result.format_detection.confidence,
-            "suggested_competence_month": suggested_competence_from_file(path, result.txs),
+            "suggested_competence_month": competence["month"],
+            "competence_confidence": competence["confidence"],
+            "competence_strategy": competence["strategy"],
+            "competence_evidence": competence["evidence"],
+            "competence_warning": competence["warning"],
             "total_installments": result.total_installments,
             "total_inter_account": result.total_inter_account,
             "total_cashback": result.total_cashback,
@@ -2282,6 +2613,7 @@ def import_document(
         if prev and int(prev[2] or 0) == 0:
             # Permite reprocessar arquivo que antes foi salvo sem lancamentos.
             conn.execute("DELETE FROM transactions WHERE imported_file_id=?", (prev[0],))
+            conn.execute("DELETE FROM installment_plans WHERE id NOT IN (SELECT installment_plan_id FROM transactions WHERE installment_plan_id IS NOT NULL)")
             conn.execute("DELETE FROM imported_files WHERE id=?", (prev[0],))
 
         # Prova real: comprovante de fatura Santander (PDF) não é extrato detalhado de compras.
@@ -2348,6 +2680,8 @@ def import_document(
             if is_db_duplicate:
                 key = f"{key}|dupdb|{uuid.uuid4()}"
 
+            installment_plan_id, installment_plan = find_or_create_installment_plan(conn, acc[0], r)
+
             exact = conn.execute(
                 """
                 SELECT category_id, subcategory_id
@@ -2367,7 +2701,11 @@ def import_document(
             s_cat = None
             s_sub = None
             identity = None
-            if exact:
+            inherited_from_plan = bool(installment_plan and installment_plan[1])
+            if inherited_from_plan:
+                cat, sub = installment_plan[1], installment_plan[2]
+                status = "reconciled"
+            elif exact:
                 cat, sub = exact[0], exact[1]
                 status = "reconciled"
             else:
@@ -2399,8 +2737,9 @@ def import_document(
                   id,tx_key,date,competence_month,description,description_norm,amount,type,status,account_id,
                   category_id,subcategory_id,notes,suggested_category_id,suggested_subcategory_id,
                   match_probability,match_notes,history_match_id,identity_score,
-                  installment_current,installment_total,flags,imported_file_id
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                  installment_current,installment_total,flags,imported_file_id,
+                  installment_plan_id,locked,classified_by,classified_at
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """,
                 (
                     tx_id,
@@ -2426,6 +2765,10 @@ def import_document(
                     r["installment_total"],
                     flags_text,
                     imported_file_id,
+                    installment_plan_id,
+                    1 if inherited_from_plan else 0,
+                    installment_plan[3] if inherited_from_plan else "",
+                    installment_plan[4] if inherited_from_plan else "",
                 ),
             )
             inserted += 1
@@ -2442,6 +2785,8 @@ def import_document(
                         "installment_total": r["installment_total"],
                         "installment_label": r["installment_label"],
                         "is_installment": r["is_installment"],
+                        "installment_plan_id": installment_plan_id,
+                        "classification_inherited": inherited_from_plan,
                         "flags": flags_text,
                     }
                 )
@@ -2818,7 +3163,8 @@ def import_upload():
         return jsonify({"detail": "Arquivo obrigatorio", "code": "VALIDATION_ERROR"}), 400
     if not account_id:
         return jsonify({"detail": "Conta/cartao obrigatorio", "code": "ACCOUNT_REQUIRED"}), 400
-    p = UPLOADS / f"{int(dt.datetime.now().timestamp())}-{f.filename}"
+    safe_name = secure_filename(f.filename) or "arquivo"
+    p = UPLOADS / f"{int(dt.datetime.now().timestamp())}-{safe_name}"
     f.save(p)
     try:
         data, code = import_document(
@@ -2844,22 +3190,44 @@ def import_preview():
     account_id = (request.form.get("account_id") or "").strip()
     if not f or not f.filename:
         return jsonify({"detail": "Arquivo obrigatorio", "code": "VALIDATION_ERROR"}), 400
-    if not account_id:
-        return jsonify({"detail": "Conta/cartao obrigatorio", "code": "ACCOUNT_REQUIRED"}), 400
 
     preview_id = str(uuid.uuid4())
-    p = UPLOADS / f"preview-{preview_id}-{f.filename}"
+    safe_name = secure_filename(f.filename) or "arquivo"
+    p = UPLOADS / f"preview-{preview_id}-{safe_name}"
     f.save(p)
     try:
         with db_connect() as conn:
-            acc = get_account(conn, account_id)
+            detection_sample = read_detection_sample(p)
+            detected_acc, account_detection = detect_account_with_evidence(conn, p, detection_sample)
+            acc = get_account(conn, account_id) if account_id else detected_acc
             if not acc:
-                return jsonify({"detail": "Conta/cartao obrigatorio", "code": "ACCOUNT_REQUIRED"}), 400
+                try:
+                    p.unlink()
+                except Exception:
+                    pass
+                return jsonify({
+                    "detail": "Nao foi possivel detectar a conta. Selecione uma conta e analise novamente.",
+                    "code": "ACCOUNT_DETECTION_FAILED",
+                    "account_detection": account_detection,
+                }), 422
 
-            prep = build_import_preview(p, acc)
+            selection_source = "manual" if account_id else "automatic"
+            conflict = bool(detected_acc and detected_acc[0] != acc[0])
+            account_detection.update({
+                "selected_account_id": acc[0],
+                "selected_account_name": acc[1],
+                "selection_source": selection_source,
+                "conflict": conflict,
+            })
+
+            prep = build_import_preview(p, acc, detection_sample)
             parsed_rows = prep["parsed_rows"]
             internal_counter = prep["internal_counter"]
-            warnings = prep["warnings"]
+            warnings = list(prep["warnings"])
+            if conflict:
+                warnings.append(
+                    f"A conta selecionada ({acc[1]}) difere da conta detectada ({detected_acc[1]}). Confirme antes de importar."
+                )
             internal_duplicates = sum(max(0, c - 1) for c in internal_counter.values())
 
             existing_db_duplicates = 0
@@ -2900,23 +3268,42 @@ def import_preview():
                     "history_match_id": match.get("history_match_id") or "",
                 })
 
-            detected_type, confidence = detect_file_type(f.filename, acc[1])
+            import_meta = prep.get("import_meta", {})
+            detected_kind = "CARTAO" if (acc[2] or "").lower() == "credit_card" else "EXTRATO"
+            detected_bank = import_meta.get("bank") or account_detection.get("bank") or "DESCONHECIDO"
+            detected_type = f"{detected_kind} {detected_bank}"
+            confidence = float(import_meta.get("detection_confidence") or 0.0)
             conn.execute(
                 "INSERT INTO import_previews(id,filename,temp_path,account_id,detected_type,detection_confidence,created_at) VALUES (?,?,?,?,?,?,?)",
-                (preview_id, f.filename, str(p), account_id, detected_type, confidence, dt.datetime.now().isoformat(timespec="seconds")),
+                (preview_id, f.filename, str(p), acc[0], detected_type, confidence, dt.datetime.now().isoformat(timespec="seconds")),
             )
+
+            total_income = round(sum(float(row["amount_signed"]) for row in parsed_rows if row["tx_type"] == "income"), 2)
+            total_expense = round(sum(abs(float(row["amount_signed"])) for row in parsed_rows if row["tx_type"] == "expense"), 2)
+            income_count = sum(1 for row in parsed_rows if row["tx_type"] == "income")
+            expense_count = sum(1 for row in parsed_rows if row["tx_type"] == "expense")
+            critical_errors: list[str] = []
+            if not parsed_rows:
+                critical_errors.append("Nenhum lancamento foi identificado no arquivo.")
 
         return jsonify({
             "preview_id": preview_id,
             "filename": f.filename,
+            "account_id": acc[0],
             "account_name": acc[1],
+            "account_detection": account_detection,
             "detected_type": detected_type,
             "detection_confidence": round(confidence * 100, 2),
             "total_parsed": len(parsed_rows),
             "duplicates_db": existing_db_duplicates,
             "duplicates_internal": internal_duplicates,
             "new_records": max(0, len(parsed_rows) - existing_db_duplicates),
+            "income_count": income_count,
+            "expense_count": expense_count,
+            "total_income": total_income,
+            "total_expense": total_expense,
             "historical_matches": historical_matches,
+            "quality_gate": {"can_commit": not critical_errors, "critical_errors": critical_errors},
             "warnings": warnings,
             "balance_check": prep.get("balance_check", {}),
             "import_meta": prep.get("import_meta", {}),
@@ -3270,6 +3657,7 @@ def coverage_delete_file():
                 (imported_id,),
             ).fetchone()[0] or 0)
             conn.execute("DELETE FROM transactions WHERE imported_file_id=?", (imported_id,))
+            conn.execute("DELETE FROM installment_plans WHERE id NOT IN (SELECT installment_plan_id FROM transactions WHERE installment_plan_id IS NOT NULL)")
             conn.execute("DELETE FROM imported_files WHERE id=?", (imported_id,))
     file_path.unlink()
     return jsonify({
@@ -3311,6 +3699,7 @@ def system_reset():
         }
         # Lancamentos, previews, cofre e cobertura sempre sao limpos.
         conn.execute("DELETE FROM transactions")
+        conn.execute("DELETE FROM installment_plans")
         conn.execute("DELETE FROM import_previews")
         conn.execute("DELETE FROM stored_documents")
         conn.execute("DELETE FROM account_file_coverage")
@@ -3690,9 +4079,12 @@ def transactions():
                    t.history_match_id,t.identity_score,
                    hm.date,hm.description,ABS(hm.amount),hm.type,
                    t.ledger_id,l.name,l.color,
-                   t.locked,t.classified_by,t.classified_at
+                   t.locked,t.classified_by,t.classified_at,
+                   t.installment_plan_id,p.installment_total,p.installment_amount,
+                   (SELECT COUNT(1) FROM transactions tp WHERE tp.installment_plan_id=t.installment_plan_id)
             FROM transactions t
             JOIN accounts a ON a.id=t.account_id
+            LEFT JOIN installment_plans p ON p.id=t.installment_plan_id
             LEFT JOIN ledgers l ON l.id=t.ledger_id
             LEFT JOIN categories c ON c.id=t.category_id
             LEFT JOIN subcategories s ON s.id=t.subcategory_id
@@ -3769,6 +4161,11 @@ def transactions():
             "locked": bool(r[36]),
             "classified_by": r[37] or "",
             "classified_at": r[38] or "",
+            "installment_plan_id": r[39],
+            "installment_plan_total": r[40],
+            "installment_plan_amount": float(r[41] or 0.0),
+            "installment_plan_members": int(r[42] or 0),
+            "classification_inherited": bool(r[39] and r[10]),
         }
         for r in rows
     ]
@@ -3802,6 +4199,7 @@ def classify(tx_id: str):
     sub = data.get("subcategory_id")
     notes = data.get("notes", "")
     source = data.get("classification_source", "manual")
+    apply_to_installments = data.get("apply_to_installments", True) is not False
     if not cat:
         return jsonify({"detail": "category_id obrigatorio", "code": "VALIDATION_ERROR"}), 400
     status = "auto_classified" if source == "auto" else "reconciled"
@@ -3811,7 +4209,8 @@ def classify(tx_id: str):
         tx = conn.execute(
             """
             SELECT id,account_id,date,description,description_norm,amount,type,
-                   locked,category_id,subcategory_id,notes,status
+                   locked,category_id,subcategory_id,notes,status,
+                   installment_plan_id,installment_current,installment_total
             FROM transactions
             WHERE id=?
             """,
@@ -3843,6 +4242,51 @@ def classify(tx_id: str):
             record_audit(user, "classify", "transaction", tx_id, "notes", old_notes, notes, conn=conn)
         if old_status != status:
             record_audit(user, "classify", "transaction", tx_id, "status", old_status, status, conn=conn)
+        affected_ids = [tx_id]
+        installment_plan_id = tx[12]
+        if apply_to_installments and installment_plan_id:
+            plan = conn.execute(
+                "SELECT category_id,subcategory_id FROM installment_plans WHERE id=?",
+                (installment_plan_id,),
+            ).fetchone()
+            conn.execute(
+                """
+                UPDATE installment_plans
+                SET category_id=?,subcategory_id=?,classified_by=?,classified_at=?,updated_at=?
+                WHERE id=?
+                """,
+                (cat, sub, user.get("username") or "", now, now, installment_plan_id),
+            )
+            siblings = conn.execute(
+                """
+                SELECT id FROM transactions
+                WHERE installment_plan_id=? AND id<>? AND locked=0
+                """,
+                (installment_plan_id, tx_id),
+            ).fetchall()
+            sibling_ids = [row[0] for row in siblings]
+            for sibling_id in sibling_ids:
+                conn.execute(
+                    """
+                    UPDATE transactions
+                    SET category_id=?,subcategory_id=?,status=?,locked=1,
+                        classified_by=?,classified_at=?
+                    WHERE id=?
+                    """,
+                    (cat, sub, status, user.get("username") or "", now, sibling_id),
+                )
+            affected_ids.extend(sibling_ids)
+            record_audit(
+                user,
+                "classify_installment_plan",
+                "installment_plan",
+                installment_plan_id,
+                "classification",
+                f"{(plan or ('', ''))[0] or ''}|{(plan or ('', ''))[1] or ''}",
+                f"{cat}|{sub or ''}",
+                detail=f"{len(affected_ids)} lancamento(s) atualizado(s)",
+                conn=conn,
+            )
         if source not in ("auto", "identity"):
             history_source = f"manual:{tx_id}"
             conn.execute("DELETE FROM classification_history WHERE source_file_id=?", (history_source,))
@@ -3868,6 +4312,9 @@ def classify(tx_id: str):
     return jsonify({
         "id": tx_id, "ok": True, "status": status,
         "locked": True, "classified_by": user.get("username") or "", "classified_at": now,
+        "installment_plan_id": tx[12],
+        "affected_ids": affected_ids,
+        "affected_count": len(affected_ids),
     })
 
 
