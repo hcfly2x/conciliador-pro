@@ -33,6 +33,23 @@ class DocumentDetectionTests(unittest.TestCase):
         self.assertEqual(result["account_type"], "checking")
 
 
+class ShadowMetadataTests(unittest.TestCase):
+    def test_pix_metadata_preserves_method_and_cleans_merchant(self) -> None:
+        result = app.extract_shadow_metadata("PIX ENVIADO MERCADO CENTRAL ID ABC123456")
+
+        self.assertEqual(result["transaction_method"], "pix")
+        self.assertEqual(result["merchant_norm"], "mercado central")
+        self.assertEqual(result["bank_reference"], "abc123456")
+
+    def test_credit_card_keeps_installment_as_structured_metadata(self) -> None:
+        result = app.extract_shadow_metadata("COMPRA MERCADO CENTRAL 02/05", "credit_card", 2, 5)
+
+        self.assertEqual(result["transaction_method"], "credit_card")
+        self.assertEqual(result["merchant_norm"], "mercado central")
+        self.assertEqual(result["shadow_installment_current"], 2)
+        self.assertEqual(result["shadow_installment_total"], 5)
+
+
 class CompetenceDetectionTests(unittest.TestCase):
     def test_card_uses_latest_transaction_month(self) -> None:
         txs = [

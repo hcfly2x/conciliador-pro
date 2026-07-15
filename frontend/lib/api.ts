@@ -474,6 +474,15 @@ export async function getSeedImportJob(id: string): Promise<SeedImportJob> {
   return http('GET', `/seed-import-jobs/${id}`)
 }
 
+export async function getActiveSeedImportJob(): Promise<SeedImportJob | null> {
+  try {
+    return await http('GET', '/seed-import-jobs-active')
+  } catch (error: any) {
+    if (error?.status === 404) return null
+    throw error
+  }
+}
+
 export interface CoverageFile {
   filename: string
   path: string

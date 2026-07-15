@@ -310,6 +310,48 @@ def norm_text(text: str) -> str:
     return cleaned.strip()
 
 
+def extract_shadow_metadata(description: str, account_type: str = "", installment_current: int | None = None, installment_total: int | None = None) -> dict[str, Any]:
+    """Extrai campos auxiliares sem alterar descricao, deduplicacao ou ranking."""
+    normalized = norm_text(description)
+    method = "other"
+    for candidate, pattern in (
+        ("pix", r"\bpix\b"), ("boleto", r"\bboleto\b"), ("ted", r"\bted\b"),
+        ("doc", r"\bdoc\b"), ("automatic_debit", r"\bdebito\s+aut(?:omatico)?\b"),
+        ("debit_card", r"\b(?:cartao\s+)?debito\b"), ("cashback", r"\bcashback\b"),
+        ("refund", r"\b(?:estorno|reembolso|devolucao)\b"), ("fee", r"\b(?:tarifa|taxa|iof)\b"),
+    ):
+        if re.search(pattern, normalized):
+            method = candidate
+            break
+    if method == "other" and account_type == "credit_card":
+        method = "credit_card"
+    elif method == "other" and re.search(r"\b(?:transferencia|transf)\b", normalized):
+        method = "bank_transfer"
+    reference = re.search(r"\b(?:id|e2e|ref|documento|controle)\s*([a-z0-9-]{6,})\b", normalized)
+    merchant = re.sub(r"\b\d{1,2}(?:\s*/\s*|\s+)\d{1,2}\b", " ", normalized)
+    merchant = re.sub(r"\b(?:pix|enviado|recebido|transferencia|transf|compra|cartao|credito|debito|boleto|pagamento|pgto)\b", " ", merchant)
+    merchant = re.sub(r"\b(?:id|e2e|ref|documento|controle)\s*[a-z0-9-]{6,}\b|\b\d{6,}\b", " ", merchant)
+    merchant_norm = " ".join(merchant.split()).strip()
+    return {
+        "merchant_norm": merchant_norm,
+        "transaction_method": method,
+        "counterparty_name": merchant_norm,
+        "bank_reference": reference.group(1) if reference else "",
+        "shadow_installment_current": installment_current,
+        "shadow_installment_total": installment_total,
+    }
+
+
+def store_shadow_metadata(conn, table: str, row_id: str, description: str, account_type: str = "", installment_current: int | None = None, installment_total: int | None = None) -> None:
+    if table not in {"transactions", "classification_history"}:
+        raise ValueError("Tabela invalida para metadados auxiliares")
+    meta = extract_shadow_metadata(description, account_type, installment_current, installment_total)
+    conn.execute(
+        f"UPDATE {table} SET merchant_norm=?,transaction_method=?,counterparty_name=?,bank_reference=? WHERE id=?",
+        (meta["merchant_norm"], meta["transaction_method"], meta["counterparty_name"], meta["bank_reference"], row_id),
+    )
+
+
 def clean_path_part(text: str) -> str:
     cleaned = strip_accents(text or "").upper()
     cleaned = re.sub(r"[^A-Z0-9]+", "_", cleaned)
@@ -1327,6 +1369,10 @@ def init_db() -> None:
               competence_month TEXT NOT NULL,
               description TEXT NOT NULL,
               description_norm TEXT NOT NULL,
+              merchant_norm TEXT NOT NULL DEFAULT '',
+              transaction_method TEXT NOT NULL DEFAULT 'other',
+              counterparty_name TEXT NOT NULL DEFAULT '',
+              bank_reference TEXT NOT NULL DEFAULT '',
               amount REAL NOT NULL,
               type TEXT NOT NULL,
               status TEXT NOT NULL,
@@ -1358,6 +1404,10 @@ def init_db() -> None:
               date TEXT,
               description TEXT NOT NULL,
               description_norm TEXT NOT NULL,
+              merchant_norm TEXT NOT NULL DEFAULT '',
+              transaction_method TEXT NOT NULL DEFAULT 'other',
+              counterparty_name TEXT NOT NULL DEFAULT '',
+              bank_reference TEXT NOT NULL DEFAULT '',
               amount REAL NOT NULL,
               type TEXT NOT NULL,
               category_id TEXT NOT NULL,
@@ -1534,6 +1584,14 @@ def init_db() -> None:
         if "account_id" not in cols:
             conn.execute("ALTER TABLE classification_history ADD COLUMN account_id TEXT")
         tx_cols = [r[1] for r in conn.execute("PRAGMA table_info(transactions)").fetchall()]
+        for col, definition in (
+            ("merchant_norm", "TEXT NOT NULL DEFAULT ''"),
+            ("transaction_method", "TEXT NOT NULL DEFAULT 'other'"),
+            ("counterparty_name", "TEXT NOT NULL DEFAULT ''"),
+            ("bank_reference", "TEXT NOT NULL DEFAULT ''"),
+        ):
+            if col not in tx_cols:
+                conn.execute(f"ALTER TABLE transactions ADD COLUMN {col} {definition}")
         if "installment_current" not in tx_cols:
             conn.execute("ALTER TABLE transactions ADD COLUMN installment_current INTEGER")
         if "installment_total" not in tx_cols:
@@ -1555,6 +1613,14 @@ def init_db() -> None:
         if "ledger_id" not in tx_cols:
             conn.execute("ALTER TABLE transactions ADD COLUMN ledger_id TEXT")
         hist_cols = [r[1] for r in conn.execute("PRAGMA table_info(classification_history)").fetchall()]
+        for col, definition in (
+            ("merchant_norm", "TEXT NOT NULL DEFAULT ''"),
+            ("transaction_method", "TEXT NOT NULL DEFAULT 'other'"),
+            ("counterparty_name", "TEXT NOT NULL DEFAULT ''"),
+            ("bank_reference", "TEXT NOT NULL DEFAULT ''"),
+        ):
+            if col not in hist_cols:
+                conn.execute(f"ALTER TABLE classification_history ADD COLUMN {col} {definition}")
         if "ledger_id" not in hist_cols:
             conn.execute("ALTER TABLE classification_history ADD COLUMN ledger_id TEXT")
         create_index_safely(conn, "idx_tx_ledger", "CREATE INDEX IF NOT EXISTS idx_tx_ledger ON transactions(ledger_id)")
@@ -2584,6 +2650,7 @@ def import_seed_workbook(path: Path, progress=None, imported_file_id: str | None
                 sub_label = smartek_seed_subcategory(tx_type, desc_raw, cat_raw, notes_raw) if is_smartek_sheet else str(sub_raw or notes_raw or "")
                 sub_id = find_or_create_subcategory(conn, sub_label)
                 acc_id = None
+                acc = None
                 account_label = "CONTA SMARTEK" if is_smartek_sheet else str(account_raw or "")
                 if account_label:
                     acc = resolve_account_from_text(conn, account_label)
@@ -2621,6 +2688,7 @@ def import_seed_workbook(path: Path, progress=None, imported_file_id: str | None
                 ).fetchone():
                     total_duplicates += 1
                     continue
+                history_id = str(uuid.uuid4())
                 conn.execute(
                     """
                     INSERT INTO classification_history(
@@ -2628,7 +2696,7 @@ def import_seed_workbook(path: Path, progress=None, imported_file_id: str | None
                     ) VALUES (?,?,?,?,?,?,?,?,?,?)
                     """,
                     (
-                        str(uuid.uuid4()),
+                        history_id,
                         sheet_source_id,
                         acc_id,
                         d,
@@ -2640,6 +2708,7 @@ def import_seed_workbook(path: Path, progress=None, imported_file_id: str | None
                         sub_id,
                     ),
                 )
+                store_shadow_metadata(conn, "classification_history", history_id, desc, acc[2] if acc else "")
                 total_inserted += 1
             conn.commit()
             if progress:
@@ -2770,6 +2839,7 @@ def import_seed_pdf(path: Path, progress=None, imported_file_id: str | None = No
                 total_duplicates += 1
                 continue
 
+            history_id = str(uuid.uuid4())
             conn.execute(
                 """
                 INSERT INTO classification_history(
@@ -2777,7 +2847,7 @@ def import_seed_pdf(path: Path, progress=None, imported_file_id: str | None = No
                 ) VALUES (?,?,?,?,?,?,?,?,?,?)
                 """,
                 (
-                    str(uuid.uuid4()),
+                    history_id,
                     imported_file_id,
                     None,
                     d,
@@ -2789,6 +2859,7 @@ def import_seed_pdf(path: Path, progress=None, imported_file_id: str | None = No
                     sub_id,
                 ),
             )
+            store_shadow_metadata(conn, "classification_history", history_id, desc)
             total_inserted += 1
 
         conn.execute(
@@ -2994,6 +3065,10 @@ def import_document(
                     installment_plan[3] if inherited_from_plan else "",
                     installment_plan[4] if inherited_from_plan else "",
                 ),
+            )
+            store_shadow_metadata(
+                conn, "transactions", tx_id, r["description"], acc[2],
+                r["installment_current"], r["installment_total"],
             )
             inserted += 1
             if len(preview) < 20:
@@ -4249,6 +4324,17 @@ def seed_import_job_status(job_id: str):
     })
 
 
+@app.route("/api/v1/seed-import-jobs-active")
+def active_seed_import_job():
+    with db_connect() as conn:
+        row = conn.execute(
+            "SELECT id FROM seed_import_jobs WHERE status IN ('queued','running') ORDER BY created_at DESC LIMIT 1"
+        ).fetchone()
+    if not row:
+        return jsonify({"detail": "Nenhuma importacao em andamento", "code": "NOT_FOUND"}), 404
+    return seed_import_job_status(row[0])
+
+
 TAG_FILTER_ALIASES = {
     "investimento": ["investimento"],
     "tax": ["tax", "TAX"],
@@ -4431,7 +4517,8 @@ def transactions():
                    t.locked,t.classified_by,t.classified_at,
                    t.installment_plan_id,p.installment_total,p.installment_amount,
                    (SELECT COUNT(1) FROM transactions tp WHERE tp.installment_plan_id=t.installment_plan_id),
-                   t.history_match_confirmed,hm.source_file_id,ha.name,hc.name,hs.name
+                   t.history_match_confirmed,hm.source_file_id,ha.name,hc.name,hs.name,
+                   t.merchant_norm,t.transaction_method,t.counterparty_name,t.bank_reference
             FROM transactions t
             JOIN accounts a ON a.id=t.account_id
             LEFT JOIN installment_plans p ON p.id=t.installment_plan_id
@@ -4525,6 +4612,10 @@ def transactions():
             "match_history_account_name": r[45] or "",
             "match_history_category_name": r[46] or "",
             "match_history_subcategory_name": r[47] or "",
+            "merchant_norm": r[48] or "",
+            "transaction_method": r[49] or "other",
+            "counterparty_name": r[50] or "",
+            "bank_reference": r[51] or "",
             "history_link_threshold": HISTORY_LINK_CANDIDATE_THRESHOLD,
         }
         item.update(historical_match_factors(r[1], r[4], r[3], r[29], r[31], r[30]))
@@ -4911,6 +5002,28 @@ def _recalculate_probabilities_impl(job_id: str | None = None, batch_size: int =
     updated = 0
     linked_classified = 0
     with db_connect() as conn:
+        shadow_rows = conn.execute(
+            """
+            SELECT t.id,t.description,a.type,t.installment_current,t.installment_total
+            FROM transactions t LEFT JOIN accounts a ON a.id=t.account_id
+            WHERE IFNULL(t.merchant_norm,'')=''
+            """
+        ).fetchall()
+        for index, row in enumerate(shadow_rows, start=1):
+            store_shadow_metadata(conn, "transactions", row[0], row[1], row[2] or "", row[3], row[4])
+            if index % 200 == 0:
+                conn.commit()
+        shadow_history = conn.execute(
+            """
+            SELECT h.id,h.description,a.type
+            FROM classification_history h LEFT JOIN accounts a ON a.id=h.account_id
+            WHERE IFNULL(h.merchant_norm,'')=''
+            """
+        ).fetchall()
+        for index, row in enumerate(shadow_history, start=1):
+            store_shadow_metadata(conn, "classification_history", row[0], row[1], row[2] or "")
+            if index % 200 == 0:
+                conn.commit()
         rows = conn.execute(
             """
             SELECT id,date,description,description_norm,amount,type,account_id,status,

@@ -60,6 +60,7 @@ A base historica e auxiliar: ela sugere categorias e subcategorias e pode ser vi
 - A importacao historica exibe progresso por linhas e eventos; o calculo de sugestoes e iniciado separadamente por botao na tela Base Historica.
 - Vinculo entre registros da base historica e lancamentos reais.
 - Comparacao de vinculo com diferenca de data, diferenca de valor e similaridade de descricao explicitas.
+- Metadados de descricao em modo sombra preservam o texto original e extraem estabelecimento, metodo, contraparte e referencia sem alterar deduplicacao ou ranking oficial.
 - Agrupamento e propagacao de classificacao entre parcelas reconhecidas.
 - Relatorios de resumo, categoria e evolucao mensal.
 - Contas correntes internas (`ledgers`) implementadas no codigo, mas ainda nao utilizadas pelo usuario.
