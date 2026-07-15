@@ -95,6 +95,12 @@ consolidar regras e validar producao.
 
 ### Etapa 2 - Fechar o motor de importacao
 
+- [x] Inventariar a amostra privada real: 139 documentos dos seis tipos oficiais,
+      com cobertura e achados agregados em `docs/AMOSTRAS-HOMOLOGACAO.md`.
+- [x] Aceitar nomes de abas e cabecalhos historicos com acentos degradados,
+      inclusive no calculo do progresso da importacao.
+- [x] Diferenciar extrato vazio confirmado de falha de parser para os casos reais
+      Nubank PDF e XP CSV, mantendo os demais vazios bloqueados.
 - [ ] Criar fixtures anonimizadas dos seis tipos oficiais: extrato e cartao de
       Santander, XP e Nubank.
 - [ ] Para cada fixture, afirmar quantidade, datas, valores, sinais, competencia,

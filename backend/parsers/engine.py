@@ -107,6 +107,7 @@ class ImportResult:
     total_installments: int = 0
     total_inter_account: int = 0
     total_cashback: int = 0
+    empty_statement_confirmed: bool = False
 
 
 # ─────────────────────────────────────────────────────────────
@@ -1530,6 +1531,46 @@ def _remove_statement_mirrors(txs: list[RawTx]) -> list[RawTx]:
 #  PIPELINE PRINCIPAL
 # ─────────────────────────────────────────────────────────────
 
+def _is_explicit_empty_nubank_text(text: str) -> bool:
+    normalized = norm_text(text)
+    return (
+        "nenhuma movimentacao" in normalized
+        and "saldo inicial" in normalized
+        and "saldo final" in normalized
+    )
+
+
+def is_explicit_empty_statement(
+    path: Path,
+    fmt: FormatDetection,
+    account_type: str,
+) -> bool:
+    """Aceita vazio apenas quando o proprio documento fornece evidencia forte."""
+    if account_type == "credit_card":
+        return False
+
+    if fmt.file_format == "pdf" and fmt.bank == "NUBANK" and PdfReader is not None:
+        try:
+            text = "\n".join((page.extract_text() or "") for page in PdfReader(str(path)).pages)
+        except Exception:
+            return False
+        return _is_explicit_empty_nubank_text(text)
+
+    if fmt.file_format == "csv" and fmt.bank == "XP":
+        try:
+            text = path.read_text(encoding=fmt.encoding or "utf-8-sig", errors="replace")
+            non_empty_lines = [line for line in text.splitlines() if line.strip()]
+            if len(non_empty_lines) != 1:
+                return False
+            dialect = csv.Sniffer().sniff(non_empty_lines[0], delimiters=",;\t|")
+            headers = {norm_text(cell) for cell in next(csv.reader(non_empty_lines, dialect))}
+        except Exception:
+            return False
+        return {"data", "descricao", "valor", "saldo"}.issubset(headers)
+
+    return False
+
+
 def run_import_pipeline(path: Path, account_name: str, account_type: str) -> ImportResult:
     """
     Pipeline completo de importação.
@@ -1577,10 +1618,18 @@ def run_import_pipeline(path: Path, account_name: str, account_type: str) -> Imp
     if fmt.file_format in {"csv", "xlsx", "xls"}:
         rejected.extend(_tabular_rejected_candidates(path, fmt.file_format, fmt.encoding, raw_txs))
 
+    empty_statement_confirmed = False
     if not raw_txs:
+        empty_statement_confirmed = is_explicit_empty_statement(path, fmt, account_type)
+
+    if not raw_txs and not empty_statement_confirmed:
         raise ValueError(
             "Nenhum lançamento identificado. "
             "Verifique se o arquivo é um extrato ou fatura válido com texto extraível."
+        )
+    if empty_statement_confirmed:
+        warnings.append(
+            "Extrato válido sem movimentações. O documento será registrado no cofre sem criar lançamentos."
         )
 
     # Enriquecimento
@@ -1598,7 +1647,7 @@ def run_import_pipeline(path: Path, account_name: str, account_type: str) -> Imp
     enriched = _filter_contamination(enriched)
 
     # Validação de volume
-    if account_type != "credit_card" and len(enriched) < 5:
+    if account_type != "credit_card" and len(enriched) < 5 and not empty_statement_confirmed:
         warnings.append(
             f"Arquivo com apenas {len(enriched)} lançamentos. "
             "Extratos normalmente têm mais de 15 lançamentos. Verifique se importou o arquivo correto."
@@ -1635,6 +1684,7 @@ def run_import_pipeline(path: Path, account_name: str, account_type: str) -> Imp
         total_installments=total_installments,
         total_inter_account=total_inter_account,
         total_cashback=total_cashback,
+        empty_statement_confirmed=empty_statement_confirmed,
     )
 
 

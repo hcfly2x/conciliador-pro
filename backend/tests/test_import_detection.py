@@ -7,7 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import app
-from parsers.engine import RawTx, enrich_transaction
+from parsers.engine import RawTx, _is_explicit_empty_nubank_text, enrich_transaction, run_import_pipeline
 
 
 class DocumentDetectionTests(unittest.TestCase):
@@ -48,6 +48,41 @@ class ShadowMetadataTests(unittest.TestCase):
         self.assertEqual(result["merchant_norm"], "mercado central")
         self.assertEqual(result["shadow_installment_current"], 2)
         self.assertEqual(result["shadow_installment_total"], 5)
+
+
+class HistoricalWorkbookNormalizationTests(unittest.TestCase):
+    def test_degraded_sheet_and_header_labels_are_canonicalized(self) -> None:
+        self.assertEqual(app.normalize_history_label("SA\ufffdDAS"), "saidas")
+        self.assertEqual(app.normalize_history_label("H\ufffdLCIO-SMARTEK"), "helcio_smartek")
+        self.assertEqual(app.history_sheet_key("SA\ufffdDAS"), "saidas")
+        headers = app.map_headers(["DATA", "DESCRI\ufffd\ufffdO", "VALOR", "OBSERVA\ufffd\ufffdO", "\ufffd"])
+
+        self.assertEqual(headers["data"], 0)
+        self.assertEqual(headers["descricao"], 1)
+        self.assertEqual(headers["valor"], 2)
+        self.assertEqual(headers["observacao"], 3)
+        self.assertNotIn("", headers)
+
+
+class EmptyStatementTests(unittest.TestCase):
+    def test_xp_header_only_csv_is_a_confirmed_empty_statement(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "Extrato - 02-26 - XP.csv"
+            path.write_text("Data;Hora;Descricao;Valor;Saldo\n", encoding="utf-8")
+
+            result = run_import_pipeline(path, "CONTA XP", "checking")
+
+        self.assertEqual(result.txs, [])
+        self.assertTrue(result.empty_statement_confirmed)
+        self.assertTrue(any("sem movimentações" in warning for warning in result.warnings))
+
+    def test_nubank_requires_explicit_empty_movement_evidence(self) -> None:
+        self.assertTrue(_is_explicit_empty_nubank_text(
+            "Saldo inicial R$ 0,00\nMovimentacoes\nNenhuma movimentacao\nSaldo final do periodo R$ 0,00"
+        ))
+        self.assertFalse(_is_explicit_empty_nubank_text(
+            "Saldo inicial R$ 0,00\nMovimentacoes\nSaldo final do periodo R$ 0,00"
+        ))
 
 
 class CompetenceDetectionTests(unittest.TestCase):
@@ -207,6 +242,45 @@ class SuggestionEvidenceTests(unittest.TestCase):
         self.assertEqual(suggestions[0]["transaction_evidence"], 1)
         self.assertEqual(suggestions[0]["history_evidence"], 0)
         self.assertIn("lancamentos classificados", suggestions[0]["justification"])
+
+    def test_imported_history_suggests_category_and_its_subcategory(self) -> None:
+        conn = sqlite3.connect(":memory:")
+        conn.execute("CREATE TABLE categories(id TEXT, name TEXT)")
+        conn.execute("CREATE TABLE subcategories(id TEXT, name TEXT)")
+        conn.execute(
+            """
+            CREATE TABLE transactions(
+              id TEXT,category_id TEXT,subcategory_id TEXT,date TEXT,
+              description TEXT,description_norm TEXT,amount REAL,type TEXT,
+              account_id TEXT,notes TEXT
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE classification_history(
+              category_id TEXT,subcategory_id TEXT,date TEXT,description_norm TEXT,
+              amount REAL,account_id TEXT,type TEXT,source_file_id TEXT
+            )
+            """
+        )
+        conn.execute("INSERT INTO categories VALUES ('fuel','COMBUSTIVEL')")
+        conn.execute("INSERT INTO subcategories VALUES ('gas','POSTO')")
+        conn.execute(
+            "INSERT INTO classification_history VALUES (?,?,?,?,?,?,?,?)",
+            ("fuel", "gas", "2025-12-19", "posto a1", 100.0, "acc", "expense", "seed:sheet:saidas"),
+        )
+        conn.execute(
+            "INSERT INTO transactions VALUES (?,?,?,?,?,?,?,?,?,?)",
+            ("target", None, None, "2025-12-19", "POSTO A1", "posto a1", -100.0, "expense", "acc", ""),
+        )
+
+        suggestions = app.build_suggestions_for_tx(conn, "target")
+
+        self.assertTrue(suggestions)
+        self.assertEqual(suggestions[0]["category_id"], "fuel")
+        self.assertEqual(suggestions[0]["subcategory_id"], "gas")
+        self.assertGreaterEqual(suggestions[0]["category_probability"], 20.0)
 
 
 class InstallmentTests(unittest.TestCase):

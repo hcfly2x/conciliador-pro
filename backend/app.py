@@ -1272,8 +1272,26 @@ def tx_key(account_id: str, date: str, amount: float, desc: str) -> str:
     return f"{account_id}|{date}|{amount:.2f}|{norm_text(desc)}"
 
 
+def normalize_history_label(value: Any) -> str:
+    normalized = norm_text(str(value or ""))
+    compact = normalized.replace(" ", "")
+    degraded_aliases = {
+        "sadas": "saidas",
+        "descrio": "descricao",
+        "observao": "observacao",
+        "hlcio": "helcio",
+        "hlciosmartek": "helcio_smartek",
+    }
+    return degraded_aliases.get(compact, normalized.replace(" ", "_"))
+
+
 def map_headers(cells: list[Any]) -> dict[str, int]:
-    return {norm_text(str(c)).replace(" ", "_"): i for i, c in enumerate(cells) if str(c).strip()}
+    headers: dict[str, int] = {}
+    for i, cell in enumerate(cells):
+        key = normalize_history_label(cell)
+        if key:
+            headers[key] = i
+    return headers
 
 
 def row_get(row: list[Any], idx: dict[str, int], keys: list[str]) -> Any:
@@ -2334,7 +2352,7 @@ def build_import_preview(path: Path, acc: tuple[Any, ...], detection_sample: str
 
     competence = detect_competence(path, result.txs, account_type, detection_sample)
     warnings = list(result.warnings)
-    if account_type != "credit_card" and len(parsed_rows) < 15:
+    if account_type != "credit_card" and len(parsed_rows) < 15 and not result.empty_statement_confirmed:
         warnings.append(
             f"Atencao: o extrato gerou somente {len(parsed_rows)} lancamento(s). Revise a pre-visualizacao antes de importar."
         )
@@ -2369,6 +2387,7 @@ def build_import_preview(path: Path, acc: tuple[Any, ...], detection_sample: str
             "total_inter_account": result.total_inter_account,
             "total_cashback": result.total_cashback,
             "total_discarded": len(result.discarded_lines),
+            "empty_statement_confirmed": result.empty_statement_confirmed,
         },
         "rejected_lines": result.rejected_lines,
         "discarded_lines": result.discarded_lines,
@@ -2566,14 +2585,14 @@ def move_duplicate_history_to_smartek_sheet(
 
 
 def history_sheet_key(sheet_name: str) -> str:
-    normalized = norm_text(sheet_name)
-    if normalized in {"saidas", "saidas "}:
+    normalized = normalize_history_label(sheet_name)
+    if normalized == "saidas":
         return "saidas"
     if normalized == "entradas":
         return "entradas"
-    if normalized in {"helcio smartek", "smartek"}:
+    if normalized in {"helcio_smartek", "smartek"}:
         return "helcio_smartek"
-    return normalized.replace(" ", "_") or "historico"
+    return normalized or "historico"
 
 
 def import_seed_workbook(path: Path, progress=None, imported_file_id: str | None = None):
@@ -2582,9 +2601,8 @@ def import_seed_workbook(path: Path, progress=None, imported_file_id: str | None
     wb = openpyxl.load_workbook(path, data_only=True)
     wanted = {
         "saidas": "expense",
-        "saidas ": "expense",
         "entradas": "income",
-        "helcio smartek": None,
+        "helcio_smartek": None,
         "smartek": None,
     }
     now = dt.datetime.now().isoformat(timespec="seconds")
@@ -2594,14 +2612,18 @@ def import_seed_workbook(path: Path, progress=None, imported_file_id: str | None
     total_duplicates = 0
 
     sheets_found = [ws.title for ws in wb.worksheets]
-    total_rows = sum(max(0, ws.max_row - 1) for ws in wb.worksheets if norm_text(ws.title) in wanted)
+    total_rows = sum(
+        max(0, ws.max_row - 1)
+        for ws in wb.worksheets
+        if normalize_history_label(ws.title) in wanted
+    )
     processed_rows = 0
     if progress:
         progress("reading", 0, total_rows, f"Planilha aberta: {len(wb.worksheets)} aba(s)")
     sheets_recognized: list[str] = []
     with db_connect() as conn:
         for ws in wb.worksheets:
-            sname = norm_text(ws.title)
+            sname = normalize_history_label(ws.title)
             if sname not in wanted:
                 continue
             sheets_recognized.append(ws.title)
@@ -2620,7 +2642,7 @@ def import_seed_workbook(path: Path, progress=None, imported_file_id: str | None
                 if s > score:
                     header_idx, score = i, s
             idx = map_headers(rows[header_idx])
-            is_smartek_sheet = sname in {"helcio smartek", "smartek"}
+            is_smartek_sheet = sname in {"helcio_smartek", "smartek"}
             for row in rows[header_idx + 1 :]:
                 processed_rows += 1
                 if processed_rows % 100 == 0:
@@ -3593,7 +3615,7 @@ def import_preview():
             income_count = sum(1 for row in parsed_rows if row["tx_type"] == "income")
             expense_count = sum(1 for row in parsed_rows if row["tx_type"] == "expense")
             critical_errors: list[str] = []
-            if not parsed_rows:
+            if not parsed_rows and not bool(import_meta.get("empty_statement_confirmed")):
                 critical_errors.append("Nenhum lancamento foi identificado no arquivo.")
 
         return jsonify({
@@ -4518,7 +4540,8 @@ def transactions():
                    t.installment_plan_id,p.installment_total,p.installment_amount,
                    (SELECT COUNT(1) FROM transactions tp WHERE tp.installment_plan_id=t.installment_plan_id),
                    t.history_match_confirmed,hm.source_file_id,ha.name,hc.name,hs.name,
-                   t.merchant_norm,t.transaction_method,t.counterparty_name,t.bank_reference
+                   t.merchant_norm,t.transaction_method,t.counterparty_name,t.bank_reference,
+                   hm.category_id,hm.subcategory_id
             FROM transactions t
             JOIN accounts a ON a.id=t.account_id
             LEFT JOIN installment_plans p ON p.id=t.installment_plan_id
@@ -4588,10 +4611,10 @@ def transactions():
             "match_notes": r[26] or "",
             "history_match_id": r[27],
             "identity_score": float(r[28] or 0.0),
-            "match_category_id": r[18],
-            "match_category_name": r[19],
-            "match_subcategory_id": r[20],
-            "match_subcategory_name": r[21],
+            "match_category_id": r[52],
+            "match_category_name": r[46],
+            "match_subcategory_id": r[53],
+            "match_subcategory_name": r[47],
             "match_history_date": r[29],
             "match_history_description": r[30],
             "match_history_amount": float(r[31] or 0.0),
@@ -4827,7 +4850,12 @@ def review_history_link(tx_id: str):
         return jsonify({"detail": "action deve ser confirm ou reject", "code": "VALIDATION_ERROR"}), 400
     with db_connect() as conn:
         row = conn.execute(
-            "SELECT history_match_id,identity_score,history_match_confirmed FROM transactions WHERE id=?",
+            """
+            SELECT history_match_id,identity_score,history_match_confirmed,locked,type,
+                   category_id,subcategory_id,status
+            FROM transactions
+            WHERE id=?
+            """,
             (tx_id,),
         ).fetchone()
         if not row:
@@ -4838,12 +4866,72 @@ def review_history_link(tx_id: str):
         if action == "confirm":
             if float(row[1] or 0) < HISTORY_LINK_CANDIDATE_THRESHOLD:
                 return jsonify({"detail": "Candidato abaixo do limiar de seguranca", "code": "LOW_LINK_SCORE"}), 409
-            conn.execute(
-                "UPDATE transactions SET history_match_confirmed=1,history_match_rejected_id=NULL,match_notes=? WHERE id=?",
-                ("Vinculo historico confirmado pelo usuario", tx_id),
+            history = conn.execute(
+                "SELECT category_id,subcategory_id,type FROM classification_history WHERE id=?",
+                (match_id,),
+            ).fetchone()
+            if not history:
+                return jsonify({"detail": "Registro historico nao encontrado", "code": "HISTORY_NOT_FOUND"}), 409
+            validation_error, validation_status = validate_classification_selection(
+                conn, history[0], history[1], row[4]
             )
-            record_audit(current_user(), "confirm_history_link", "transaction", tx_id, "history_match_id", "", match_id, conn=conn)
-            return jsonify({"id": tx_id, "history_match_id": match_id, "history_match_confirmed": True, "ok": True})
+            if validation_error:
+                return jsonify(validation_error), validation_status
+            if history[2] != row[4]:
+                return jsonify({
+                    "detail": "Classificacao historica incompativel com o tipo do lancamento",
+                    "code": "HISTORY_TYPE_MISMATCH",
+                }), 422
+            classification_changes = (row[5], row[6]) != (history[0], history[1])
+            if int(row[3] or 0) == 1 and classification_changes:
+                return jsonify({
+                    "detail": "Lancamento protegido. Desbloqueie antes de substituir a classificacao pelo vinculo.",
+                    "code": "TX_LOCKED",
+                }), 423
+            user = current_user()
+            now = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
+            conn.execute(
+                """
+                UPDATE transactions
+                SET history_match_confirmed=1,
+                    history_match_rejected_id=NULL,
+                    match_notes=?,
+                    category_id=?,
+                    subcategory_id=?,
+                    status='reconciled',
+                    locked=1,
+                    classified_by=?,
+                    classified_at=?
+                WHERE id=?
+                """,
+                (
+                    "Vinculo historico confirmado; classificacao replicada da base historica",
+                    history[0],
+                    history[1],
+                    user.get("username") or "",
+                    now,
+                    tx_id,
+                ),
+            )
+            record_audit(user, "confirm_history_link", "transaction", tx_id, "history_match_id", "", match_id, conn=conn)
+            if row[5] != history[0]:
+                record_audit(user, "classify_from_history_link", "transaction", tx_id, "category_id", row[5] or "", history[0], conn=conn)
+            if row[6] != history[1]:
+                record_audit(user, "classify_from_history_link", "transaction", tx_id, "subcategory_id", row[6] or "", history[1] or "", conn=conn)
+            if row[7] != "reconciled":
+                record_audit(user, "classify_from_history_link", "transaction", tx_id, "status", row[7] or "", "reconciled", conn=conn)
+            return jsonify({
+                "id": tx_id,
+                "history_match_id": match_id,
+                "history_match_confirmed": True,
+                "category_id": history[0],
+                "subcategory_id": history[1],
+                "status": "reconciled",
+                "locked": True,
+                "classified_by": user.get("username") or "",
+                "classified_at": now,
+                "ok": True,
+            })
         conn.execute(
             """
             UPDATE transactions

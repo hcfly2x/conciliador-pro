@@ -193,6 +193,7 @@ export interface ImportMeta {
   total_inter_account?: number
   total_cashback?: number
   total_discarded?: number
+  empty_statement_confirmed?: boolean
 }
 
 export interface ImportPreviewResult {
