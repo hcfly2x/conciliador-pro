@@ -510,7 +510,14 @@ export default function TransactionTable({
                   <tr key={tx.id} style={{ borderBottom: '1px solid rgba(255,255,255,0.04)' }} className="hover:brightness-110 transition-all">
                     <td className="px-3 py-2.5"><input type="checkbox" checked={selected.has(tx.id)} onChange={() => toggleOne(tx.id)} className="cursor-pointer" /></td>
                     <td className="px-3 py-2.5 text-xs text-[#8b90a4] whitespace-nowrap">{formatDate(tx.date)}</td>
-                    <td className="px-3 py-2.5 max-w-[260px]"><span className="block truncate text-[#e8eaf0]" title={tx.description}>{tx.description}</span></td>
+                    <td className="px-3 py-2.5 max-w-[260px]">
+                      <span className="block truncate text-[#e8eaf0]" title={tx.description}>{tx.description}</span>
+                      {!!tx.merchant_norm && (
+                        <span className="mt-0.5 block truncate text-[10px] text-[#5a5f73]" title="Metadado em modo sombra">
+                          {tx.transaction_method || 'other'} · {tx.merchant_norm}
+                        </span>
+                      )}
+                    </td>
                     <td className="px-3 py-2.5 text-right whitespace-nowrap"><span style={{ color: tx.type === 'income' ? '#3ecf8e' : '#f87171' }}>{tx.type === 'income' ? '+' : '-'}{formatCurrencyAbs(tx.amount)}</span></td>
                     <td className="px-3 py-2.5 text-[#8b90a4] text-xs">
                       <div>{tx.account_name}</div>

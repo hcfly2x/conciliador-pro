@@ -86,6 +86,10 @@ export interface Transaction {
   match_history_account_name?: string
   match_history_category_name?: string
   match_history_subcategory_name?: string
+  merchant_norm?: string
+  transaction_method?: string
+  counterparty_name?: string
+  bank_reference?: string
   match_date_difference_days?: number | null
   match_amount_difference?: number
   match_description_similarity?: number

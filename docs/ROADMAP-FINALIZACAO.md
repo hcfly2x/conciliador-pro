@@ -128,6 +128,7 @@ consolidar regras e validar producao.
 ### Etapa 4 - Reconstruir o motor de sugestoes
 
 - [ ] Normalizar estabelecimentos removendo ruido bancario, parcelas, IDs e sufixos.
+      Modo sombra implementado; falta medir e aprovar antes de ativar no ranking.
 - [x] Usar base historica e lancamentos classificados como fontes de evidencia.
 - [ ] Tratar origens historicas desconhecidas sem penalidade de conta.
 - [x] Calcular categoria primeiro e subcategoria condicionada a categoria.

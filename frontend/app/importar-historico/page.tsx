@@ -1,6 +1,6 @@
 'use client'
 import { useEffect, useRef, useState } from 'react'
-import { getSeedImportJob, importSeedFile, type SeedImportJob } from '@/lib/api'
+import { getActiveSeedImportJob, getSeedImportJob, importSeedFile, type SeedImportJob } from '@/lib/api'
 import { useStore } from '@/store/app'
 
 export default function HistoricoPage() {
@@ -11,6 +11,14 @@ export default function HistoricoPage() {
   const [importJob, setImportJob] = useState<SeedImportJob | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const { addToast } = useStore()
+
+  useEffect(() => {
+    let cancelled = false
+    getActiveSeedImportJob()
+      .then(active => { if (!cancelled && active) setImportJob(active) })
+      .catch(() => undefined)
+    return () => { cancelled = true }
+  }, [])
 
   useEffect(() => {
     const jobId = importJob?.id
@@ -48,8 +56,19 @@ export default function HistoricoPage() {
       const r = await importSeedFile(file)
       setImportJob({ id: r.job_id, status: 'queued', filename: r.filename, result: null, error: '', phase: 'queued', processed: 0, total: 0, message: 'Arquivo recebido', logs: [] })
     } catch (e: any) {
-      setError(e?.detail || 'Erro ao importar planilha base')
-      addToast('Falha na importacao da base', 'err')
+      if (e?.code === 'SEED_IMPORT_IN_PROGRESS' && e?.job_id) {
+        try {
+          const active = await getSeedImportJob(e.job_id)
+          setImportJob(active)
+          setError('')
+          addToast('Acompanhando a importacao que ja estava em andamento')
+        } catch {
+          setError(e?.detail || 'Erro ao consultar importacao em andamento')
+        }
+      } else {
+        setError(e?.detail || 'Erro ao importar planilha base')
+        addToast('Falha na importacao da base', 'err')
+      }
     } finally {
       setLoading(false)
     }
