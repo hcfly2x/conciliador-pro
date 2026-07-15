@@ -412,7 +412,7 @@ export async function previewImportFile(file: File, account_id?: string): Promis
   return res.json()
 }
 
-export async function commitImportPreview(preview_id: string, confirm_duplicates = true, import_db_duplicates = false, competence_month = ''): Promise<ImportResult> {
+export async function commitImportPreview(preview_id: string, confirm_duplicates = true, competence_month = ''): Promise<ImportResult> {
   if (USE_MOCK) {
     await delay(700)
     return {
@@ -426,7 +426,7 @@ export async function commitImportPreview(preview_id: string, confirm_duplicates
       transactions_preview: mockTransactions.slice(0, 5),
     }
   }
-  return http<ImportResult>('POST', '/import/commit', { preview_id, confirm_duplicates, import_db_duplicates, competence_month })
+  return http<ImportResult>('POST', '/import/commit', { preview_id, confirm_duplicates, competence_month })
 }
 
 export async function importSeedFile(file: File): Promise<ImportResult> {
@@ -496,6 +496,16 @@ export interface CoverageResponse {
   available_years: number[]
   months: string[]
   matrix: Record<string, CoverageAccount>
+}
+
+export async function reviewHistoricalMatch(id: string, action: 'confirm' | 'reject'): Promise<{
+  id: string
+  history_match_id: string | null
+  history_match_confirmed: boolean
+  ok: boolean
+}> {
+  if (USE_MOCK) { await delay(); return { id, history_match_id: action === 'confirm' ? 'mock-history' : null, history_match_confirmed: action === 'confirm', ok: true } }
+  return http('POST', `/transactions/${id}/history-link`, { action })
 }
 
 export async function getCoverage(year = 2026): Promise<CoverageResponse> {

@@ -66,6 +66,119 @@ class CompetenceDetectionTests(unittest.TestCase):
         self.assertEqual(result["strategy"], "statement_declared_period")
 
 
+class HistoricalLinkCandidateTests(unittest.TestCase):
+    def make_history_db(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(":memory:")
+        conn.execute(
+            """
+            CREATE TABLE classification_history(
+              id TEXT, date TEXT, description_norm TEXT, amount REAL,
+              account_id TEXT, category_id TEXT, subcategory_id TEXT, type TEXT
+            )
+            """
+        )
+        conn.execute(
+            "INSERT INTO classification_history VALUES (?,?,?,?,?,?,?,?)",
+            ("hist-1", "2026-03-10", "mercado central", 150.0, "account-1", "cat-1", "sub-1", "expense"),
+        )
+        return conn
+
+    def test_exact_history_identity_exceeds_review_threshold(self) -> None:
+        conn = self.make_history_db()
+        candidate = app.find_identity_match(conn, {
+            "date": "2026-03-10", "description": "MERCADO CENTRAL",
+            "description_norm": "mercado central", "amount": -150.0,
+            "account_id": "account-1", "type": "expense",
+        })
+
+        self.assertIsNotNone(candidate)
+        self.assertGreaterEqual(candidate["identity_score"], app.HISTORY_LINK_CANDIDATE_THRESHOLD)
+
+    def test_different_amount_is_not_a_link_candidate(self) -> None:
+        conn = self.make_history_db()
+        candidate = app.find_identity_match(conn, {
+            "date": "2026-03-10", "description": "MERCADO CENTRAL",
+            "description_norm": "mercado central", "amount": -175.0,
+            "account_id": "account-1", "type": "expense",
+        })
+
+        self.assertIsNone(candidate)
+
+
+class ClassificationValidationTests(unittest.TestCase):
+    def make_db(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(":memory:")
+        conn.execute("CREATE TABLE categories(id TEXT, type TEXT)")
+        conn.execute("CREATE TABLE subcategories(id TEXT)")
+        conn.execute("INSERT INTO categories VALUES ('expense-cat','expense')")
+        conn.execute("INSERT INTO categories VALUES ('income-cat','income')")
+        conn.execute("INSERT INTO subcategories VALUES ('known-sub')")
+        return conn
+
+    def test_category_must_match_transaction_type(self) -> None:
+        error, status = app.validate_classification_selection(
+            self.make_db(), "income-cat", None, "expense"
+        )
+
+        self.assertEqual(status, 422)
+        self.assertEqual(error["code"], "CATEGORY_TYPE_MISMATCH")
+
+    def test_unknown_subcategory_is_rejected(self) -> None:
+        error, status = app.validate_classification_selection(
+            self.make_db(), "expense-cat", "missing-sub", "expense"
+        )
+
+        self.assertEqual(status, 404)
+        self.assertEqual(error["code"], "SUBCATEGORY_NOT_FOUND")
+
+    def test_valid_selection_is_accepted(self) -> None:
+        error, status = app.validate_classification_selection(
+            self.make_db(), "expense-cat", "known-sub", "expense"
+        )
+
+        self.assertIsNone(error)
+        self.assertEqual(status, 200)
+
+
+class SuggestionEvidenceTests(unittest.TestCase):
+    def test_classified_transactions_are_used_as_evidence(self) -> None:
+        conn = sqlite3.connect(":memory:")
+        conn.execute("CREATE TABLE categories(id TEXT, name TEXT)")
+        conn.execute("CREATE TABLE subcategories(id TEXT, name TEXT)")
+        conn.execute(
+            """
+            CREATE TABLE transactions(
+              id TEXT,category_id TEXT,subcategory_id TEXT,date TEXT,
+              description TEXT,description_norm TEXT,amount REAL,type TEXT,
+              account_id TEXT,notes TEXT
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE classification_history(
+              category_id TEXT,subcategory_id TEXT,date TEXT,description_norm TEXT,
+              amount REAL,account_id TEXT,type TEXT,source_file_id TEXT
+            )
+            """
+        )
+        conn.execute("INSERT INTO categories VALUES ('food','ALIMENTACAO')")
+        conn.execute("INSERT INTO subcategories VALUES ('market','MERCADO')")
+        conn.execute(
+            "INSERT INTO transactions VALUES (?,?,?,?,?,?,?,?,?,?)",
+            ("source", "food", "market", "2026-02-10", "MERCADO CENTRAL", "mercado central", -100.0, "expense", "acc", ""),
+        )
+        conn.execute(
+            "INSERT INTO transactions VALUES (?,?,?,?,?,?,?,?,?,?)",
+            ("target", None, None, "2026-03-10", "MERCADO CENTRAL", "mercado central", -105.0, "expense", "acc", ""),
+        )
+
+        suggestions = app.build_suggestions_for_tx(conn, "target")
+
+        self.assertTrue(suggestions)
+        self.assertEqual(suggestions[0]["category_id"], "food")
+
+
 class InstallmentTests(unittest.TestCase):
     def test_installment_keeps_statement_amount(self) -> None:
         # CSV de cartao usa valor positivo para compra; o parser base chama isso

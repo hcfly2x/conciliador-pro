@@ -1,11 +1,11 @@
 'use client'
 import { useState, useEffect, useCallback } from 'react'
-import { Search, RefreshCw, ChevronUp, ChevronDown } from 'lucide-react'
+import { Search, RefreshCw, ChevronUp, ChevronDown, Link2, X } from 'lucide-react'
 import { useStore } from '@/store/app'
-import { getTransactions, bulkClassify, classifyTransaction, getTransactionSuggestions, getLedgers, includeTransactionsInLedger, excludeTransactionsFromLedger, unlockTransaction, isAdmin } from '@/lib/api'
+import { getTransactions, bulkClassify, classifyTransaction, getTransactionSuggestions, getLedgers, includeTransactionsInLedger, excludeTransactionsFromLedger, unlockTransaction, isAdmin, reviewHistoricalMatch } from '@/lib/api'
 import { Lock, LockOpen } from 'lucide-react'
 import { formatCurrencyAbs, formatDate } from '@/lib/utils'
-import type { Ledger, Transaction, TransactionFilters, TransactionStatus } from '@/types'
+import type { Ledger, Transaction, TransactionFilters } from '@/types'
 
 const STATUS_STYLES: Record<string, { label: string; bg: string; color: string }> = {
   pending: { label: 'Pendente', bg: 'rgba(251,191,36,0.12)', color: '#fbbf24' },
@@ -67,6 +67,8 @@ export default function TransactionTable({
   const [totalPages, setTotalPages] = useState(1)
   const [summary, setSummary] = useState({ total_income: 0, total_expense: 0, balance: 0, pending_count: 0, reconciled_count: 0 })
   const [loading, setLoading] = useState(false)
+  const [linkReviewId, setLinkReviewId] = useState<string | null>(null)
+  const [reviewingLink, setReviewingLink] = useState(false)
 
   const [search, setSearch] = useState('')
   const [statusFilter, setStatusFilter] = useState(defaultStatus || '')
@@ -87,6 +89,7 @@ export default function TransactionTable({
 
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [bulkCatId, setBulkCatId] = useState('')
+  const [bulkSubId, setBulkSubId] = useState('')
   const [bulkLedgerId, setBulkLedgerId] = useState('')
   const [rowDraft, setRowDraft] = useState<Record<string, { category_id: string; subcategory_id: string; notes: string }>>({})
   const [savingRow, setSavingRow] = useState<Record<string, boolean>>({})
@@ -156,53 +159,15 @@ export default function TransactionTable({
     }
   }
 
-  async function autoSaveRow(tx: Transaction, next: { category_id?: string; subcategory_id?: string; notes?: string; classification_source?: 'manual' | 'auto' | 'identity' }) {
-    const current = rowDraft[tx.id] || { category_id: tx.category_id || '', subcategory_id: tx.subcategory_id || '', notes: tx.notes || '' }
-    const merged = {
-      category_id: next.category_id ?? current.category_id,
-      subcategory_id: next.subcategory_id ?? current.subcategory_id,
-      notes: next.notes ?? current.notes,
-    }
-    setRowDraft(s => ({ ...s, [tx.id]: merged }))
-    if (!merged.category_id) return
-    setSavingRow(s => ({ ...s, [tx.id]: true }))
-    try {
-      const result = await classifyTransaction(tx.id, {
-        category_id: merged.category_id,
-        subcategory_id: merged.subcategory_id || null,
-        notes: merged.notes || '',
-        classification_source: next.classification_source || 'manual',
-        apply_to_installments: true,
-      })
-      const affected = new Set(result.affected_ids || [tx.id])
-      setTxs(prev => prev.map(item => {
-        if (!affected.has(item.id)) return item
-        const cat = categories.find(c => c.id === merged.category_id)
-        const sub = subcategories.find(s => s.id === merged.subcategory_id)
-        return {
-          ...item,
-          category_id: merged.category_id,
-          category_name: cat?.name || item.category_name,
-          category_color: cat?.color || item.category_color,
-          subcategory_id: merged.subcategory_id || null,
-          subcategory_name: sub?.name || null,
-          notes: item.id === tx.id ? (merged.notes || '') : item.notes,
-          status: (next.classification_source === 'auto' ? 'auto_classified' : 'reconciled') as TransactionStatus,
-          locked: true,
-        }
-      }))
-      if (result.affected_count && result.affected_count > 1) {
-        addToast(`${result.affected_count} parcelas classificadas no plano`)
+  function patchRowDraft(tx: Transaction, next: Partial<{ category_id: string; subcategory_id: string; notes: string }>) {
+    setRowDraft(current => {
+      const base = current[tx.id] || {
+        category_id: tx.category_id || '',
+        subcategory_id: tx.subcategory_id || '',
+        notes: tx.notes || '',
       }
-    } catch (err: unknown) {
-      if ((err as { code?: string })?.code === 'TX_LOCKED') {
-        addToast('Lancamento protegido. Use Desbloquear para alterar.', 'err')
-      } else {
-        addToast('Erro ao salvar edição', 'err')
-      }
-    } finally {
-      setSavingRow(s => ({ ...s, [tx.id]: false }))
-    }
+      return { ...current, [tx.id]: { ...base, ...next } }
+    })
   }
 
   async function handleUnlock(tx: Transaction) {
@@ -217,6 +182,26 @@ export default function TransactionTable({
       } else {
         addToast('Erro ao desbloquear', 'err')
       }
+    }
+  }
+
+  async function handleHistoryLink(tx: Transaction, action: 'confirm' | 'reject') {
+    setReviewingLink(true)
+    try {
+      await reviewHistoricalMatch(tx.id, action)
+      setTxs(prev => prev.map(item => item.id !== tx.id ? item : {
+        ...item,
+        history_match_id: action === 'confirm' ? item.history_match_id : null,
+        history_match_confirmed: action === 'confirm',
+        identity_score: action === 'confirm' ? item.identity_score : 0,
+        match_probability: action === 'confirm' ? item.match_probability : 0,
+      }))
+      setLinkReviewId(null)
+      addToast(action === 'confirm' ? 'Vinculo historico confirmado' : 'Sugestao de vinculo rejeitada')
+    } catch {
+      addToast('Nao foi possivel revisar o vinculo', 'err')
+    } finally {
+      setReviewingLink(false)
     }
   }
 
@@ -312,9 +297,9 @@ export default function TransactionTable({
   async function handleBulkClassify() {
     if (!bulkCatId || !selected.size) return
     try {
-      const { updated, skipped_locked } = await bulkClassify([...selected], bulkCatId)
+      const { updated, skipped_locked } = await bulkClassify([...selected], bulkCatId, bulkSubId || undefined)
       addToast(`${updated} lancamentos classificados${skipped_locked ? ` (${skipped_locked} protegidos ignorados)` : ''}`)
-      setSelected(new Set()); setBulkCatId('')
+      setSelected(new Set()); setBulkCatId(''); setBulkSubId('')
       load(page)
     } catch { addToast('Erro na classificacao em lote', 'err') }
   }
@@ -473,6 +458,10 @@ export default function TransactionTable({
             <option value="">Aplicar categoria...</option>
             {categories.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
           </select>
+          <select className="h-8 px-2 rounded-md text-sm text-[#e8eaf0] outline-none flex-1 max-w-xs" style={{ background: '#1a1e28', border: '1px solid rgba(255,255,255,0.12)' }} value={bulkSubId} onChange={e => setBulkSubId(e.target.value)}>
+            <option value="">Sem subcategoria</option>
+            {subcategories.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+          </select>
           <button onClick={handleBulkClassify} disabled={!bulkCatId} className="px-3 py-1.5 rounded-md text-xs font-semibold disabled:opacity-40" style={{ background: '#c9a84c', color: '#0d0f14' }}>Aplicar</button>
           {moveTargetLedgerId ? (
             <button onClick={handleMoveToLedger} className="px-3 py-1.5 rounded-md text-xs font-semibold" style={{ background: '#3ecf8e', color: '#08111f' }}>
@@ -511,7 +500,9 @@ export default function TransactionTable({
               {loading && <tr><td colSpan={9} className="text-center py-12 text-[#5a5f73]"><div className="inline-block w-5 h-5 border-2 border-[#22273a] border-t-[#c9a84c] rounded-full animate-spin" /></td></tr>}
               {!loading && txs.length === 0 && <tr><td colSpan={9} className="text-center py-12 text-[#5a5f73]">Nenhum lancamento encontrado</td></tr>}
               {!loading && txs.map(tx => {
-                const st = STATUS_STYLES[tx.status] || STATUS_STYLES.pending
+                const st = tx.history_match_confirmed
+                  ? { label: 'Vinculado', bg: 'rgba(96,165,250,0.12)', color: '#60a5fa' }
+                  : (STATUS_STYLES[tx.status] || STATUS_STYLES.pending)
                 return (
                   <tr key={tx.id} style={{ borderBottom: '1px solid rgba(255,255,255,0.04)' }} className="hover:brightness-110 transition-all">
                     <td className="px-3 py-2.5"><input type="checkbox" checked={selected.has(tx.id)} onChange={() => toggleOne(tx.id)} className="cursor-pointer" /></td>
@@ -551,7 +542,7 @@ export default function TransactionTable({
                                 <button
                                   key={`chip-cat-${tx.id}-${i}`}
                                   type="button"
-                                  onClick={() => autoSaveRow(tx, {
+                                  onClick={() => patchRowDraft(tx, {
                                     category_id: sg.category_id,
                                     subcategory_id: sg.subcategory_id || '',
                                     notes: sg.best_notes || '',
@@ -589,10 +580,7 @@ export default function TransactionTable({
                         style={{ background: '#1a1e28', border: '1px solid rgba(255,255,255,0.12)' }}
                         value={rowDraft[tx.id]?.category_id || ''}
                         disabled={!!tx.locked}
-                        onChange={async (e) => {
-                          const val = e.target.value
-                          await autoSaveRow(tx, { category_id: val })
-                        }}
+                        onChange={(e) => patchRowDraft(tx, { category_id: e.target.value, subcategory_id: '' })}
                       >
                         <option value="">Selecionar...</option>
                         {(rowSuggestions[tx.id] || []).length > 0 && <option value="" disabled>-- Sugeridas --</option>}
@@ -602,7 +590,7 @@ export default function TransactionTable({
                           </option>
                         ))}
                         {(rowSuggestions[tx.id] || []).length > 0 && <option value="" disabled>-- Todas --</option>}
-                        {categories.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                        {categories.filter(c => c.type === tx.type).map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
                       </select>
                     </td>
                     <td className="px-3 py-2.5">
@@ -618,7 +606,7 @@ export default function TransactionTable({
                               <button
                                 key={`chip-sub-${tx.id}-${i}`}
                                 type="button"
-                                onClick={() => autoSaveRow(tx, { subcategory_id: sg.subcategory_id || '' })}
+                                onClick={() => patchRowDraft(tx, { subcategory_id: sg.subcategory_id || '' })}
                                 className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-semibold transition-all hover:opacity-80"
                                 style={{
                                   background: 'rgba(96,165,250,0.10)',
@@ -638,10 +626,7 @@ export default function TransactionTable({
                         style={{ background: '#1a1e28', border: '1px solid rgba(255,255,255,0.12)' }}
                         value={rowDraft[tx.id]?.subcategory_id || ''}
                         disabled={!!tx.locked}
-                        onChange={async (e) => {
-                          const val = e.target.value
-                          await autoSaveRow(tx, { subcategory_id: val })
-                        }}
+                        onChange={(e) => patchRowDraft(tx, { subcategory_id: e.target.value })}
                       >
                         <option value="">Sem subcategoria</option>
                         {(rowSuggestions[tx.id] || [])
@@ -664,20 +649,36 @@ export default function TransactionTable({
                           const val = e.target.value
                           setRowDraft(s => ({ ...s, [tx.id]: { ...(s[tx.id] || { category_id: '', subcategory_id: '', notes: '' }), notes: val } }))
                         }}
-                        onKeyDown={async (e) => {
-                          if (e.key === 'Enter') {
-                            await autoSaveRow(tx, { notes: rowDraft[tx.id]?.notes || '' })
-                          }
-                        }}
-                        onBlur={async () => {
-                          await autoSaveRow(tx, { notes: rowDraft[tx.id]?.notes || '' })
-                        }}
+                        onKeyDown={(e) => { if (e.key === 'Enter' && rowDraft[tx.id]?.category_id) saveRow(tx) }}
                         placeholder="Observacao..."
                       />
                     </td>
                     <td className="px-3 py-2.5">
                       <div className="flex items-center gap-1.5">
                         <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full" style={{ background: st.bg, color: st.color }}>{st.label}</span>
+                        {!!tx.history_match_id && !tx.history_match_confirmed && Number(tx.identity_score || 0) >= Number(tx.history_link_threshold || 96) && (
+                          <button
+                            type="button"
+                            onClick={() => setLinkReviewId(tx.id)}
+                            className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold transition-all hover:opacity-80"
+                            style={{ background: 'rgba(96,165,250,0.10)', border: '1px solid rgba(96,165,250,0.30)', color: '#93c5fd' }}
+                            title="Comparar o lancamento real com o registro da base historica"
+                          >
+                            <Link2 size={11} />
+                            Possivel vinculo {Number(tx.identity_score || 0).toFixed(0)}%
+                          </button>
+                        )}
+                        {!tx.locked && (
+                          <button
+                            type="button"
+                            onClick={() => saveRow(tx)}
+                            disabled={!rowDraft[tx.id]?.category_id || !!savingRow[tx.id]}
+                            className="inline-flex items-center px-2 py-1 rounded text-[10px] font-semibold disabled:opacity-40"
+                            style={{ background: '#c9a84c', color: '#0d0f14' }}
+                          >
+                            {savingRow[tx.id] ? 'Salvando...' : 'Salvar e bloquear'}
+                          </button>
+                        )}
                         {tx.locked && (
                           <span
                             className="inline-flex items-center"
@@ -771,6 +772,56 @@ export default function TransactionTable({
           </div>
         )}
       </div>
+      {linkReviewId && (() => {
+        const tx = txs.find(item => item.id === linkReviewId)
+        if (!tx) return null
+        const field = (label: string, value: string) => (
+          <div><p className="text-[10px] uppercase tracking-wider text-[#5a5f73]">{label}</p><p className="mt-1 text-sm text-[#e8eaf0] break-words">{value || '-'}</p></div>
+        )
+        return (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: 'rgba(3,5,10,0.78)' }}>
+            <div className="w-full max-w-4xl rounded-xl p-5 shadow-2xl" style={{ background: '#13161d', border: '1px solid rgba(96,165,250,0.3)' }}>
+              <div className="flex items-start justify-between gap-4 mb-5">
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-widest text-[#93c5fd]">Possivel vinculo historico</p>
+                  <h3 className="mt-1 text-lg font-semibold text-[#e8eaf0]">Confira se os dois registros representam o mesmo lancamento</h3>
+                  <p className="mt-1 text-sm text-[#8b90a4]">Compatibilidade calculada: <span className="font-semibold text-[#e8c96e]">{Number(tx.identity_score || 0).toFixed(1)}%</span></p>
+                </div>
+                <button type="button" onClick={() => setLinkReviewId(null)} className="p-1 text-[#8b90a4] hover:text-white"><X size={18} /></button>
+              </div>
+              <div className="grid gap-4 md:grid-cols-2">
+                <section className="rounded-lg p-4" style={{ background: '#0f1320', border: '1px solid rgba(255,255,255,0.08)' }}>
+                  <h4 className="mb-4 text-sm font-semibold text-[#3ecf8e]">Lancamento real importado</h4>
+                  <div className="grid gap-4 sm:grid-cols-2">
+                    {field('Data', formatDate(tx.date))}
+                    {field('Valor', `${tx.type === 'income' ? '+' : '-'}${formatCurrencyAbs(tx.amount)}`)}
+                    <div className="sm:col-span-2">{field('Descricao', tx.description)}</div>
+                    {field('Conta', tx.account_name)}
+                    {field('Tipo', tx.type === 'income' ? 'Receita' : 'Despesa')}
+                  </div>
+                </section>
+                <section className="rounded-lg p-4" style={{ background: '#0f1320', border: '1px solid rgba(255,255,255,0.08)' }}>
+                  <h4 className="mb-4 text-sm font-semibold text-[#93c5fd]">Registro da base historica</h4>
+                  <div className="grid gap-4 sm:grid-cols-2">
+                    {field('Data', tx.match_history_date ? formatDate(tx.match_history_date) : '-')}
+                    {field('Valor', formatCurrencyAbs(tx.match_history_amount || 0))}
+                    <div className="sm:col-span-2">{field('Descricao', tx.match_history_description || '')}</div>
+                    {field('Conta conhecida', tx.match_history_account_name || 'Origem sem conta definida')}
+                    {field('Origem', tx.match_history_source || '')}
+                    {field('Categoria', tx.match_history_category_name || '')}
+                    {field('Subcategoria', tx.match_history_subcategory_name || '')}
+                  </div>
+                </section>
+              </div>
+              <p className="mt-4 text-xs text-[#8b90a4]">Confirmar cria apenas o vinculo de identidade. Categoria e subcategoria continuam dependendo da sua acao.</p>
+              <div className="mt-5 flex justify-end gap-2">
+                <button type="button" disabled={reviewingLink} onClick={() => handleHistoryLink(tx, 'reject')} className="h-9 rounded-md px-4 text-sm font-semibold disabled:opacity-50" style={{ background: 'rgba(248,113,113,0.10)', border: '1px solid rgba(248,113,113,0.3)', color: '#fca5a5' }}>Nao sao o mesmo</button>
+                <button type="button" disabled={reviewingLink} onClick={() => handleHistoryLink(tx, 'confirm')} className="h-9 rounded-md px-4 text-sm font-semibold disabled:opacity-50" style={{ background: 'rgba(62,207,142,0.16)', border: '1px solid rgba(62,207,142,0.4)', color: '#6ee7b7' }}>{reviewingLink ? 'Salvando...' : 'Confirmar vinculo'}</button>
+              </div>
+            </div>
+          </div>
+        )
+      })()}
     </div>
   )
 }

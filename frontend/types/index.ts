@@ -71,6 +71,8 @@ export interface Transaction {
   match_probability?: number
   match_notes?: string
   history_match_id?: string | null
+  history_match_confirmed?: boolean
+  history_link_threshold?: number
   identity_score?: number
   match_category_id?: string | null
   match_category_name?: string | null
@@ -80,6 +82,10 @@ export interface Transaction {
   match_history_description?: string | null
   match_history_amount?: number | null
   match_history_type?: TransactionType | null
+  match_history_source?: string
+  match_history_account_name?: string
+  match_history_category_name?: string
+  match_history_subcategory_name?: string
   ledger_id?: string | null
   ledger_name?: string | null
   ledger_color?: string | null

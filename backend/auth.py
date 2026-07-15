@@ -21,6 +21,8 @@ from db import db_connect
 
 AUTH_DISABLED = (os.environ.get("AUTH_DISABLED") or "").strip() in {"1", "true", "yes"}
 SESSION_DAYS = int(os.environ.get("SESSION_DAYS") or "30")
+LOGIN_MAX_ATTEMPTS = int(os.environ.get("LOGIN_MAX_ATTEMPTS") or "5")
+LOGIN_BLOCK_MINUTES = int(os.environ.get("LOGIN_BLOCK_MINUTES") or "15")
 
 ROLE_ADMIN = "admin"
 ROLE_COLLAB = "colaborador"
@@ -89,9 +91,64 @@ def init_auth_db() -> None:
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS login_attempts(
+              attempt_key TEXT PRIMARY KEY,
+              attempt_count INTEGER NOT NULL DEFAULT 0,
+              blocked_until TEXT NOT NULL DEFAULT '',
+              updated_at TEXT NOT NULL
+            )
+            """
+        )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_entity ON audit_log(entity, entity_id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_log(created_at)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id)")
+
+
+def _login_attempt_key(username: str, client_ip: str) -> str:
+    raw = f"{(username or '').strip().lower()}|{(client_ip or '').strip()}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def login_allowed(username: str, client_ip: str) -> bool:
+    key = _login_attempt_key(username, client_ip)
+    with db_connect() as conn:
+        row = conn.execute(
+            "SELECT blocked_until FROM login_attempts WHERE attempt_key=?", (key,)
+        ).fetchone()
+    return not row or not row[0] or str(row[0]) <= _now()
+
+
+def record_login_failure(username: str, client_ip: str) -> None:
+    key = _login_attempt_key(username, client_ip)
+    now = dt.datetime.now(dt.timezone.utc)
+    with db_connect() as conn:
+        row = conn.execute(
+            "SELECT attempt_count,blocked_until FROM login_attempts WHERE attempt_key=?", (key,)
+        ).fetchone()
+        count = int((row or (0, ""))[0] or 0) + 1
+        blocked_until = (row or (0, ""))[1] or ""
+        if count >= LOGIN_MAX_ATTEMPTS:
+            blocked_until = (now + dt.timedelta(minutes=LOGIN_BLOCK_MINUTES)).isoformat(timespec="seconds")
+            count = 0
+        conn.execute(
+            """
+            INSERT INTO login_attempts(attempt_key,attempt_count,blocked_until,updated_at)
+            VALUES (?,?,?,?)
+            ON CONFLICT(attempt_key) DO UPDATE SET
+              attempt_count=excluded.attempt_count,
+              blocked_until=excluded.blocked_until,
+              updated_at=excluded.updated_at
+            """,
+            (key, count, blocked_until, now.isoformat(timespec="seconds")),
+        )
+
+
+def clear_login_failures(username: str, client_ip: str) -> None:
+    key = _login_attempt_key(username, client_ip)
+    with db_connect() as conn:
+        conn.execute("DELETE FROM login_attempts WHERE attempt_key=?", (key,))
 
 
 def bootstrap_admin() -> None:
