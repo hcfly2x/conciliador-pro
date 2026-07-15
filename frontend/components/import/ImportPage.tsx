@@ -91,7 +91,9 @@ export default function ImportPage() {
     try {
       const data = await commitImportPreview(preview.preview_id, true, competenceMonth.replace('-', '/'))
       setResult(data)
-      addToast(`${data.total_inserted} lançamentos importados com sucesso`)
+      addToast(data.import_meta?.empty_statement_confirmed
+        ? 'Extrato sem movimentações registrado no cofre'
+        : `${data.total_inserted} lançamentos importados com sucesso`)
       bumpRefresh()
     } catch (e: any) {
       setError(e?.detail || 'Falha ao confirmar importação.')
@@ -239,6 +241,13 @@ export default function ImportPage() {
             </div>
           )}
 
+          {preview.import_meta?.empty_statement_confirmed && (
+            <div className="mb-4 rounded-lg p-3" style={{ background: 'rgba(96,165,250,0.08)', border: '1px solid rgba(96,165,250,0.28)' }}>
+              <p className="text-sm font-semibold text-[#93c5fd]">Extrato sem movimentações confirmado</p>
+              <p className="mt-1 text-sm text-[#bfdbfe]">O arquivo será guardado para cobrir esta competência, sem criar lançamentos.</p>
+            </div>
+          )}
+
           {preview.warnings && preview.warnings.length > 0 && (
             <div className="mb-4 rounded-lg p-3" style={{ background: 'rgba(251,191,36,0.08)', border: '1px solid rgba(251,191,36,0.25)' }}>
               {preview.warnings.map((w, i) => <p key={i} className="text-sm text-[#fbbf24]">{w}</p>)}
@@ -330,9 +339,9 @@ export default function ImportPage() {
           </div>
 
           <div className="mt-4 flex justify-end">
-            <button onClick={handleCommit} disabled={loading || preview.new_records <= 0 || preview.quality_gate?.can_commit === false} className="h-10 px-5 rounded-md font-semibold text-sm disabled:opacity-40 flex items-center gap-2" style={{ background: '#3ecf8e', color: '#0b1218' }}>
+            <button onClick={handleCommit} disabled={loading || (preview.new_records <= 0 && !preview.import_meta?.empty_statement_confirmed) || preview.quality_gate?.can_commit === false} className="h-10 px-5 rounded-md font-semibold text-sm disabled:opacity-40 flex items-center gap-2" style={{ background: '#3ecf8e', color: '#0b1218' }}>
               <Database size={16} />
-              {loading ? 'Salvando...' : 'Confirmar importação'}
+              {loading ? 'Salvando...' : preview.import_meta?.empty_statement_confirmed ? 'Registrar extrato vazio' : 'Confirmar importação'}
             </button>
           </div>
         </div>
@@ -340,7 +349,7 @@ export default function ImportPage() {
 
       {result && (
         <div className="p-5 rounded-xl" style={{ background: 'rgba(62,207,142,0.06)', border: '1px solid rgba(62,207,142,0.2)' }}>
-          <div className="flex items-center gap-2 mb-4"><CheckCircle size={16} className="text-[#3ecf8e]" /><span className="font-semibold text-[#3ecf8e]">Importação concluída</span></div>
+          <div className="flex items-center gap-2 mb-4"><CheckCircle size={16} className="text-[#3ecf8e]" /><span className="font-semibold text-[#3ecf8e]">{result.import_meta?.empty_statement_confirmed ? 'Extrato vazio registrado' : 'Importação concluída'}</span></div>
           <div className="grid grid-cols-3 gap-3 text-center">
             {[['Inseridos', result.total_inserted, '#3ecf8e'], ['Duplicatas', result.total_duplicates, '#fbbf24'], ['Total lidos', result.total_parsed, '#8b90a4']].map(([l, v, c]) => (
               <div key={String(l)}><p className="text-2xl font-bold" style={{ color: String(c) }}>{String(v)}</p><p className="text-xs text-[#5a5f73] mt-0.5">{String(l)}</p></div>

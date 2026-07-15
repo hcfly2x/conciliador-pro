@@ -48,6 +48,8 @@ class WorkflowIntegrationTests(unittest.TestCase):
               ('tx-1','acc','2026-01-10','LOJA','loja',-100,'expense',0,NULL,NULL,'','pending','plan-1',1,3,'','',NULL,0,0,NULL,0,''),
               ('tx-2','acc','2026-02-10','LOJA','loja',-100,'expense',0,NULL,NULL,'nota individual','pending','plan-1',2,3,'','',NULL,0,0,NULL,0,''),
               ('tx-link','acc','2026-03-10','MERCADO','mercado',-50,'expense',0,NULL,NULL,'','pending',NULL,NULL,NULL,'','','hist-1',98,0,NULL,98,'');
+            INSERT INTO classification_history VALUES
+              ('hist-1','seed:sheet:saidas','acc','2026-03-10','MERCADO','mercado',50,'expense','cat-expense','sub-market');
             """
         )
 
@@ -80,7 +82,14 @@ class WorkflowIntegrationTests(unittest.TestCase):
     def test_history_link_confirm_and_reject_are_persisted(self) -> None:
         confirmed = self.client.post("/api/v1/transactions/tx-link/history-link", json={"action": "confirm"})
         self.assertEqual(confirmed.status_code, 200)
-        self.assertEqual(self.conn.execute("SELECT history_match_confirmed FROM transactions WHERE id='tx-link'").fetchone()[0], 1)
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT history_match_confirmed,category_id,subcategory_id,status,locked FROM transactions WHERE id='tx-link'"
+            ).fetchone(),
+            (1, "cat-expense", "sub-market", "reconciled", 1),
+        )
+        self.assertEqual(confirmed.get_json()["category_id"], "cat-expense")
+        self.assertEqual(confirmed.get_json()["subcategory_id"], "sub-market")
 
         rejected = self.client.post("/api/v1/transactions/tx-link/history-link", json={"action": "reject"})
         self.assertEqual(rejected.status_code, 200)

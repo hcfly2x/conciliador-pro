@@ -535,6 +535,12 @@ export async function reviewHistoricalMatch(id: string, action: 'confirm' | 'rej
   id: string
   history_match_id: string | null
   history_match_confirmed: boolean
+  category_id?: string | null
+  subcategory_id?: string | null
+  status?: 'reconciled'
+  locked?: boolean
+  classified_by?: string
+  classified_at?: string
   ok: boolean
 }> {
   if (USE_MOCK) { await delay(); return { id, history_match_id: action === 'confirm' ? 'mock-history' : null, history_match_confirmed: action === 'confirm', ok: true } }

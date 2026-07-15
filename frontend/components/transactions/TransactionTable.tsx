@@ -191,16 +191,26 @@ export default function TransactionTable({
   async function handleHistoryLink(tx: Transaction, action: 'confirm' | 'reject') {
     setReviewingLink(true)
     try {
-      await reviewHistoricalMatch(tx.id, action)
+      const result = await reviewHistoricalMatch(tx.id, action)
       setTxs(prev => prev.map(item => item.id !== tx.id ? item : {
         ...item,
         history_match_id: action === 'confirm' ? item.history_match_id : null,
         history_match_confirmed: action === 'confirm',
         identity_score: action === 'confirm' ? item.identity_score : 0,
         match_probability: action === 'confirm' ? item.match_probability : 0,
+        ...(action === 'confirm' ? {
+          category_id: result.category_id || null,
+          category_name: categories.find(category => category.id === result.category_id)?.name || item.match_history_category_name || null,
+          subcategory_id: result.subcategory_id || null,
+          subcategory_name: subcategories.find(subcategory => subcategory.id === result.subcategory_id)?.name || item.match_history_subcategory_name || null,
+          status: result.status || 'reconciled',
+          locked: result.locked ?? true,
+          classified_by: result.classified_by || '',
+          classified_at: result.classified_at || '',
+        } : {}),
       }))
       setLinkReviewId(null)
-      addToast(action === 'confirm' ? 'Vinculo historico confirmado' : 'Sugestao de vinculo rejeitada')
+      addToast(action === 'confirm' ? 'Vinculo confirmado e classificacao historica aplicada' : 'Sugestao de vinculo rejeitada')
     } catch {
       addToast('Nao foi possivel revisar o vinculo', 'err')
     } finally {
@@ -243,16 +253,16 @@ export default function TransactionTable({
     getLedgers().then(setLedgers).catch(() => undefined)
   }, [refreshKey])
   useEffect(() => {
-    const pending = txs.filter(tx => tx.status === 'pending')
-    if (!pending.length) return
+    const needingSuggestions = txs.filter(tx => !tx.locked && !tx.category_id)
+    if (!needingSuggestions.length) return
 
     const batchSize = 10
     let cancelled = false
 
     async function loadPendingSuggestions() {
-      for (let i = 0; i < pending.length && !cancelled; i += batchSize) {
+      for (let i = 0; i < needingSuggestions.length && !cancelled; i += batchSize) {
         await Promise.allSettled(
-          pending.slice(i, i + batchSize).map(async tx => {
+          needingSuggestions.slice(i, i + batchSize).map(async tx => {
             if (rowSuggestions[tx.id] !== undefined) return
             try {
               const data = await getTransactionSuggestions(tx.id)
@@ -269,6 +279,7 @@ export default function TransactionTable({
     return () => { cancelled = true }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [txs])
+  useEffect(() => { setRowSuggestions({}) }, [refreshKey])
   useEffect(() => { setStatusFilter(defaultStatus || '') }, [defaultStatus])
   useEffect(() => {
     setSortBy(defaultSortBy)
@@ -543,7 +554,7 @@ export default function TransactionTable({
                       )}
                     </td>
                     <td className="px-3 py-2.5">
-                      {tx.status === 'pending' && !rowDraft[tx.id]?.category_id && (() => {
+                      {!tx.locked && !rowDraft[tx.id]?.category_id && (() => {
                         const suggestions = rowSuggestions[tx.id]
                         if (suggestions && suggestions.length > 0) {
                           return (
@@ -572,17 +583,31 @@ export default function TransactionTable({
                             </div>
                           )
                         }
-                        if (tx.match_category_name && !suggestions) {
+                        if (tx.match_category_name && (!suggestions || suggestions.length === 0)) {
                           return (
                             <div className="mb-1">
-                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-semibold" style={{ background: 'rgba(201,168,76,0.08)', color: '#c9a84c', border: '1px solid rgba(201,168,76,0.15)' }}>
+                              <button
+                                type="button"
+                                onClick={() => patchRowDraft(tx, {
+                                  category_id: tx.match_category_id || '',
+                                  subcategory_id: tx.match_subcategory_id || '',
+                                })}
+                                disabled={!tx.match_category_id}
+                                className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-semibold disabled:cursor-default"
+                                style={{ background: 'rgba(201,168,76,0.08)', color: '#c9a84c', border: '1px solid rgba(201,168,76,0.15)' }}
+                                title="Classificacao do registro historico candidato; clique para selecionar"
+                              >
                                 {tx.match_category_name}
-                                {Number(tx.match_probability) > 0 && <span style={{ opacity: 0.5 }}>{Number(tx.match_probability).toFixed(0)}%</span>}
-                              </span>
+                                <span style={{ opacity: 0.5 }}>base historica</span>
+                              </button>
                             </div>
                           )
                         }
-                        return null
+                        return (
+                          <p className="mb-1 text-[10px] text-[#5a5f73]">
+                            {suggestions === undefined ? 'Buscando sugestoes...' : 'Sem sugestao confiavel'}
+                          </p>
+                        )
                       })()}
                       <select
                         className="h-8 w-[190px] rounded-md px-2 text-xs text-[#e8eaf0] outline-none disabled:opacity-45 disabled:cursor-not-allowed"
@@ -603,7 +628,7 @@ export default function TransactionTable({
                       </select>
                     </td>
                     <td className="px-3 py-2.5">
-                      {tx.status === 'pending' && !rowDraft[tx.id]?.subcategory_id && (() => {
+                      {!tx.locked && !rowDraft[tx.id]?.subcategory_id && (() => {
                         const subSuggestions = (rowSuggestions[tx.id] || [])
                           .filter(sg => sg.category_id === rowDraft[tx.id]?.category_id)
                           .filter(sg => !!sg.subcategory_id && !!sg.subcategory_name)
@@ -837,7 +862,7 @@ export default function TransactionTable({
                   <p className="mt-1 text-sm font-semibold text-[#e8eaf0]">{Number(tx.match_description_similarity || 0).toFixed(1)}%</p>
                 </div>
               </div>
-              <p className="mt-4 text-xs text-[#8b90a4]">Confirmar cria apenas o vinculo de identidade. Categoria e subcategoria continuam dependendo da sua acao.</p>
+              <p className="mt-4 text-xs text-[#8b90a4]">Confirmar vincula os registros, replica categoria e subcategoria da base historica e protege o lancamento contra alteracoes acidentais.</p>
               <div className="mt-5 flex justify-end gap-2">
                 <button type="button" disabled={reviewingLink} onClick={() => handleHistoryLink(tx, 'reject')} className="h-9 rounded-md px-4 text-sm font-semibold disabled:opacity-50" style={{ background: 'rgba(248,113,113,0.10)', border: '1px solid rgba(248,113,113,0.3)', color: '#fca5a5' }}>Nao sao o mesmo</button>
                 <button type="button" disabled={reviewingLink} onClick={() => handleHistoryLink(tx, 'confirm')} className="h-9 rounded-md px-4 text-sm font-semibold disabled:opacity-50" style={{ background: 'rgba(62,207,142,0.16)', border: '1px solid rgba(62,207,142,0.4)', color: '#6ee7b7' }}>{reviewingLink ? 'Salvando...' : 'Confirmar vinculo'}</button>

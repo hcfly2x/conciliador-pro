@@ -76,7 +76,7 @@ A base historica e auxiliar: ela sugere categorias e subcategorias e pode ser vi
 - Um candidato a vinculo historico so deve ser apresentado a partir de 96% de compatibilidade.
 - O candidato deve mostrar lado a lado os dados do lancamento real e do registro historico.
 - O vinculo so e confirmado depois de acao humana explicita; uma rejeicao deve impedir que o mesmo candidato reapareca para o lancamento.
-- Confirmar um vinculo nao aplica categoria ou subcategoria automaticamente.
+- Confirmar um vinculo replica a categoria e a subcategoria do registro historico, marca o lancamento como classificado e o protege contra alteracoes acidentais.
 - Despesas tem valor negativo.
 - Receitas tem valor positivo.
 - Lancamentos de cartao sao despesas por padrao.
@@ -115,6 +115,7 @@ A base historica e auxiliar: ela sugere categorias e subcategorias e pode ser vi
 - A base historica continua sendo usada para sugestoes e vinculos com lancamentos reais.
 - A interface deve distinguir claramente um vinculo historico de uma classificacao manual.
 - Vinculos historicos usam limiar inicial de 96% e exigem confirmacao humana depois da comparacao visual dos dois registros.
+- A confirmacao humana do vinculo aplica a categoria e a subcategoria do registro historico ao lancamento real; isso e classificacao explicita por identidade, nao autoclassificacao por probabilidade.
 - Administradores e colaboradores podem confirmar ou rejeitar candidatos de vinculo historico.
 - Autoclassificacao nao deve existir, independentemente da probabilidade calculada.
 - Compras parceladas nao sao consolidadas em um unico lancamento.
@@ -126,6 +127,13 @@ A base historica e auxiliar: ela sugere categorias e subcategorias e pode ser vi
 
 ## Tarefas pendentes confirmadas
 
+- A amostra privada local possui 139 documentos dos seis tipos oficiais entre
+  2023 e 2026; resultados agregados estao em `docs/AMOSTRAS-HOMOLOGACAO.md` e os
+  arquivos financeiros originais nao podem ser adicionados ao repositorio.
+- Os extratos Nubank de janeiro de 2024 e XP de fevereiro de 2026 foram
+  confirmados pelo proprietario como periodos validos sem movimentacao.
+- O importador historico aceita as variantes degradadas de abas e cabecalhos
+  observadas na planilha real, sem alterar os dados financeiros de origem.
 - Validar integralmente os parsers de extrato e cartao de Santander, XP e Nubank.
 - Conferir quantidade, data, valor, sinal, competencia e duplicidade.
 - Melhorar a normalizacao de descricoes e estabelecimentos.
