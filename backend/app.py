@@ -3001,18 +3001,12 @@ def import_history():
     ])
 
 
-def coverage_months() -> list[str]:
-    start = dt.date(2024, 1, 1)
-    today = dt.datetime.now().date().replace(day=1)
-    months: list[str] = []
-    cur = start
-    while cur <= today:
-        months.append(cur.strftime("%Y/%m"))
-        if cur.month == 12:
-            cur = dt.date(cur.year + 1, 1, 1)
-        else:
-            cur = dt.date(cur.year, cur.month + 1, 1)
-    return months
+COVERAGE_YEARS = tuple(range(2023, 2027))
+COVERAGE_DEFAULT_YEAR = 2026
+
+
+def coverage_months(year: int) -> list[str]:
+    return [f"{year:04d}/{month:02d}" for month in range(1, 13)]
 
 
 def coverage_account_rows(conn: sqlite3.Connection) -> list[sqlite3.Row]:
@@ -3066,31 +3060,81 @@ def coverage_files_for(account_name: str, year_month: str) -> list[dict[str, Any
 
 @app.route("/api/v1/coverage")
 def coverage():
-    months = coverage_months()
+    raw_year = (request.args.get("year") or str(COVERAGE_DEFAULT_YEAR)).strip()
+    try:
+        year = int(raw_year)
+    except ValueError:
+        return jsonify({"detail": "year deve ser um ano valido", "code": "VALIDATION_ERROR"}), 400
+    if year not in COVERAGE_YEARS:
+        return jsonify({
+            "detail": f"year deve estar entre {COVERAGE_YEARS[0]} e {COVERAGE_YEARS[-1]}",
+            "code": "VALIDATION_ERROR",
+        }), 400
+
+    months = coverage_months(year)
+    month_set = set(months)
     with db_connect() as conn:
         accounts = coverage_account_rows(conn)
         dispensed = {
             (r[0], r[1]): {"status": r[2], "reason": r[3]}
             for r in conn.execute(
-                "SELECT account_id,year_month,status,reason FROM account_file_coverage"
+                """
+                SELECT account_id,year_month,status,reason
+                FROM account_file_coverage
+                WHERE year_month LIKE ?
+                """,
+                (f"{year:04d}/%",),
             ).fetchall()
         }
 
+        # Uma consulta traz todos os documentos do ano. Os nomes sao mantidos
+        # em conjuntos para evitar contar duas vezes o mesmo arquivo no banco e
+        # no armazenamento local legado.
+        file_names: dict[tuple[str, str], set[str]] = {}
+        for row in conn.execute(
+            """
+            SELECT account_name,year_month,filename
+            FROM stored_documents
+            WHERE year_month LIKE ?
+            """,
+            (f"{year:04d}/%",),
+        ).fetchall():
+            if row[1] in month_set:
+                file_names.setdefault((row[0], row[1]), set()).add(str(row[2]).lower())
+
+    allowed = {".csv", ".xls", ".xlsx", ".pdf"}
+    for acc in accounts:
+        account_name = acc["name"]
+        folder_name = account_folder_name(account_name)
+        for ym in months:
+            _, month = ym.split("/")
+            folder = DOCS / str(year) / month / folder_name
+            if not folder.exists():
+                continue
+            names = file_names.setdefault((account_name, ym), set())
+            for path in folder.iterdir():
+                if path.is_file() and path.suffix.lower() in allowed:
+                    names.add(path.name.lower())
+
     matrix: dict[str, Any] = {}
+    current_month = dt.datetime.now().date().replace(day=1)
     for acc in accounts:
         cells: dict[str, Any] = {}
         for ym in months:
-            files = coverage_files_for(acc["name"], ym)
+            file_count = len(file_names.get((acc["name"], ym), set()))
             disp = dispensed.get((acc["id"], ym))
-            if files:
+            month_date = dt.date(int(ym[:4]), int(ym[5:]), 1)
+            if file_count:
                 status = "imported"
             elif disp:
                 status = "dispensed"
+            elif month_date > current_month:
+                status = "future"
             else:
                 status = "missing"
             cells[ym] = {
                 "status": status,
-                "file_count": len(files),
+                "file_count": file_count,
                 "reason": (disp or {}).get("reason", ""),
             }
         matrix[acc["id"]] = {
@@ -3101,7 +3145,12 @@ def coverage():
             "folder": account_folder_name(acc["name"]),
             "cells": cells,
         }
-    return jsonify({"months": months, "matrix": matrix})
+    return jsonify({
+        "year": year,
+        "available_years": list(COVERAGE_YEARS),
+        "months": months,
+        "matrix": matrix,
+    })
 
 
 @app.route("/api/v1/coverage/dispense", methods=["POST", "DELETE"])

@@ -45,7 +45,7 @@ export default function ArquivosPage() {
   const [selected, setSelected] = useState<SelectedCell | null>(null)
   const [files, setFiles] = useState<CoverageFile[]>([])
   const [query, setQuery] = useState('')
-  const [year, setYear] = useState('')
+  const [year, setYear] = useState('2026')
   const [loading, setLoading] = useState(false)
   const [busy, setBusy] = useState(false)
   const [preview, setPreview] = useState<any | null>(null)
@@ -54,9 +54,8 @@ export default function ArquivosPage() {
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      const data = await getCoverage()
+      const data = await getCoverage(Number(year))
       setCoverage(data)
-      if (!year && data.months.length) setYear(data.months[data.months.length - 1].slice(0, 4))
     } finally {
       setLoading(false)
     }
@@ -65,14 +64,14 @@ export default function ArquivosPage() {
   useEffect(() => { load() }, [load])
 
   const years = useMemo(() => {
-    const all = coverage?.months.map(m => m.slice(0, 4)) ?? []
-    return Array.from(new Set(all)).reverse()
+    return (coverage?.available_years ?? [2023, 2024, 2025, 2026])
+      .map(String)
+      .reverse()
   }, [coverage])
 
   const months = useMemo(() => {
-    const all = coverage?.months ?? []
-    return year ? all.filter(m => m.startsWith(`${year}/`)) : all
-  }, [coverage, year])
+    return coverage?.months ?? []
+  }, [coverage])
 
   const accounts = useMemo(() => {
     const list = Object.values(coverage?.matrix ?? {})
@@ -204,7 +203,7 @@ export default function ArquivosPage() {
           <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-[#5a5f73]" />
           <input value={query} onChange={e => setQuery(e.target.value)} placeholder="Buscar conta..." className="h-9 w-64 rounded-md bg-[#151923] border border-white/10 pl-9 pr-3 text-sm text-[#e8eaf0] outline-none" />
         </div>
-        <select value={year} onChange={e => setYear(e.target.value)} className="h-9 rounded-md bg-[#151923] border border-white/10 px-3 text-sm text-[#cfd3df] outline-none">
+        <select value={year} onChange={e => { setYear(e.target.value); setSelected(null); setFiles([]); setPreview(null) }} className="h-9 rounded-md bg-[#151923] border border-white/10 px-3 text-sm text-[#cfd3df] outline-none">
           {years.map(y => <option key={y} value={y}>{y}</option>)}
         </select>
       </div>
@@ -224,6 +223,7 @@ export default function ArquivosPage() {
                 {months.map(month => {
                   const cell = account.cells[month]
                   const active = selected?.accountId === account.id && selected.yearMonth === month
+                  if (!cell) return <td key={month} className="px-2 py-2 text-center text-[#5a5f73]">-</td>
                   return (
                     <td key={month} className="px-2 py-2 text-center">
                       <button
@@ -233,11 +233,12 @@ export default function ArquivosPage() {
                           cell.status === 'imported' ? 'bg-emerald-500/12 border-emerald-400/25 text-emerald-300' : '',
                           cell.status === 'missing' ? 'bg-red-500/10 border-red-400/20 text-red-300' : '',
                           cell.status === 'dispensed' ? 'bg-yellow-500/10 border-yellow-400/25 text-yellow-300' : '',
+                          cell.status === 'future' ? 'bg-slate-500/10 border-slate-400/15 text-slate-500' : '',
                           active ? 'ring-1 ring-[#e8c96e]' : '',
                         ].join(' ')}
                         title={cell.reason || cell.status}
                       >
-                        {cell.status === 'imported' ? cell.file_count : cell.status === 'dispensed' ? '-' : '0'}
+                        {cell.status === 'imported' ? cell.file_count : cell.status === 'dispensed' ? '-' : cell.status === 'future' ? '...' : '0'}
                       </button>
                     </td>
                   )

@@ -468,7 +468,7 @@ export async function downloadDocument(docId: string, filename: string): Promise
 }
 
 export interface CoverageCell {
-  status: 'imported' | 'missing' | 'dispensed'
+  status: 'imported' | 'missing' | 'dispensed' | 'future'
   file_count: number
   reason?: string
 }
@@ -483,12 +483,14 @@ export interface CoverageAccount {
 }
 
 export interface CoverageResponse {
+  year: number
+  available_years: number[]
   months: string[]
   matrix: Record<string, CoverageAccount>
 }
 
-export async function getCoverage(): Promise<CoverageResponse> {
-  return http<CoverageResponse>('GET', '/coverage')
+export async function getCoverage(year = 2026): Promise<CoverageResponse> {
+  return http<CoverageResponse>('GET', `/coverage?year=${encodeURIComponent(year)}`)
 }
 
 export async function getCoverageFiles(account_id: string, year_month: string): Promise<{ files: CoverageFile[] }> {

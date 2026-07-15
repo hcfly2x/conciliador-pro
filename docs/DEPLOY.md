@@ -78,7 +78,8 @@ AUTH_DISABLED=1 .venv/Scripts/python app.py                              # roda 
 
 cd ../frontend
 npm install
-# .env.local: NEXT_PUBLIC_API_URL=http://127.0.0.1:5061/api/v1 e NEXT_PUBLIC_AUTH_DISABLED=true
+# .env.local: use API_PROXY_TARGET=http://127.0.0.1:5061 e NEXT_PUBLIC_AUTH_DISABLED=true
+# NEXT_PUBLIC_API_URL pode ficar ausente localmente; o proxy do Next encaminha /api/v1.
 npm run dev
 ```
 
