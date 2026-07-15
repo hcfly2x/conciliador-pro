@@ -1,7 +1,7 @@
 'use client'
 import { useCallback, useEffect, useState } from 'react'
 import { Search, RefreshCw } from 'lucide-react'
-import { getHistory, unlinkHistoricalMatch, type HistoryItem } from '@/lib/api'
+import { getHistory, getRecalculationJob, recalculateProbabilities, unlinkHistoricalMatch, type HistoryItem, type RecalculationJob } from '@/lib/api'
 import { useStore } from '@/store/app'
 import { formatCurrencyAbs, formatDate } from '@/lib/utils'
 
@@ -24,6 +24,24 @@ export default function Page() {
   const [sortBy, setSortBy] = useState('date')
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc')
   const [unlinkMenu, setUnlinkMenu] = useState<{ txId: string; x: number; y: number } | null>(null)
+  const [recalcJob, setRecalcJob] = useState<RecalculationJob | null>(null)
+
+  useEffect(() => {
+    if (!recalcJob?.id || !['queued', 'running'].includes(recalcJob.status)) return
+    const timer = setTimeout(async () => {
+      try { setRecalcJob(await getRecalculationJob(recalcJob.id)) } catch { /* tenta novamente no proximo ciclo */ }
+    }, 2000)
+    return () => clearTimeout(timer)
+  }, [recalcJob])
+
+  async function startRecalculation() {
+    try {
+      const response = await recalculateProbabilities()
+      setRecalcJob({ id: response.job_id, status: 'queued', processed: 0, total: 0, updated: 0, error: '' })
+    } catch {
+      addToast('Erro ao iniciar o calculo de sugestoes', 'err')
+    }
+  }
 
   const load = useCallback(async (p = 1) => {
     setLoading(true)
@@ -96,10 +114,31 @@ export default function Page() {
 
   return (
     <div>
-      <div className="mb-5">
-        <h1 className="font-display text-2xl font-bold text-[#e8eaf0]">Base Historica</h1>
-        <p className="text-sm text-[#8b90a4] mt-1">Consulta somente leitura usada pelo motor de probabilidades.</p>
+      <div className="mb-5 flex items-start justify-between gap-4">
+        <div>
+          <h1 className="font-display text-2xl font-bold text-[#e8eaf0]">Base Historica</h1>
+          <p className="text-sm text-[#8b90a4] mt-1">Consulta somente leitura usada pelo motor de probabilidades.</p>
+        </div>
+        <button onClick={startRecalculation} disabled={recalcJob?.status === 'queued' || recalcJob?.status === 'running'} className="h-10 rounded-lg px-4 text-sm font-semibold disabled:opacity-50" style={{ background: '#c9a84c', color: '#0d0f14' }}>
+          {recalcJob?.status === 'queued' || recalcJob?.status === 'running' ? 'Calculando...' : 'Calcular sugestoes'}
+        </button>
       </div>
+
+      {recalcJob && (
+        <div className="mb-5 rounded-xl p-4" style={{ background: '#13161d', border: '1px solid rgba(201,168,76,0.25)' }}>
+          <p className="text-sm text-[#e8eaf0]">
+            {recalcJob.status === 'queued' && 'Calculo aguardando inicio...'}
+            {recalcJob.status === 'running' && `Analisando ${recalcJob.processed} de ${recalcJob.total} lancamentos...`}
+            {recalcJob.status === 'completed' && `Calculo concluido: ${recalcJob.updated} sugestoes atualizadas.`}
+            {recalcJob.status === 'failed' && `Falha no calculo: ${recalcJob.error || 'erro interno'}`}
+          </p>
+          {recalcJob.total > 0 && (
+            <div className="mt-2 h-2 overflow-hidden rounded bg-[#1a1e28]">
+              <div className="h-full bg-[#c9a84c] transition-all" style={{ width: `${Math.min(100, (recalcJob.processed / recalcJob.total) * 100)}%` }} />
+            </div>
+          )}
+        </div>
+      )}
 
       <div className="flex gap-2 mb-4">
         {sheetTabs.map(tab => (
