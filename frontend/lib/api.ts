@@ -254,9 +254,22 @@ export async function getTransactionSuggestions(id: string): Promise<Array<{
   return http('GET', `/transactions/${id}/suggestions`)
 }
 
-export async function recalculateProbabilities(): Promise<{ updated: number; total: number }> {
-  if (USE_MOCK) { await delay(800); return { updated: 50, total: 182 } }
+export async function recalculateProbabilities(): Promise<{ job_id: string; status: string }> {
+  if (USE_MOCK) { await delay(800); return { job_id: 'mock-job', status: 'queued' } }
   return http('POST', '/transactions/recalculate-probabilities', {})
+}
+
+export interface RecalculationJob {
+  id: string
+  status: 'queued' | 'running' | 'completed' | 'failed'
+  processed: number
+  total: number
+  updated: number
+  error: string
+}
+
+export async function getRecalculationJob(id: string): Promise<RecalculationJob> {
+  return http('GET', `/recalculation-jobs/${id}`)
 }
 
 export async function clearTransactionLinks(): Promise<{ updated: number }> {

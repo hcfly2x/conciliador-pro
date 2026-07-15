@@ -1,6 +1,6 @@
 'use client'
-import { useRef, useState } from 'react'
-import { importSeedFile } from '@/lib/api'
+import { useEffect, useRef, useState } from 'react'
+import { getRecalculationJob, importSeedFile, type RecalculationJob } from '@/lib/api'
 import { useStore } from '@/store/app'
 
 export default function HistoricoPage() {
@@ -8,13 +8,36 @@ export default function HistoricoPage() {
   const [loading, setLoading] = useState(false)
   const [result, setResult] = useState<any>(null)
   const [error, setError] = useState('')
+  const [job, setJob] = useState<RecalculationJob | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const { addToast } = useStore()
+
+  useEffect(() => {
+    const jobId = result?.recalculation_job_id
+    if (!jobId) return
+    let cancelled = false
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const poll = async () => {
+      try {
+        const current = await getRecalculationJob(jobId)
+        if (cancelled) return
+        setJob(current)
+        if (current.status === 'queued' || current.status === 'running') {
+          timer = setTimeout(poll, 2000)
+        }
+      } catch {
+        if (!cancelled) timer = setTimeout(poll, 4000)
+      }
+    }
+    poll()
+    return () => { cancelled = true; if (timer) clearTimeout(timer) }
+  }, [result?.recalculation_job_id])
 
   async function handleSend() {
     if (!file) return
     setLoading(true)
     setError('')
+    setJob(null)
     try {
       const r = await importSeedFile(file)
       setResult(r)
@@ -46,8 +69,20 @@ export default function HistoricoPage() {
         <div className="rounded-xl p-4 mb-4" style={{ background: 'rgba(62,207,142,0.06)', border: '1px solid rgba(62,207,142,0.2)' }}>
           <p className="text-sm text-[#3ecf8e] font-semibold mb-2">Importacao concluida</p>
           <p className="text-sm text-[#e8eaf0]">Total: {result.total_parsed} | Inseridos: {result.total_inserted} | Duplicados: {result.total_duplicates}</p>
-          {typeof result.suggestions_recalculated === 'number' && (
-            <p className="text-sm text-[#8b90a4] mt-1">Sugestoes recalculadas para {result.suggestions_recalculated} lancamentos pendentes.</p>
+          {result.recalculation_job_id && (
+            <div className="mt-3">
+              <p className="text-sm text-[#8b90a4]">
+                {job?.status === 'completed' && `Sugestoes atualizadas para ${job.updated} lancamentos.`}
+                {job?.status === 'failed' && `Falha ao atualizar sugestoes: ${job.error || 'erro interno'}`}
+                {(!job || job.status === 'queued') && 'Base salva. Atualizacao das sugestoes aguardando inicio...'}
+                {job?.status === 'running' && `Atualizando sugestoes: ${job.processed} de ${job.total} lancamentos...`}
+              </p>
+              {job && job.total > 0 && (job.status === 'running' || job.status === 'completed') && (
+                <div className="mt-2 h-2 overflow-hidden rounded bg-[#1a1e28]">
+                  <div className="h-full bg-[#3ecf8e] transition-all" style={{ width: `${Math.min(100, (job.processed / job.total) * 100)}%` }} />
+                </div>
+              )}
+            </div>
           )}
         </div>
       )}
