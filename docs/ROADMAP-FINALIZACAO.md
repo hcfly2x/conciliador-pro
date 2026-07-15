@@ -70,8 +70,10 @@ consolidar regras e validar producao.
 - [x] Confirmar a UX de excluir somente o documento ou documento mais lancamentos.
 - [x] Confirmar a remocao definitiva de `import_db_duplicates`.
 - [x] Confirmar se colaboradores podem revisar candidatos de vinculo historico.
-- [ ] Fazer backup verificavel do PostgreSQL de producao antes de migrations.
-- [ ] Registrar commit e schema atualmente publicados em Vercel, Render e Supabase.
+- [x] Fazer backup verificavel do PostgreSQL de producao antes de migrations.
+- [x] Registrar commit e schema atualmente publicados em Vercel, Render e Supabase.
+
+Evidencias da Etapa 0: `docs/PRODUCTION-SNAPSHOT-2026-07-15.md`.
 
 **Saida:** decisoes pendentes fechadas e backup restauravel.
 
