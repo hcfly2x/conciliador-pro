@@ -86,6 +86,9 @@ export interface Transaction {
   match_history_account_name?: string
   match_history_category_name?: string
   match_history_subcategory_name?: string
+  match_date_difference_days?: number | null
+  match_amount_difference?: number
+  match_description_similarity?: number
   ledger_id?: string | null
   ledger_name?: string | null
   ledger_color?: string | null

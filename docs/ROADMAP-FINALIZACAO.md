@@ -83,12 +83,12 @@ consolidar regras e validar producao.
       botao explicito `Salvar e bloquear`.
 - [x] Validar no backend que categoria existe e corresponde ao tipo do lancamento.
 - [x] Validar que subcategoria existe antes de salvar.
-- [ ] Preservar categoria e subcategoria entre parcelas somente pela regra
+- [x] Preservar categoria e subcategoria entre parcelas somente pela regra
       confirmada de plano de parcelamento.
-- [ ] Separar explicitamente exclusao de arquivo e exclusao de lancamentos, com
+- [x] Separar explicitamente exclusao de arquivo e exclusao de lancamentos, com
       confirmacoes e auditorias distintas.
 - [x] Unificar filtros dos relatorios conforme a decisao da Etapa 0.
-- [ ] Criar testes de integracao para classificacao, bloqueio, desbloqueio,
+- [x] Criar testes de integracao para classificacao, bloqueio, desbloqueio,
       propagacao de parcelas e exclusao de documentos.
 
 **Saida:** nenhuma classificacao sem acao humana e nenhuma exclusao ambigua.
@@ -117,9 +117,9 @@ consolidar regras e validar producao.
 - [x] Exibir comparacao lado a lado antes da decisao.
 - [x] Exigir confirmacao humana e persistir rejeicao do mesmo candidato.
 - [x] Exibir `Vinculado` somente depois da confirmacao.
-- [ ] Testar API e interface de confirmar, rejeitar, desvincular e recalcular.
+- [ ] Testar interface de confirmar, rejeitar, desvincular e recalcular (API coberta).
 - [x] Definir permissao de colaborador e alinhar guard, frontend e documentacao.
-- [ ] Exibir justificativa objetiva: diferenca de data, diferenca de valor e
+- [x] Exibir justificativa objetiva: diferenca de data, diferenca de valor e
       similaridade de descricao, sem chamar score tecnico de probabilidade.
 - [ ] Medir falsos positivos do limiar de 96% com amostra real antes da producao.
 
@@ -130,9 +130,9 @@ consolidar regras e validar producao.
 - [ ] Normalizar estabelecimentos removendo ruido bancario, parcelas, IDs e sufixos.
 - [x] Usar base historica e lancamentos classificados como fontes de evidencia.
 - [ ] Tratar origens historicas desconhecidas sem penalidade de conta.
-- [ ] Calcular categoria primeiro e subcategoria condicionada a categoria.
+- [x] Calcular categoria primeiro e subcategoria condicionada a categoria.
 - [ ] Separar similaridade tecnica, confianca e probabilidade calibrada.
-- [ ] Exibir Top 3 com justificativas curtas e fontes de evidencia.
+- [x] Exibir Top 3 com justificativas curtas e fontes de evidencia.
 - [x] Filtrar categorias da interface pelo tipo receita/despesa.
 - [x] Adicionar subcategoria a classificacao em lote.
 - [ ] Criar avaliacao retrospectiva com Top 1, Top 3, cobertura e calibracao.

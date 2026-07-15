@@ -104,6 +104,16 @@ class HistoricalLinkCandidateTests(unittest.TestCase):
 
         self.assertIsNone(candidate)
 
+    def test_match_factors_explain_date_amount_and_description(self) -> None:
+        factors = app.historical_match_factors(
+            "2026-03-10", -150.50, "PIX MERCADO CENTRAL",
+            "2026-03-11", 150.00, "MERCADO CENTRAL",
+        )
+
+        self.assertEqual(factors["match_date_difference_days"], 1)
+        self.assertEqual(factors["match_amount_difference"], 0.50)
+        self.assertGreater(factors["match_description_similarity"], 50)
+
 
 class ClassificationValidationTests(unittest.TestCase):
     def make_db(self) -> sqlite3.Connection:
@@ -177,6 +187,9 @@ class SuggestionEvidenceTests(unittest.TestCase):
 
         self.assertTrue(suggestions)
         self.assertEqual(suggestions[0]["category_id"], "food")
+        self.assertEqual(suggestions[0]["transaction_evidence"], 1)
+        self.assertEqual(suggestions[0]["history_evidence"], 0)
+        self.assertIn("lancamentos classificados", suggestions[0]["justification"])
 
 
 class InstallmentTests(unittest.TestCase):

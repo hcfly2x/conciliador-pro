@@ -641,6 +641,23 @@ def find_identity_match(
     return best
 
 
+def historical_match_factors(
+    tx_date: str, tx_amount: float, tx_description: str,
+    history_date: str | None, history_amount: float | None, history_description: str | None,
+) -> dict[str, Any]:
+    try:
+        date_difference = abs((dt.date.fromisoformat(tx_date) - dt.date.fromisoformat(history_date or "")).days)
+    except (TypeError, ValueError):
+        date_difference = None
+    amount_difference = round(abs(abs(float(tx_amount or 0)) - abs(float(history_amount or 0))), 2)
+    description_similarity = round(token_similarity(norm_text(tx_description), norm_text(history_description or "")) * 100, 1)
+    return {
+        "match_date_difference_days": date_difference,
+        "match_amount_difference": amount_difference,
+        "match_description_similarity": description_similarity,
+    }
+
+
 def build_scored_evidence(
     conn: sqlite3.Connection,
     tx: dict[str, Any],
@@ -665,7 +682,7 @@ def build_scored_evidence(
         all_rows += conn.execute(
             """
             SELECT t.category_id, c.name, t.subcategory_id, IFNULL(s.name,''),
-                   t.date, t.description_norm, ABS(t.amount), t.account_id, t.notes
+                   t.date, t.description_norm, ABS(t.amount), t.account_id, t.notes, 'transaction'
             FROM transactions t
             LEFT JOIN categories c ON c.id=t.category_id
             LEFT JOIN subcategories s ON s.id=t.subcategory_id
@@ -681,7 +698,7 @@ def build_scored_evidence(
         all_rows += conn.execute(
             f"""
             SELECT h.category_id, c.name, h.subcategory_id, IFNULL(s.name,''),
-                   h.date, h.description_norm, ABS(h.amount), h.account_id, ''
+                   h.date, h.description_norm, ABS(h.amount), h.account_id, '', 'history'
             FROM classification_history h
             LEFT JOIN categories c ON c.id=h.category_id
             LEFT JOIN subcategories s ON s.id=h.subcategory_id
@@ -715,6 +732,7 @@ def build_scored_evidence(
     cat_best: dict[str, dict[str, Any]] = {}
     cat_freq: dict[str, int] = {}
     cat_exact: dict[str, int] = {}
+    cat_sources: dict[str, dict[str, int]] = {}
     sub_scores: dict[tuple[str, str | None], float] = {}
     sub_names: dict[tuple[str, str | None], str] = {}
     sub_notes: dict[tuple[str, str | None], str] = {}
@@ -745,6 +763,8 @@ def build_scored_evidence(
             }
 
         cat_freq[cat_id] = cat_freq.get(cat_id, 0) + 1
+        source = row[9] if len(row) > 9 else "history"
+        cat_sources.setdefault(cat_id, {"history": 0, "transaction": 0})[source] += 1
         if desc_score > 0.85:
             cat_exact[cat_id] = cat_exact.get(cat_id, 0) + 1
 
@@ -780,6 +800,8 @@ def build_scored_evidence(
             "best_score": info["best_score"],
             "frequency": freq,
             "exact_matches": exact,
+            "history_evidence": cat_sources.get(cat_id, {}).get("history", 0),
+            "transaction_evidence": cat_sources.get(cat_id, {}).get("transaction", 0),
         })
 
     ranked.sort(key=lambda x: x["score"], reverse=True)
@@ -1429,6 +1451,50 @@ def init_db() -> None:
             """,
             (dt.datetime.now().isoformat(timespec="seconds"),),
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS maintenance_log(
+              id TEXT PRIMARY KEY,
+              executed_at TEXT NOT NULL,
+              detail TEXT NOT NULL DEFAULT ''
+            )
+            """
+        )
+        # Remove somente lotes parciais de planilhas: importacoes concluidas sempre
+        # possuem imported_files.id igual ao prefixo anterior a ':sheet:'.
+        conn.execute(
+            """
+            DELETE FROM classification_history
+            WHERE source_file_id LIKE '%:sheet:%'
+              AND NOT EXISTS (
+                SELECT 1 FROM imported_files f
+                WHERE source_file_id LIKE (f.id || ':sheet:%')
+              )
+            """
+        )
+        cleanup_id = "20260715_clear_imported_historical_base"
+        if IS_POSTGRES and not conn.execute("SELECT 1 FROM maintenance_log WHERE id=?", (cleanup_id,)).fetchone():
+            history_deleted = conn.execute(
+                "DELETE FROM classification_history WHERE source_file_id NOT LIKE 'manual:%'"
+            ).rowcount or 0
+            files_deleted = conn.execute(
+                "DELETE FROM imported_files WHERE account_name='IMPORT_SEED' OR account_id='seed'"
+            ).rowcount or 0
+            conn.execute("DELETE FROM seed_import_jobs")
+            conn.execute(
+                """
+                UPDATE transactions
+                SET history_match_id=NULL, history_match_confirmed=0,
+                    history_match_rejected_id=NULL, identity_score=0,
+                    match_probability=0, match_notes='',
+                    suggested_category_id=NULL, suggested_subcategory_id=NULL
+                """
+            )
+            conn.execute(
+                "INSERT INTO maintenance_log(id,executed_at,detail) VALUES (?,?,?)",
+                (cleanup_id, dt.datetime.now().isoformat(timespec="seconds"),
+                 f"historical_rows={history_deleted};seed_files={files_deleted}"),
+            )
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS account_file_coverage(
@@ -2277,6 +2343,13 @@ def build_suggestions_for_tx(conn: sqlite3.Connection, tx_id: str):
             "category_probability": round(float(r.get("category_probability", r["probability"])), 2),
             "subcategory_probability": round(float(r.get("subcategory_probability", 0.0)), 2),
             "frequency": int(r.get("frequency", 0)),
+            "history_evidence": int(r.get("history_evidence", 0)),
+            "transaction_evidence": int(r.get("transaction_evidence", 0)),
+            "justification": (
+                f"{int(r.get('frequency', 0))} evidencia(s) semelhante(s): "
+                f"{int(r.get('history_evidence', 0))} da base historica e "
+                f"{int(r.get('transaction_evidence', 0))} de lancamentos classificados."
+            ),
         }
         for r in ranked[:12]
         if float(r.get("category_probability", r.get("probability", 0.0))) >= 20.0
@@ -2437,7 +2510,7 @@ def history_sheet_key(sheet_name: str) -> str:
     return normalized.replace(" ", "_") or "historico"
 
 
-def import_seed_workbook(path: Path, progress=None):
+def import_seed_workbook(path: Path, progress=None, imported_file_id: str | None = None):
     if openpyxl is None:
         raise RuntimeError("openpyxl nao encontrado")
     wb = openpyxl.load_workbook(path, data_only=True)
@@ -2449,7 +2522,7 @@ def import_seed_workbook(path: Path, progress=None):
         "smartek": None,
     }
     now = dt.datetime.now().isoformat(timespec="seconds")
-    imported_file_id = str(uuid.uuid4())
+    imported_file_id = imported_file_id or str(uuid.uuid4())
     total_parsed = 0
     total_inserted = 0
     total_duplicates = 0
@@ -2625,7 +2698,7 @@ def import_seed_workbook(path: Path, progress=None):
     }, 201
 
 
-def import_seed_pdf(path: Path, progress=None):
+def import_seed_pdf(path: Path, progress=None, imported_file_id: str | None = None):
     if PdfReader is None:
         raise RuntimeError("pypdf nao encontrado")
     text = "\n".join((p.extract_text() or "") for p in PdfReader(str(path)).pages)
@@ -2635,7 +2708,7 @@ def import_seed_pdf(path: Path, progress=None):
         progress("reading", 0, len(lines), f"PDF extraido: {len(lines)} linha(s)")
 
     now = dt.datetime.now().isoformat(timespec="seconds")
-    imported_file_id = str(uuid.uuid4())
+    imported_file_id = imported_file_id or str(uuid.uuid4())
     total_parsed = 0
     total_inserted = 0
     total_duplicates = 0
@@ -4131,9 +4204,9 @@ def _run_seed_import_job(job_id: str, path: Path) -> None:
                 (dt.datetime.now().isoformat(timespec="seconds"), job_id),
             )
         if path.suffix.lower() == ".pdf":
-            data, code = import_seed_pdf(path, progress=progress)
+            data, code = import_seed_pdf(path, progress=progress, imported_file_id=job_id)
         else:
-            data, code = import_seed_workbook(path, progress=progress)
+            data, code = import_seed_workbook(path, progress=progress, imported_file_id=job_id)
         status = "completed" if code < 400 else "failed"
         error = "" if code < 400 else str(data.get("detail") or "Falha na importacao")
         with db_connect() as conn:
@@ -4393,8 +4466,9 @@ def transactions():
             params,
         ).fetchone()
 
-    items = [
-        {
+    items = []
+    for r in rows:
+        item = {
             "id": r[0],
             "date": r[1],
             "competence_month": r[2],
@@ -4453,8 +4527,8 @@ def transactions():
             "match_history_subcategory_name": r[47] or "",
             "history_link_threshold": HISTORY_LINK_CANDIDATE_THRESHOLD,
         }
-        for r in rows
-    ]
+        item.update(historical_match_factors(r[1], r[4], r[3], r[29], r[31], r[30]))
+        items.append(item)
     total_pages = (total + page_size - 1) // page_size
     total_income = float(sum_row[0] or 0)
     total_expense = float(sum_row[1] or 0)

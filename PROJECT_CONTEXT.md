@@ -59,6 +59,7 @@ A base historica e auxiliar: ela sugere categorias e subcategorias e pode ser vi
 - O upload da base historica responde imediatamente e a importacao e o recalculo de vinculos rodam como jobs persistentes, sem manter a requisicao HTTP bloqueada.
 - A importacao historica exibe progresso por linhas e eventos; o calculo de sugestoes e iniciado separadamente por botao na tela Base Historica.
 - Vinculo entre registros da base historica e lancamentos reais.
+- Comparacao de vinculo com diferenca de data, diferenca de valor e similaridade de descricao explicitas.
 - Agrupamento e propagacao de classificacao entre parcelas reconhecidas.
 - Relatorios de resumo, categoria e evolucao mensal.
 - Contas correntes internas (`ledgers`) implementadas no codigo, mas ainda nao utilizadas pelo usuario.
