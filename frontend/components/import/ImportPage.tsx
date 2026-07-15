@@ -89,7 +89,7 @@ export default function ImportPage() {
     setLoading(true)
     setError(null)
     try {
-      const data = await commitImportPreview(preview.preview_id, true, false, competenceMonth.replace('-', '/'))
+      const data = await commitImportPreview(preview.preview_id, true, competenceMonth.replace('-', '/'))
       setResult(data)
       addToast(`${data.total_inserted} lançamentos importados com sucesso`)
       bumpRefresh()

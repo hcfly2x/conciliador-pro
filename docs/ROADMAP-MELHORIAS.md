@@ -1,5 +1,8 @@
 # Roadmap de Melhorias
 
+> Documento historico. O checklist consolidado vigente esta em
+> `docs/ROADMAP-FINALIZACAO.md`.
+
 Este documento e o checklist oficial das proximas entregas do Conciliador Pro.
 
 Regra de publicacao: nenhuma alteracao deve receber commit ou push sem autorizacao

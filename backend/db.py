@@ -210,6 +210,20 @@ class _PgConnection:
         return False
 
 
+class _SqliteConnection(sqlite3.Connection):
+    """Connection SQLite que fecha deterministicamente ao sair do `with`."""
+
+    def __exit__(self, exc_type, exc, tb):
+        try:
+            if exc_type is None:
+                self.commit()
+            else:
+                self.rollback()
+        finally:
+            self.close()
+        return False
+
+
 def db_connect(direct: bool = False):
     """Obtem uma conexao (do pool no Postgres). Usar como context manager.
 
@@ -225,4 +239,4 @@ def db_connect(direct: bool = False):
             # Resiliencia: se o pool falhar por qualquer motivo, abre conexao direta.
             return _PgConnection(psycopg.connect(DATABASE_URL, prepare_threshold=None), pooled=False)
     DATA.mkdir(parents=True, exist_ok=True)
-    return sqlite3.connect(DB_PATH)
+    return sqlite3.connect(DB_PATH, factory=_SqliteConnection)

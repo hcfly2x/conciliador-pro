@@ -136,7 +136,7 @@ export default function ArquivosPage() {
     if (!preview) return
     setBusy(true)
     try {
-      const result = await commitImportPreview(preview.preview_id, true, false, competenceMonth.replace('-', '/'))
+      const result = await commitImportPreview(preview.preview_id, true, competenceMonth.replace('-', '/'))
       addToast(`${result.total_inserted} lancamentos importados`)
       setPreview(null)
       bumpRefresh()
