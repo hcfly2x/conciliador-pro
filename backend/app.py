@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 import os
+import threading
 
 from flask import Flask, g, jsonify, request, send_from_directory
 from werkzeug.utils import secure_filename
@@ -1354,6 +1355,21 @@ def init_db() -> None:
         )
         conn.execute(
             """
+            CREATE TABLE IF NOT EXISTS recalculation_jobs(
+              id TEXT PRIMARY KEY,
+              status TEXT NOT NULL DEFAULT 'queued',
+              processed INTEGER NOT NULL DEFAULT 0,
+              total INTEGER NOT NULL DEFAULT 0,
+              updated INTEGER NOT NULL DEFAULT 0,
+              error TEXT NOT NULL DEFAULT '',
+              created_at TEXT NOT NULL,
+              started_at TEXT NOT NULL DEFAULT '',
+              finished_at TEXT NOT NULL DEFAULT ''
+            )
+            """
+        )
+        conn.execute(
+            """
             CREATE TABLE IF NOT EXISTS account_file_coverage(
               id TEXT PRIMARY KEY,
               account_id TEXT NOT NULL,
@@ -2521,8 +2537,7 @@ def import_seed_workbook(path: Path):
             "code": "SEED_NO_ROWS",
             "sheets_found": sheets_found,
         }, 422
-    # Recalcula as sugestoes dos lancamentos pendentes automaticamente apos alimentar a base.
-    recalc = _recalculate_probabilities_impl()
+    recalc_job = enqueue_probability_recalculation()
     return {
         "imported_file_id": imported_file_id,
         "filename": path.name,
@@ -2532,7 +2547,8 @@ def import_seed_workbook(path: Path):
         "total_duplicates": total_duplicates,
         "total_errors": 0,
         "sheets_recognized": sheets_recognized,
-        "suggestions_recalculated": recalc.get("updated", 0),
+        "recalculation_job_id": recalc_job,
+        "recalculation_status": "queued",
         "transactions_preview": [],
     }, 201
 
@@ -2647,7 +2663,7 @@ def import_seed_pdf(path: Path):
             ),
         )
 
-    recalc = _recalculate_probabilities_impl()
+    recalc_job = enqueue_probability_recalculation()
     return {
         "imported_file_id": imported_file_id,
         "filename": path.name,
@@ -2656,7 +2672,8 @@ def import_seed_pdf(path: Path):
         "total_inserted": total_inserted,
         "total_duplicates": total_duplicates,
         "total_errors": 0,
-        "suggestions_recalculated": recalc.get("updated", 0),
+        "recalculation_job_id": recalc_job,
+        "recalculation_status": "queued",
         "debug_rejected_sample": rejected[:15],
         "transactions_preview": [],
     }, 201
@@ -4602,10 +4619,73 @@ def tx_suggestions(tx_id: str):
 
 @app.route("/api/v1/transactions/recalculate-probabilities", methods=["POST"])
 def recalculate_probabilities():
-    return jsonify(_recalculate_probabilities_impl())
+    job_id = enqueue_probability_recalculation()
+    return jsonify({"job_id": job_id, "status": "queued"}), 202
 
 
-def _recalculate_probabilities_impl():
+def _run_probability_recalculation_job(job_id: str) -> None:
+    try:
+        _recalculate_probabilities_impl(job_id=job_id)
+    except Exception as exc:
+        with db_connect() as conn:
+            conn.execute(
+                "UPDATE recalculation_jobs SET status='failed', error=?, finished_at=? WHERE id=?",
+                (f"{type(exc).__name__}: {exc}"[:1000], dt.datetime.now().isoformat(timespec="seconds"), job_id),
+            )
+
+
+def enqueue_probability_recalculation() -> str:
+    now = dt.datetime.now().isoformat(timespec="seconds")
+    with db_connect() as conn:
+        existing = conn.execute(
+            """
+            SELECT id FROM recalculation_jobs
+            WHERE status IN ('queued','running')
+            ORDER BY created_at DESC LIMIT 1
+            """
+        ).fetchone()
+        if existing:
+            return existing[0]
+        job_id = str(uuid.uuid4())
+        total = conn.execute(
+            "SELECT COUNT(*) FROM transactions WHERE status IN ('pending','reconciled','auto_classified')"
+        ).fetchone()[0]
+        conn.execute(
+            """
+            INSERT INTO recalculation_jobs(id,status,processed,total,updated,error,created_at)
+            VALUES (?, 'queued', 0, ?, 0, '', ?)
+            """,
+            (job_id, total, now),
+        )
+    threading.Thread(
+        target=_run_probability_recalculation_job,
+        args=(job_id,),
+        daemon=True,
+        name=f"history-recalc-{job_id[:8]}",
+    ).start()
+    return job_id
+
+
+@app.route("/api/v1/recalculation-jobs/<job_id>")
+def recalculation_job_status(job_id: str):
+    with db_connect() as conn:
+        row = conn.execute(
+            """
+            SELECT id,status,processed,total,updated,error,created_at,started_at,finished_at
+            FROM recalculation_jobs WHERE id=?
+            """,
+            (job_id,),
+        ).fetchone()
+    if not row:
+        return jsonify({"detail": "Processamento nao encontrado", "code": "NOT_FOUND"}), 404
+    return jsonify({
+        "id": row[0], "status": row[1], "processed": row[2], "total": row[3],
+        "updated": row[4], "error": row[5], "created_at": row[6],
+        "started_at": row[7], "finished_at": row[8],
+    })
+
+
+def _recalculate_probabilities_impl(job_id: str | None = None, batch_size: int = 100):
     updated = 0
     linked_classified = 0
     with db_connect() as conn:
@@ -4617,6 +4697,12 @@ def _recalculate_probabilities_impl():
             WHERE status IN ('pending','reconciled','auto_classified')
             """
         ).fetchall()
+        if job_id:
+            conn.execute(
+                "UPDATE recalculation_jobs SET status='running', total=?, started_at=? WHERE id=?",
+                (len(rows), dt.datetime.now().isoformat(timespec="seconds"), job_id),
+            )
+            conn.commit()
         hist_cache: dict[str, list[tuple[Any, ...]]] = {}
         for tx_type in ("expense", "income"):
             hist_cache[tx_type] = conn.execute(
@@ -4627,7 +4713,13 @@ def _recalculate_probabilities_impl():
                 """,
                 (tx_type,),
             ).fetchall()
-        for r in rows:
+        for index, r in enumerate(rows, start=1):
+            if job_id and index > 1 and (index - 1) % batch_size == 0:
+                conn.execute(
+                    "UPDATE recalculation_jobs SET processed=?, updated=? WHERE id=?",
+                    (index - 1, updated, job_id),
+                )
+                conn.commit()
             tx = {
                 "id": r[0],
                 "date": r[1],
@@ -4704,6 +4796,15 @@ def _recalculate_probabilities_impl():
                     ),
                 )
             updated += 1
+        if job_id:
+            conn.execute(
+                """
+                UPDATE recalculation_jobs
+                SET status='completed', processed=?, updated=?, finished_at=?
+                WHERE id=?
+                """,
+                (len(rows), updated, dt.datetime.now().isoformat(timespec="seconds"), job_id),
+            )
     return {"updated": updated, "total": len(rows), "linked_classified": linked_classified}
 
 

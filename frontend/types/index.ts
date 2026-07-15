@@ -228,6 +228,8 @@ export interface ImportResult {
   rejected_lines?: string[]
   discarded_lines?: string[]
   transactions_preview: Transaction[]
+  recalculation_job_id?: string
+  recalculation_status?: 'queued' | 'running' | 'completed' | 'failed'
 }
 
 export interface ReportSummary {
