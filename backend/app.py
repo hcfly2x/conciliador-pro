@@ -1219,6 +1219,27 @@ def row_get(row: list[Any], idx: dict[str, int], keys: list[str]) -> Any:
     return None
 
 
+def create_index_safely(conn, index_name: str, sql: str) -> None:
+    """Cria indices ausentes sem impedir o boot quando o Postgres estiver bloqueado."""
+    if not IS_POSTGRES:
+        conn.execute(sql)
+        return
+    exists = conn.execute(
+        "SELECT 1 FROM pg_indexes WHERE schemaname=current_schema() AND indexname=?",
+        (index_name,),
+    ).fetchone()
+    if exists:
+        return
+    conn.execute("SAVEPOINT create_optional_index")
+    try:
+        conn.execute(sql)
+    except Exception as exc:
+        conn.execute("ROLLBACK TO SAVEPOINT create_optional_index")
+        print(f"[db] indice opcional {index_name} adiado: {type(exc).__name__}: {exc}")
+    finally:
+        conn.execute("RELEASE SAVEPOINT create_optional_index")
+
+
 def init_db() -> None:
     with db_connect() as conn:
         conn.execute(
@@ -1393,15 +1414,15 @@ def init_db() -> None:
             )
             """
         )
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_tx_desc_norm ON transactions(description_norm)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_tx_status ON transactions(status)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_hist_desc_norm ON classification_history(description_norm)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_tx_status_date ON transactions(status,date)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_tx_month_status_account ON transactions(competence_month,status,account_id)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_tx_dedupe ON transactions(account_id,date,amount,type,description_norm,installment_current,installment_total)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_tx_history_match_status ON transactions(history_match_id,status)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_hist_type_desc_norm ON classification_history(type,description_norm)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_hist_type_account_date_amount ON classification_history(type,account_id,date,amount)")
+        create_index_safely(conn, "idx_tx_desc_norm", "CREATE INDEX IF NOT EXISTS idx_tx_desc_norm ON transactions(description_norm)")
+        create_index_safely(conn, "idx_tx_status", "CREATE INDEX IF NOT EXISTS idx_tx_status ON transactions(status)")
+        create_index_safely(conn, "idx_hist_desc_norm", "CREATE INDEX IF NOT EXISTS idx_hist_desc_norm ON classification_history(description_norm)")
+        create_index_safely(conn, "idx_tx_status_date", "CREATE INDEX IF NOT EXISTS idx_tx_status_date ON transactions(status,date)")
+        create_index_safely(conn, "idx_tx_month_status_account", "CREATE INDEX IF NOT EXISTS idx_tx_month_status_account ON transactions(competence_month,status,account_id)")
+        create_index_safely(conn, "idx_tx_dedupe", "CREATE INDEX IF NOT EXISTS idx_tx_dedupe ON transactions(account_id,date,amount,type,description_norm,installment_current,installment_total)")
+        create_index_safely(conn, "idx_tx_history_match_status", "CREATE INDEX IF NOT EXISTS idx_tx_history_match_status ON transactions(history_match_id,status)")
+        create_index_safely(conn, "idx_hist_type_desc_norm", "CREATE INDEX IF NOT EXISTS idx_hist_type_desc_norm ON classification_history(type,description_norm)")
+        create_index_safely(conn, "idx_hist_type_account_date_amount", "CREATE INDEX IF NOT EXISTS idx_hist_type_account_date_amount ON classification_history(type,account_id,date,amount)")
         # Migração segura para bases antigas.
         cols = [r[1] for r in conn.execute("PRAGMA table_info(classification_history)").fetchall()]
         if "account_id" not in cols:
@@ -1430,8 +1451,8 @@ def init_db() -> None:
         hist_cols = [r[1] for r in conn.execute("PRAGMA table_info(classification_history)").fetchall()]
         if "ledger_id" not in hist_cols:
             conn.execute("ALTER TABLE classification_history ADD COLUMN ledger_id TEXT")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_tx_ledger ON transactions(ledger_id)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_hist_ledger ON classification_history(ledger_id)")
+        create_index_safely(conn, "idx_tx_ledger", "CREATE INDEX IF NOT EXISTS idx_tx_ledger ON transactions(ledger_id)")
+        create_index_safely(conn, "idx_hist_ledger", "CREATE INDEX IF NOT EXISTS idx_hist_ledger ON classification_history(ledger_id)")
         file_cols = [r[1] for r in conn.execute("PRAGMA table_info(imported_files)").fetchall()]
         if "year" not in file_cols:
             conn.execute("ALTER TABLE imported_files ADD COLUMN year TEXT NOT NULL DEFAULT ''")
@@ -1450,9 +1471,9 @@ def init_db() -> None:
             conn.execute("ALTER TABLE transactions ADD COLUMN classified_at TEXT NOT NULL DEFAULT ''")
         if "installment_plan_id" not in tx_cols:
             conn.execute("ALTER TABLE transactions ADD COLUMN installment_plan_id TEXT")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_tx_locked ON transactions(locked)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_tx_installment_plan ON transactions(installment_plan_id)")
-        conn.execute(
+        create_index_safely(conn, "idx_tx_locked", "CREATE INDEX IF NOT EXISTS idx_tx_locked ON transactions(locked)")
+        create_index_safely(conn, "idx_tx_installment_plan", "CREATE INDEX IF NOT EXISTS idx_tx_installment_plan ON transactions(installment_plan_id)")
+        create_index_safely(conn, "idx_installment_plan_match",
             "CREATE INDEX IF NOT EXISTS idx_installment_plan_match "
             "ON installment_plans(account_id,description_norm,installment_total,installment_amount)"
         )
@@ -1470,7 +1491,7 @@ def init_db() -> None:
             )
             """
         )
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_docs_acc_month ON stored_documents(account_name, year_month)")
+        create_index_safely(conn, "idx_docs_acc_month", "CREATE INDEX IF NOT EXISTS idx_docs_acc_month ON stored_documents(account_name, year_month)")
 
 
 def seed() -> None:
