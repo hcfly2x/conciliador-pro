@@ -1,6 +1,6 @@
 'use client'
 import { useEffect, useRef, useState } from 'react'
-import { getRecalculationJob, importSeedFile, type RecalculationJob } from '@/lib/api'
+import { getRecalculationJob, getSeedImportJob, importSeedFile, type RecalculationJob, type SeedImportJob } from '@/lib/api'
 import { useStore } from '@/store/app'
 
 export default function HistoricoPage() {
@@ -9,8 +9,36 @@ export default function HistoricoPage() {
   const [result, setResult] = useState<any>(null)
   const [error, setError] = useState('')
   const [job, setJob] = useState<RecalculationJob | null>(null)
+  const [importJob, setImportJob] = useState<SeedImportJob | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const { addToast } = useStore()
+
+  useEffect(() => {
+    const jobId = importJob?.id
+    if (!jobId || importJob.status === 'completed' || importJob.status === 'failed') return
+    let cancelled = false
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const poll = async () => {
+      try {
+        const current = await getSeedImportJob(jobId)
+        if (cancelled) return
+        setImportJob(current)
+        if (current.status === 'completed' && current.result) {
+          setResult(current.result)
+          addToast('Planilha base importada com sucesso')
+        } else if (current.status === 'failed') {
+          setError(current.error || 'Erro ao importar planilha base')
+          addToast('Falha na importacao da base', 'err')
+        } else {
+          timer = setTimeout(poll, 2000)
+        }
+      } catch {
+        if (!cancelled) timer = setTimeout(poll, 4000)
+      }
+    }
+    timer = setTimeout(poll, 500)
+    return () => { cancelled = true; if (timer) clearTimeout(timer) }
+  }, [importJob?.id, importJob?.status, addToast])
 
   useEffect(() => {
     const jobId = result?.recalculation_job_id
@@ -38,10 +66,10 @@ export default function HistoricoPage() {
     setLoading(true)
     setError('')
     setJob(null)
+    setResult(null)
     try {
       const r = await importSeedFile(file)
-      setResult(r)
-      addToast('Planilha base importada com sucesso')
+      setImportJob({ id: r.job_id, status: 'queued', filename: r.filename, result: null, error: '' })
     } catch (e: any) {
       setError(e?.detail || 'Erro ao importar planilha base')
       addToast('Falha na importacao da base', 'err')
@@ -65,6 +93,15 @@ export default function HistoricoPage() {
 
       {error && <div className="mb-4 text-sm text-[#f87171]">{error}</div>}
 
+      {importJob && importJob.status !== 'completed' && importJob.status !== 'failed' && (
+        <div className="rounded-xl p-4 mb-4" style={{ background: 'rgba(201,168,76,0.08)', border: '1px solid rgba(201,168,76,0.25)' }}>
+          <p className="text-sm font-semibold text-[#c9a84c]">Arquivo recebido</p>
+          <p className="mt-1 text-sm text-[#8b90a4]">
+            {importJob.status === 'queued' ? 'Importacao na fila...' : 'Lendo e salvando a base historica...'}
+          </p>
+        </div>
+      )}
+
       {result && (
         <div className="rounded-xl p-4 mb-4" style={{ background: 'rgba(62,207,142,0.06)', border: '1px solid rgba(62,207,142,0.2)' }}>
           <p className="text-sm text-[#3ecf8e] font-semibold mb-2">Importacao concluida</p>
@@ -87,8 +124,8 @@ export default function HistoricoPage() {
         </div>
       )}
 
-      <button onClick={handleSend} disabled={!file || loading} className="h-11 px-5 rounded-xl font-semibold text-sm disabled:opacity-40" style={{ background: '#c9a84c', color: '#0d0f14' }}>
-        {loading ? 'Importando...' : 'Importar base historica'}
+      <button onClick={handleSend} disabled={!file || loading || importJob?.status === 'queued' || importJob?.status === 'running'} className="h-11 px-5 rounded-xl font-semibold text-sm disabled:opacity-40" style={{ background: '#c9a84c', color: '#0d0f14' }}>
+        {loading ? 'Enviando...' : (importJob?.status === 'queued' || importJob?.status === 'running') ? 'Processando base...' : 'Importar base historica'}
       </button>
     </div>
   )

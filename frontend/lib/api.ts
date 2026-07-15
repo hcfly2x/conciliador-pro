@@ -442,25 +442,28 @@ export async function commitImportPreview(preview_id: string, confirm_duplicates
   return http<ImportResult>('POST', '/import/commit', { preview_id, confirm_duplicates, competence_month })
 }
 
-export async function importSeedFile(file: File): Promise<ImportResult> {
+export interface SeedImportJob {
+  id: string
+  status: 'queued' | 'running' | 'completed' | 'failed'
+  filename: string
+  result: ImportResult | null
+  error: string
+}
+
+export async function importSeedFile(file: File): Promise<{ job_id: string; status: string; filename: string }> {
   if (USE_MOCK) {
     await delay(1200)
-    return {
-      imported_file_id: Date.now().toString(),
-      filename: file.name,
-      account_name: 'IMPORT_SEED',
-      total_parsed: 120,
-      total_inserted: 115,
-      total_duplicates: 5,
-      total_errors: 0,
-      transactions_preview: [],
-    }
+    return { job_id: 'mock-seed-job', status: 'queued', filename: file.name }
   }
   const form = new FormData()
   form.append('file', file)
   const res = await fetch(`${BASE}/import/seed`, { method: 'POST', body: form, headers: authHeaders() })
   if (!res.ok) { const err = await res.json().catch(() => ({})); throw { status: res.status, ...err } }
   return res.json()
+}
+
+export async function getSeedImportJob(id: string): Promise<SeedImportJob> {
+  return http('GET', `/seed-import-jobs/${id}`)
 }
 
 export interface CoverageFile {

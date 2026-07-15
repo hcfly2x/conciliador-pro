@@ -5,6 +5,7 @@ import csv
 import datetime as dt
 import difflib
 import hashlib
+import json
 import re
 import shutil
 import sqlite3
@@ -1382,6 +1383,20 @@ def init_db() -> None:
               processed INTEGER NOT NULL DEFAULT 0,
               total INTEGER NOT NULL DEFAULT 0,
               updated INTEGER NOT NULL DEFAULT 0,
+              error TEXT NOT NULL DEFAULT '',
+              created_at TEXT NOT NULL,
+              started_at TEXT NOT NULL DEFAULT '',
+              finished_at TEXT NOT NULL DEFAULT ''
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS seed_import_jobs(
+              id TEXT PRIMARY KEY,
+              status TEXT NOT NULL DEFAULT 'queued',
+              filename TEXT NOT NULL,
+              result_json TEXT NOT NULL DEFAULT '',
               error TEXT NOT NULL DEFAULT '',
               created_at TEXT NOT NULL,
               started_at TEXT NOT NULL DEFAULT '',
@@ -4034,19 +4049,69 @@ def import_seed():
         return invalid_file
     p = UPLOADS / f"{int(dt.datetime.now().timestamp())}-seed-{f.filename}"
     f.save(p)
+    job_id = str(uuid.uuid4())
+    now = dt.datetime.now().isoformat(timespec="seconds")
+    with db_connect() as conn:
+        conn.execute(
+            "INSERT INTO seed_import_jobs(id,status,filename,created_at) VALUES (?, 'queued', ?, ?)",
+            (job_id, f.filename, now),
+        )
+    threading.Thread(
+        target=_run_seed_import_job,
+        args=(job_id, p),
+        daemon=True,
+        name=f"seed-import-{job_id[:8]}",
+    ).start()
+    return jsonify({"job_id": job_id, "status": "queued", "filename": f.filename}), 202
+
+
+def _run_seed_import_job(job_id: str, path: Path) -> None:
     try:
-        if p.suffix.lower() == ".pdf":
-            data, code = import_seed_pdf(p)
+        with db_connect() as conn:
+            conn.execute(
+                "UPDATE seed_import_jobs SET status='running', started_at=? WHERE id=?",
+                (dt.datetime.now().isoformat(timespec="seconds"), job_id),
+            )
+        if path.suffix.lower() == ".pdf":
+            data, code = import_seed_pdf(path)
         else:
-            data, code = import_seed_workbook(p)
-        return jsonify(data), code
+            data, code = import_seed_workbook(path)
+        status = "completed" if code < 400 else "failed"
+        error = "" if code < 400 else str(data.get("detail") or "Falha na importacao")
+        with db_connect() as conn:
+            conn.execute(
+                """
+                UPDATE seed_import_jobs
+                SET status=?, result_json=?, error=?, finished_at=? WHERE id=?
+                """,
+                (status, json.dumps(data, ensure_ascii=False), error,
+                 dt.datetime.now().isoformat(timespec="seconds"), job_id),
+            )
     except Exception as exc:
-        try:
-            if p.exists():
-                p.unlink()
-        except Exception:
-            pass
-        return jsonify({"detail": str(exc), "code": "SEED_IMPORT_FAILED"}), 422
+        with db_connect() as conn:
+            conn.execute(
+                "UPDATE seed_import_jobs SET status='failed', error=?, finished_at=? WHERE id=?",
+                (f"{type(exc).__name__}: {exc}"[:1000], dt.datetime.now().isoformat(timespec="seconds"), job_id),
+            )
+
+
+@app.route("/api/v1/seed-import-jobs/<job_id>")
+def seed_import_job_status(job_id: str):
+    with db_connect() as conn:
+        row = conn.execute(
+            """
+            SELECT id,status,filename,result_json,error,created_at,started_at,finished_at
+            FROM seed_import_jobs WHERE id=?
+            """,
+            (job_id,),
+        ).fetchone()
+    if not row:
+        return jsonify({"detail": "Importacao nao encontrada", "code": "NOT_FOUND"}), 404
+    result = json.loads(row[3]) if row[3] else None
+    return jsonify({
+        "id": row[0], "status": row[1], "filename": row[2], "result": result,
+        "error": row[4], "created_at": row[5], "started_at": row[6], "finished_at": row[7],
+    })
 
 
 TAG_FILTER_ALIASES = {
