@@ -65,11 +65,24 @@ function handleUnauthorized() {
 }
 
 async function http<T>(method: string, path: string, body?: unknown): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, {
-    method,
-    headers: { ...(body ? { 'Content-Type': 'application/json' } : {}), ...authHeaders() },
-    body: body ? JSON.stringify(body) : undefined,
-  })
+  const controller = new AbortController()
+  const timeout = window.setTimeout(() => controller.abort(), 30000)
+  let res: Response
+  try {
+    res = await fetch(`${BASE}${path}`, {
+      method,
+      headers: { ...(body ? { 'Content-Type': 'application/json' } : {}), ...authHeaders() },
+      body: body ? JSON.stringify(body) : undefined,
+      signal: controller.signal,
+    })
+  } catch (error) {
+    if ((error as { name?: string })?.name === 'AbortError') {
+      throw { status: 408, detail: 'A requisicao demorou demais', code: 'REQUEST_TIMEOUT' }
+    }
+    throw error
+  } finally {
+    window.clearTimeout(timeout)
+  }
   if (res.status === 401) {
     handleUnauthorized()
     throw { status: 401, detail: 'Nao autenticado', code: 'UNAUTHORIZED' }
@@ -265,6 +278,13 @@ export interface TransactionSuggestion {
   history_evidence: number
   transaction_evidence: number
   justification: string
+  rank?: number
+  subcategories?: Array<{
+    subcategory_id: string
+    subcategory_name: string
+    confidence: number
+    frequency: number
+  }>
 }
 
 export async function getTransactionSuggestions(id: string): Promise<TransactionSuggestion[]> {
@@ -272,15 +292,69 @@ export async function getTransactionSuggestions(id: string): Promise<Transaction
     await delay()
     return []
   }
-  return http('GET', `/transactions/${id}/suggestions`)
+  const response = await http<{ items: TransactionSuggestion[] }>('GET', `/transactions/${id}/suggestions`)
+  return response.items
 }
 
-export async function getTransactionSuggestionsBatch(ids: string[]): Promise<Record<string, TransactionSuggestion[]>> {
-  if (USE_MOCK) { await delay(); return Object.fromEntries(ids.map(id => [id, []])) }
-  const response = await http<{ items: Record<string, TransactionSuggestion[]> }>(
+export interface SuggestionBatchResult {
+  items: Record<string, TransactionSuggestion[]>
+  states: Record<string, 'pending' | 'running' | 'completed' | 'failed'>
+}
+
+export async function getTransactionSuggestionsBatch(ids: string[]): Promise<SuggestionBatchResult> {
+  if (USE_MOCK) { await delay(); return { items: Object.fromEntries(ids.map(id => [id, []])), states: Object.fromEntries(ids.map(id => [id, 'completed'])) } }
+  return http<SuggestionBatchResult>(
     'POST', '/transactions/suggestions/batch', { transaction_ids: ids },
   )
-  return response.items
+}
+
+export interface SuggestionJob {
+  id: string
+  status: 'queued' | 'running' | 'completed' | 'failed'
+  mode: 'incremental' | 'full'
+  processed: number
+  total: number
+  updated: number
+  with_suggestions: number
+  without_suggestions: number
+  message: string
+  logs: Array<{ time: string; message: string }>
+  error: string
+  created_at: string
+  started_at: string
+  finished_at: string
+}
+
+export interface SuggestionSummary {
+  pending: number
+  links: number
+  strong: number
+  weak: number
+  none: number
+  waiting: number
+  dismissed: number
+  classified: number
+}
+
+export async function startSuggestionJob(full = false): Promise<{ job_id: string; status: string }> {
+  return http('POST', '/transactions/suggestions/jobs', { full })
+}
+
+export async function getSuggestionJob(id: string): Promise<SuggestionJob> {
+  return http('GET', `/suggestion-jobs/${id}`)
+}
+
+export async function getActiveSuggestionJob(): Promise<SuggestionJob | null> {
+  try { return await http('GET', '/suggestion-jobs-active') }
+  catch (error) { if ((error as { status?: number }).status === 404) return null; throw error }
+}
+
+export async function getSuggestionSummary(): Promise<SuggestionSummary> {
+  return http('GET', '/transactions/suggestions/summary')
+}
+
+export async function dismissTransactionSuggestions(id: string): Promise<{ id: string; dismissed: boolean }> {
+  return http('POST', `/transactions/${id}/suggestions/dismiss`, {})
 }
 
 export async function recalculateProbabilities(): Promise<{ job_id: string; status: string }> {

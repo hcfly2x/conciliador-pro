@@ -352,6 +352,72 @@ Query params:
 
 ---
 
+### GET /transactions com filas de classificacao
+```
+Query params adicionais:
+  classification_queue links|suggestions|none|waiting|dismissed|classified
+  suggestion_strength  strong|weak
+  sort_by               suggestion_confidence
+```
+
+Cada lancamento pode incluir `suggestion_state`, `suggestion_count`,
+`suggestion_confidence`, `suggestion_dismissed` e `suggestion_calculated_at`.
+
+### POST /transactions/suggestions/jobs
+```json
+// Request: incremental por padrao; full ignora o cache existente
+{ "full": false }
+
+// Response 202
+{ "id": "uuid", "status": "queued", "mode": "incremental" }
+```
+
+### GET /suggestion-jobs/{id}
+
+Retorna status, progresso, contagens, mensagem, erro e logs do job persistente.
+
+### GET /suggestion-jobs-active
+
+Retorna o job `queued` ou `running` mais recente. Responde 404 quando nao ha job ativo.
+
+### GET /transactions/suggestions/summary
+```json
+{
+  "pending": 12,
+  "links": 2,
+  "strong": 4,
+  "weak": 3,
+  "none": 1,
+  "waiting": 2,
+  "dismissed": 0,
+  "classified": 80
+}
+```
+
+### POST /transactions/suggestions/batch
+```json
+// Consulta apenas resultados persistidos; nao dispara calculo pesado.
+// Request
+{ "transaction_ids": ["uuid1", "uuid2"] }
+
+// Response
+{
+  "items": { "uuid1": [{ "category_id": "uuid", "confidence": 84 }] },
+  "states": { "uuid1": "completed", "uuid2": "pending" }
+}
+```
+
+### GET /transactions/{id}/suggestions
+
+Retorna `{ "items": [...], "state": "completed" }` a partir do cache persistente.
+
+### POST /transactions/{id}/suggestions/dismiss
+
+Mantem o lancamento na fila `Ignorados`; recalculos atualizam o cache, mas nao
+aplicam nem reexibem a sugestao automaticamente.
+
+---
+
 ## REPORTS
 
 ### GET /reports/summary

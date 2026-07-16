@@ -1,5 +1,6 @@
 'use client'
 import { useCallback, useEffect, useState } from 'react'
+import Link from 'next/link'
 import { Search, RefreshCw } from 'lucide-react'
 import { getHistory, getRecalculationJob, recalculateProbabilities, unlinkHistoricalMatch, type HistoryItem, type RecalculationJob } from '@/lib/api'
 import { useStore } from '@/store/app'
@@ -127,9 +128,14 @@ export default function Page() {
           <h1 className="font-display text-2xl font-bold text-[#e8eaf0]">Base Historica</h1>
           <p className="text-sm text-[#8b90a4] mt-1">Consulta somente leitura usada pelo motor de probabilidades.</p>
         </div>
-        <button onClick={startRecalculation} disabled={recalcJob?.status === 'queued' || recalcJob?.status === 'running'} className="h-10 rounded-lg px-4 text-sm font-semibold disabled:opacity-50" style={{ background: '#c9a84c', color: '#0d0f14' }}>
-          {recalcJob?.status === 'queued' || recalcJob?.status === 'running' ? 'Calculando...' : 'Calcular vinculos historicos'}
-        </button>
+        <div className="flex gap-2">
+          <button onClick={startRecalculation} disabled={recalcJob?.status === 'queued' || recalcJob?.status === 'running'} className="h-10 rounded-lg px-4 text-sm font-semibold disabled:opacity-50" style={{ background: '#c9a84c', color: '#0d0f14' }}>
+            {recalcJob?.status === 'queued' || recalcJob?.status === 'running' ? 'Calculando...' : 'Calcular vinculos historicos'}
+          </button>
+          <Link href="/classificacao" className="flex h-10 items-center rounded-lg px-4 text-sm font-semibold text-[#93c5fd]" style={{ background: 'rgba(96,165,250,.10)', border: '1px solid rgba(96,165,250,.22)' }}>
+            Calcular sugestoes de categorias
+          </Link>
+        </div>
       </div>
 
       {recalcJob && (
