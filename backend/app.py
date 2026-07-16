@@ -70,7 +70,10 @@ if IS_POSTGRES and "*" in CORS_ORIGINS:
 PUBLIC_PATHS = {"/api/v1/health", "/api/v1/auth/login"}
 
 # Rotas de escrita liberadas para o perfil colaborador (classificacao do dia a dia).
-_COLLAB_WRITE_SUFFIXES = ("/classify", "/bulk-classify", "/flags", "/history-link", "/auth/logout")
+_COLLAB_WRITE_SUFFIXES = (
+    "/classify", "/bulk-classify", "/flags", "/history-link", "/auth/logout",
+    "/suggestions/jobs", "/suggestions/dismiss", "/suggestions/batch",
+)
 
 
 @app.errorhandler(413)
@@ -797,6 +800,7 @@ def build_scored_evidence(
     sub_scores: dict[tuple[str, str | None], float] = {}
     sub_names: dict[tuple[str, str | None], str] = {}
     sub_notes: dict[tuple[str, str | None], str] = {}
+    sub_frequency: dict[tuple[str, str | None], int] = {}
 
     for desc_score, row in relevant:
         cat_id = row[0]
@@ -834,6 +838,8 @@ def build_scored_evidence(
             sub_scores[sub_key] = full_score
             sub_names[sub_key] = sub_name
             sub_notes[sub_key] = ref_notes
+        if sub_id:
+            sub_frequency[sub_key] = sub_frequency.get(sub_key, 0) + 1
 
     ranked: list[dict[str, Any]] = []
     for cat_id, info in cat_best.items():
@@ -851,6 +857,21 @@ def build_scored_evidence(
             best_sub_name = ""
             best_sub_notes = info.get("best_notes", "")
 
+        subcategory_candidates = []
+        for (candidate_cat, candidate_sub), candidate_score in sorted(
+            sub_scores.items(), key=lambda item: item[1], reverse=True
+        ):
+            if candidate_cat != cat_id or not candidate_sub:
+                continue
+            subcategory_candidates.append({
+                "subcategory_id": candidate_sub,
+                "subcategory_name": sub_names.get((candidate_cat, candidate_sub), ""),
+                "confidence": round(min(100.0, candidate_score * 100.0), 2),
+                "frequency": sub_frequency.get((candidate_cat, candidate_sub), 0),
+            })
+            if len(subcategory_candidates) >= 3:
+                break
+
         ranked.append({
             "category_id": cat_id,
             "category_name": info["category_name"],
@@ -863,6 +884,7 @@ def build_scored_evidence(
             "exact_matches": exact,
             "history_evidence": cat_sources.get(cat_id, {}).get("history", 0),
             "transaction_evidence": cat_sources.get(cat_id, {}).get("transaction", 0),
+            "subcategories": subcategory_candidates,
         })
 
     ranked.sort(key=lambda x: x["score"], reverse=True)
@@ -1518,6 +1540,60 @@ def init_db() -> None:
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS suggestion_jobs(
+              id TEXT PRIMARY KEY,
+              status TEXT NOT NULL DEFAULT 'queued',
+              mode TEXT NOT NULL DEFAULT 'incremental',
+              processed INTEGER NOT NULL DEFAULT 0,
+              total INTEGER NOT NULL DEFAULT 0,
+              updated INTEGER NOT NULL DEFAULT 0,
+              with_suggestions INTEGER NOT NULL DEFAULT 0,
+              without_suggestions INTEGER NOT NULL DEFAULT 0,
+              message TEXT NOT NULL DEFAULT '',
+              logs_json TEXT NOT NULL DEFAULT '[]',
+              error TEXT NOT NULL DEFAULT '',
+              created_at TEXT NOT NULL,
+              started_at TEXT NOT NULL DEFAULT '',
+              finished_at TEXT NOT NULL DEFAULT ''
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS transaction_suggestion_state(
+              transaction_id TEXT PRIMARY KEY,
+              fingerprint TEXT NOT NULL,
+              status TEXT NOT NULL DEFAULT 'completed',
+              suggestion_count INTEGER NOT NULL DEFAULT 0,
+              best_confidence REAL NOT NULL DEFAULT 0,
+              dismissed INTEGER NOT NULL DEFAULT 0,
+              calculated_at TEXT NOT NULL,
+              error TEXT NOT NULL DEFAULT ''
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS transaction_suggestions(
+              transaction_id TEXT NOT NULL,
+              rank INTEGER NOT NULL,
+              category_id TEXT NOT NULL,
+              subcategory_id TEXT,
+              confidence REAL NOT NULL DEFAULT 0,
+              category_probability REAL NOT NULL DEFAULT 0,
+              subcategory_probability REAL NOT NULL DEFAULT 0,
+              frequency INTEGER NOT NULL DEFAULT 0,
+              history_evidence INTEGER NOT NULL DEFAULT 0,
+              transaction_evidence INTEGER NOT NULL DEFAULT 0,
+              justification TEXT NOT NULL DEFAULT '',
+              subcategories_json TEXT NOT NULL DEFAULT '[]',
+              calculated_at TEXT NOT NULL,
+              PRIMARY KEY(transaction_id, rank)
+            )
+            """
+        )
         seed_job_cols = [r[1] for r in conn.execute("PRAGMA table_info(seed_import_jobs)").fetchall()]
         for col, definition in (
             ("phase", "TEXT NOT NULL DEFAULT 'queued'"),
@@ -1534,6 +1610,15 @@ def init_db() -> None:
             SET status='failed', phase='interrupted',
                 error='Processamento interrompido por reinicializacao do servidor',
                 message='Processamento interrompido; envie o arquivo novamente', finished_at=?
+            WHERE status IN ('queued','running')
+            """,
+            (dt.datetime.now().isoformat(timespec="seconds"),),
+        )
+        conn.execute(
+            """
+            UPDATE suggestion_jobs
+            SET status='failed', error='Processamento interrompido por reinicializacao do servidor',
+                message='Processamento interrompido; tente novamente', finished_at=?
             WHERE status IN ('queued','running')
             """,
             (dt.datetime.now().isoformat(timespec="seconds"),),
@@ -1672,6 +1757,14 @@ def init_db() -> None:
             conn.execute("ALTER TABLE transactions ADD COLUMN installment_plan_id TEXT")
         create_index_safely(conn, "idx_tx_locked", "CREATE INDEX IF NOT EXISTS idx_tx_locked ON transactions(locked)")
         create_index_safely(conn, "idx_tx_installment_plan", "CREATE INDEX IF NOT EXISTS idx_tx_installment_plan ON transactions(installment_plan_id)")
+        create_index_safely(conn, "idx_suggestion_state_status", "CREATE INDEX IF NOT EXISTS idx_suggestion_state_status ON transaction_suggestion_state(status,dismissed,best_confidence)")
+        create_index_safely(conn, "idx_suggestions_category", "CREATE INDEX IF NOT EXISTS idx_suggestions_category ON transaction_suggestions(category_id,subcategory_id)")
+        create_index_safely(
+            conn,
+            "idx_suggestion_jobs_single_active",
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_suggestion_jobs_single_active "
+            "ON suggestion_jobs((1)) WHERE status IN ('queued','running')",
+        )
         create_index_safely(conn, "idx_installment_plan_match",
             "CREATE INDEX IF NOT EXISTS idx_installment_plan_match "
             "ON installment_plans(account_id,description_norm,installment_total,installment_amount)"
@@ -2473,6 +2566,7 @@ def build_suggestions_for_tx(
             "confidence": round(float(r.get("confidence", 0.0)), 2),
             "category_probability": round(float(r.get("category_probability", r["probability"])), 2),
             "subcategory_probability": round(float(r.get("subcategory_probability", 0.0)), 2),
+            "subcategories": r.get("subcategories") or [],
             "frequency": int(r.get("frequency", 0)),
             "history_evidence": int(r.get("history_evidence", 0)),
             "transaction_evidence": int(r.get("transaction_evidence", 0)),
@@ -4169,6 +4263,9 @@ def system_reset():
             "classification_history": conn.execute("SELECT COUNT(1) FROM classification_history").fetchone()[0],
         }
         # Lancamentos, previews, cofre e cobertura sempre sao limpos.
+        conn.execute("DELETE FROM transaction_suggestions")
+        conn.execute("DELETE FROM transaction_suggestion_state")
+        conn.execute("DELETE FROM suggestion_jobs")
         conn.execute("DELETE FROM transactions")
         conn.execute("DELETE FROM installment_plans")
         conn.execute("DELETE FROM import_previews")
@@ -4558,6 +4655,50 @@ def transactions():
     if subcategory_id:
         where.append("t.subcategory_id=?")
         params.append(subcategory_id)
+    classification_queue = (request.args.get("classification_queue") or "").strip().lower()
+    if classification_queue == "links":
+        where.extend([
+            "t.category_id IS NULL",
+            "t.locked=0",
+            "t.history_match_id IS NOT NULL",
+            "t.history_match_confirmed=0",
+            "t.identity_score>=?",
+        ])
+        params.append(HISTORY_LINK_CANDIDATE_THRESHOLD)
+    elif classification_queue == "suggestions":
+        where.extend([
+            "t.category_id IS NULL", "t.locked=0",
+            "NOT (t.history_match_id IS NOT NULL AND t.history_match_confirmed=0 AND t.identity_score>=?)",
+            "EXISTS (SELECT 1 FROM transaction_suggestion_state qs WHERE qs.transaction_id=t.id AND qs.status='completed' AND qs.dismissed=0 AND qs.suggestion_count>0)",
+        ])
+        params.append(HISTORY_LINK_CANDIDATE_THRESHOLD)
+    elif classification_queue == "none":
+        where.extend([
+            "t.category_id IS NULL", "t.locked=0",
+            "NOT (t.history_match_id IS NOT NULL AND t.history_match_confirmed=0 AND t.identity_score>=?)",
+            "EXISTS (SELECT 1 FROM transaction_suggestion_state qn WHERE qn.transaction_id=t.id AND qn.status='completed' AND qn.dismissed=0 AND qn.suggestion_count=0)",
+        ])
+        params.append(HISTORY_LINK_CANDIDATE_THRESHOLD)
+    elif classification_queue == "waiting":
+        where.extend([
+            "t.category_id IS NULL", "t.locked=0",
+            "NOT (t.history_match_id IS NOT NULL AND t.history_match_confirmed=0 AND t.identity_score>=?)",
+            "NOT EXISTS (SELECT 1 FROM transaction_suggestion_state qw WHERE qw.transaction_id=t.id AND qw.status='completed')",
+        ])
+        params.append(HISTORY_LINK_CANDIDATE_THRESHOLD)
+    elif classification_queue == "dismissed":
+        where.extend([
+            "t.category_id IS NULL", "t.locked=0",
+            "EXISTS (SELECT 1 FROM transaction_suggestion_state qd WHERE qd.transaction_id=t.id AND qd.dismissed=1)",
+        ])
+    elif classification_queue == "classified":
+        where.append("t.category_id IS NOT NULL")
+
+    suggestion_strength = (request.args.get("suggestion_strength") or "").strip().lower()
+    if suggestion_strength == "strong":
+        where.append("EXISTS (SELECT 1 FROM transaction_suggestion_state qf WHERE qf.transaction_id=t.id AND qf.best_confidence>=70)")
+    elif suggestion_strength == "weak":
+        where.append("EXISTS (SELECT 1 FROM transaction_suggestion_state qf WHERE qf.transaction_id=t.id AND qf.best_confidence>0 AND qf.best_confidence<70)")
     is_installment = (request.args.get("is_installment") or "").strip().lower()
     if is_installment in {"1", "true", "yes", "sim"}:
         where.append("t.installment_current IS NOT NULL AND t.installment_total IS NOT NULL")
@@ -4615,6 +4756,7 @@ def transactions():
         "type": "t.type",
         "match_probability": "t.match_probability",
         "identity_score": "t.identity_score",
+        "suggestion_confidence": "COALESCE(tss.best_confidence,0)",
     }
     order_by = allowed.get(sort_by, "t.date")
 
@@ -4650,7 +4792,9 @@ def transactions():
                    (SELECT COUNT(1) FROM transactions tp WHERE tp.installment_plan_id=t.installment_plan_id),
                    t.history_match_confirmed,hm.source_file_id,ha.name,hc.name,hs.name,
                    t.merchant_norm,t.transaction_method,t.counterparty_name,t.bank_reference,
-                   hm.category_id,hm.subcategory_id
+                   hm.category_id,hm.subcategory_id,
+                   COALESCE(tss.status,'pending'),COALESCE(tss.suggestion_count,0),
+                   COALESCE(tss.best_confidence,0),COALESCE(tss.dismissed,0),tss.calculated_at
             FROM transactions t
             JOIN accounts a ON a.id=t.account_id
             LEFT JOIN installment_plans p ON p.id=t.installment_plan_id
@@ -4663,6 +4807,7 @@ def transactions():
             LEFT JOIN accounts ha ON ha.id=hm.account_id
             LEFT JOIN categories hc ON hc.id=hm.category_id
             LEFT JOIN subcategories hs ON hs.id=hm.subcategory_id
+            LEFT JOIN transaction_suggestion_state tss ON tss.transaction_id=t.id
             WHERE {' AND '.join(where)}
             ORDER BY {order_by} {order}
             LIMIT ? OFFSET ?
@@ -4749,6 +4894,11 @@ def transactions():
             "counterparty_name": r[50] or "",
             "bank_reference": r[51] or "",
             "history_link_threshold": HISTORY_LINK_CANDIDATE_THRESHOLD,
+            "suggestion_state": r[54],
+            "suggestion_count": int(r[55] or 0),
+            "suggestion_confidence": float(r[56] or 0.0),
+            "suggestion_dismissed": bool(r[57]),
+            "suggestion_calculated_at": r[58] or "",
         }
         item.update(historical_match_factors(r[1], r[4], r[3], r[29], r[31], r[30]))
         items.append(item)
@@ -4897,6 +5047,9 @@ def classify(tx_id: str):
                     sub,
                 ),
             )
+        for affected_id in affected_ids:
+            conn.execute("DELETE FROM transaction_suggestions WHERE transaction_id=?", (affected_id,))
+            conn.execute("DELETE FROM transaction_suggestion_state WHERE transaction_id=?", (affected_id,))
     return jsonify({
         "id": tx_id, "ok": True, "status": status,
         "locked": True, "classified_by": user.get("username") or "", "classified_at": now,
@@ -5023,6 +5176,8 @@ def review_history_link(tx_id: str):
                 ),
             )
             record_audit(user, "confirm_history_link", "transaction", tx_id, "history_match_id", "", match_id, conn=conn)
+            conn.execute("DELETE FROM transaction_suggestions WHERE transaction_id=?", (tx_id,))
+            conn.execute("DELETE FROM transaction_suggestion_state WHERE transaction_id=?", (tx_id,))
             if row[5] != history[0]:
                 record_audit(user, "classify_from_history_link", "transaction", tx_id, "category_id", row[5] or "", history[0], conn=conn)
             if row[6] != history[1]:
@@ -5052,6 +5207,8 @@ def review_history_link(tx_id: str):
             (match_id, tx_id),
         )
         record_audit(current_user(), "reject_history_link", "transaction", tx_id, "history_match_id", match_id, "", conn=conn)
+        conn.execute("DELETE FROM transaction_suggestions WHERE transaction_id=?", (tx_id,))
+        conn.execute("DELETE FROM transaction_suggestion_state WHERE transaction_id=?", (tx_id,))
     return jsonify({"id": tx_id, "history_match_id": None, "history_match_confirmed": False, "ok": True})
 
 
@@ -5073,31 +5230,366 @@ def update_transaction_flags(tx_id: str):
     })
 
 
+def suggestion_fingerprint(row: Any) -> str:
+    payload = "|".join(str(value or "") for value in row)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def cached_suggestions(conn, tx_ids: list[str]) -> tuple[dict[str, list[dict[str, Any]]], dict[str, str]]:
+    items: dict[str, list[dict[str, Any]]] = {tx_id: [] for tx_id in tx_ids}
+    states: dict[str, str] = {tx_id: "pending" for tx_id in tx_ids}
+    if not tx_ids:
+        return items, states
+    placeholders = ",".join("?" for _ in tx_ids)
+    state_rows = conn.execute(
+        f"SELECT transaction_id,status FROM transaction_suggestion_state WHERE transaction_id IN ({placeholders})",
+        tx_ids,
+    ).fetchall()
+    for row in state_rows:
+        states[row[0]] = row[1] or "pending"
+    rows = conn.execute(
+        f"""
+        SELECT ts.transaction_id,ts.category_id,c.name,ts.subcategory_id,IFNULL(s.name,''),
+               ts.confidence,ts.category_probability,ts.subcategory_probability,
+               ts.frequency,ts.history_evidence,ts.transaction_evidence,
+               ts.justification,ts.subcategories_json,ts.rank
+        FROM transaction_suggestions ts
+        LEFT JOIN categories c ON c.id=ts.category_id
+        LEFT JOIN subcategories s ON s.id=ts.subcategory_id
+        WHERE ts.transaction_id IN ({placeholders})
+        ORDER BY ts.transaction_id,ts.rank
+        """,
+        tx_ids,
+    ).fetchall()
+    for row in rows:
+        items[row[0]].append({
+            "category_id": row[1], "category_name": row[2] or "",
+            "subcategory_id": row[3], "subcategory_name": row[4] or "",
+            "probability": float(row[6] or 0), "relative_score": float(row[6] or 0),
+            "confidence": float(row[5] or 0), "category_probability": float(row[6] or 0),
+            "subcategory_probability": float(row[7] or 0), "frequency": int(row[8] or 0),
+            "history_evidence": int(row[9] or 0), "transaction_evidence": int(row[10] or 0),
+            "justification": row[11] or "", "subcategories": json.loads(row[12] or "[]"),
+            "rank": int(row[13] or 0),
+        })
+    return items, states
+
+
+def _append_suggestion_job_log(conn, job_id: str, message: str, processed: int | None = None) -> None:
+    row = conn.execute("SELECT logs_json FROM suggestion_jobs WHERE id=?", (job_id,)).fetchone()
+    logs = json.loads(row[0] or "[]") if row else []
+    logs = (logs + [{"time": dt.datetime.now().strftime("%H:%M:%S"), "message": message}])[-40:]
+    if processed is None:
+        conn.execute(
+            "UPDATE suggestion_jobs SET message=?,logs_json=? WHERE id=?",
+            (message, json.dumps(logs, ensure_ascii=False), job_id),
+        )
+    else:
+        conn.execute(
+            "UPDATE suggestion_jobs SET processed=?,message=?,logs_json=? WHERE id=?",
+            (processed, message, json.dumps(logs, ensure_ascii=False), job_id),
+        )
+
+
+def _run_suggestion_job(job_id: str, full: bool = False, batch_size: int = 20) -> None:
+    try:
+        with db_connect() as conn:
+            conn.execute(
+                "UPDATE suggestion_jobs SET status='running',started_at=?,message='Carregando evidencias' WHERE id=?",
+                (dt.datetime.now().isoformat(timespec="seconds"), job_id),
+            )
+            _append_suggestion_job_log(conn, job_id, "Carregando base historica e classificacoes confirmadas")
+            evidence_by_type = load_suggestion_evidence(conn)
+            rows = conn.execute(
+                """
+                SELECT t.id,t.date,t.description,t.description_norm,t.amount,t.type,t.account_id,
+                       IFNULL(t.merchant_norm,''),IFNULL(t.transaction_method,'other'),
+                       IFNULL(t.counterparty_name,''),IFNULL(t.bank_reference,''),
+                       qs.fingerprint,qs.status
+                FROM transactions t
+                LEFT JOIN transaction_suggestion_state qs ON qs.transaction_id=t.id
+                WHERE t.category_id IS NULL AND t.locked=0 AND t.status='pending'
+                  AND NOT (t.history_match_id IS NOT NULL AND t.history_match_confirmed=0 AND t.identity_score>=?)
+                ORDER BY t.date DESC,t.id
+                """,
+                (HISTORY_LINK_CANDIDATE_THRESHOLD,),
+            ).fetchall()
+            targets: list[tuple[Any, str]] = []
+            for row in rows:
+                fingerprint = suggestion_fingerprint(row[1:11])
+                if not full and row[11] == fingerprint and row[12] == "completed":
+                    continue
+                targets.append((row, fingerprint))
+            conn.execute("UPDATE suggestion_jobs SET total=? WHERE id=?", (len(targets), job_id))
+            _append_suggestion_job_log(conn, job_id, f"{len(targets)} lancamento(s) aguardando calculo")
+            conn.commit()
+
+            with_suggestions = 0
+            without_suggestions = 0
+            errors = 0
+            for index, (row, fingerprint) in enumerate(targets, start=1):
+                tx_id = row[0]
+                try:
+                    suggestions = build_suggestions_for_tx(conn, tx_id, evidence_by_type=evidence_by_type) or []
+                    suggestions = suggestions[:3]
+                    dismissed_row = conn.execute(
+                        "SELECT dismissed FROM transaction_suggestion_state WHERE transaction_id=?", (tx_id,)
+                    ).fetchone()
+                    dismissed = int((dismissed_row or (0,))[0] or 0)
+                    calculated_at = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
+                    conn.execute("DELETE FROM transaction_suggestions WHERE transaction_id=?", (tx_id,))
+                    for rank, suggestion in enumerate(suggestions, start=1):
+                        conn.execute(
+                            """
+                            INSERT INTO transaction_suggestions(
+                              transaction_id,rank,category_id,subcategory_id,confidence,
+                              category_probability,subcategory_probability,frequency,
+                              history_evidence,transaction_evidence,justification,
+                              subcategories_json,calculated_at
+                            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+                            """,
+                            (
+                                tx_id, rank, suggestion["category_id"], suggestion.get("subcategory_id"),
+                                float(suggestion.get("confidence") or 0),
+                                float(suggestion.get("category_probability") or 0),
+                                float(suggestion.get("subcategory_probability") or 0),
+                                int(suggestion.get("frequency") or 0),
+                                int(suggestion.get("history_evidence") or 0),
+                                int(suggestion.get("transaction_evidence") or 0),
+                                suggestion.get("justification") or "",
+                                json.dumps(suggestion.get("subcategories") or [], ensure_ascii=False),
+                                calculated_at,
+                            ),
+                        )
+                    best_confidence = float(suggestions[0].get("confidence") or 0) if suggestions else 0.0
+                    conn.execute(
+                        """
+                        INSERT INTO transaction_suggestion_state(
+                          transaction_id,fingerprint,status,suggestion_count,best_confidence,
+                          dismissed,calculated_at,error
+                        ) VALUES (?,?, 'completed', ?,?,?,?,'')
+                        ON CONFLICT(transaction_id) DO UPDATE SET
+                          fingerprint=excluded.fingerprint,status='completed',
+                          suggestion_count=excluded.suggestion_count,
+                          best_confidence=excluded.best_confidence,
+                          calculated_at=excluded.calculated_at,error=''
+                        """,
+                        (tx_id, fingerprint, len(suggestions), best_confidence, dismissed, calculated_at),
+                    )
+                    if suggestions:
+                        with_suggestions += 1
+                    else:
+                        without_suggestions += 1
+                except Exception as exc:
+                    errors += 1
+                    calculated_at = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
+                    conn.execute(
+                        """
+                        INSERT INTO transaction_suggestion_state(
+                          transaction_id,fingerprint,status,suggestion_count,best_confidence,
+                          dismissed,calculated_at,error
+                        ) VALUES (?,?,'failed',0,0,0,?,?)
+                        ON CONFLICT(transaction_id) DO UPDATE SET
+                          fingerprint=excluded.fingerprint,status='failed',calculated_at=excluded.calculated_at,error=excluded.error
+                        """,
+                        (tx_id, fingerprint, calculated_at, f"{type(exc).__name__}: {exc}"[:500]),
+                    )
+                if index % batch_size == 0 or index == len(targets):
+                    conn.execute(
+                        """
+                        UPDATE suggestion_jobs
+                        SET processed=?,updated=?,with_suggestions=?,without_suggestions=?
+                        WHERE id=?
+                        """,
+                        (index, index - errors, with_suggestions, without_suggestions, job_id),
+                    )
+                    _append_suggestion_job_log(conn, job_id, f"{index} de {len(targets)} analisados", index)
+                    conn.commit()
+            final_message = (
+                f"Concluido: {with_suggestions} com sugestoes, {without_suggestions} sem evidencia"
+                + (f", {errors} com erro" if errors else "")
+            )
+            conn.execute(
+                """
+                UPDATE suggestion_jobs
+                SET status='completed',processed=?,updated=?,with_suggestions=?,without_suggestions=?,
+                    message=?,error=?,finished_at=? WHERE id=?
+                """,
+                (
+                    len(targets), len(targets) - errors, with_suggestions, without_suggestions,
+                    final_message, f"{errors} lancamento(s) falharam" if errors else "",
+                    dt.datetime.now().isoformat(timespec="seconds"), job_id,
+                ),
+            )
+            _append_suggestion_job_log(conn, job_id, final_message, len(targets))
+    except Exception as exc:
+        with db_connect() as conn:
+            conn.execute(
+                """
+                UPDATE suggestion_jobs SET status='failed',error=?,message='Falha no calculo',finished_at=? WHERE id=?
+                """,
+                (f"{type(exc).__name__}: {exc}"[:1000], dt.datetime.now().isoformat(timespec="seconds"), job_id),
+            )
+
+
+def enqueue_suggestion_job(full: bool = False) -> str:
+    with db_connect() as conn:
+        active = conn.execute(
+            "SELECT id FROM suggestion_jobs WHERE status IN ('queued','running') ORDER BY created_at DESC LIMIT 1"
+        ).fetchone()
+        if active:
+            return active[0]
+        job_id = str(uuid.uuid4())
+        try:
+            conn.execute(
+                """
+                INSERT INTO suggestion_jobs(id,status,mode,message,created_at)
+                VALUES (?,'queued',?,'Aguardando inicio',?)
+                """,
+                (job_id, "full" if full else "incremental", dt.datetime.now().isoformat(timespec="seconds")),
+            )
+        except Exception:
+            # Dois workers podem receber o clique ao mesmo tempo. O indice parcial
+            # e esta releitura garantem um unico job ativo sem duplicar o trabalho.
+            conn.rollback()
+            active = conn.execute(
+                "SELECT id FROM suggestion_jobs WHERE status IN ('queued','running') ORDER BY created_at DESC LIMIT 1"
+            ).fetchone()
+            if not active:
+                raise
+            return active[0]
+    threading.Thread(
+        target=_run_suggestion_job, args=(job_id, full), daemon=True,
+        name=f"suggestions-{job_id[:8]}",
+    ).start()
+    return job_id
+
+
+def suggestion_job_payload(row: Any) -> dict[str, Any]:
+    return {
+        "id": row[0], "status": row[1], "mode": row[2], "processed": int(row[3] or 0),
+        "total": int(row[4] or 0), "updated": int(row[5] or 0),
+        "with_suggestions": int(row[6] or 0), "without_suggestions": int(row[7] or 0),
+        "message": row[8] or "", "logs": json.loads(row[9] or "[]"), "error": row[10] or "",
+        "created_at": row[11], "started_at": row[12], "finished_at": row[13],
+    }
+
+
+@app.route("/api/v1/transactions/suggestions/jobs", methods=["POST"])
+def start_suggestion_job():
+    data = request.get_json(silent=True) or {}
+    job_id = enqueue_suggestion_job(full=bool(data.get("full")))
+    with db_connect() as conn:
+        row = conn.execute("SELECT status FROM suggestion_jobs WHERE id=?", (job_id,)).fetchone()
+    return jsonify({"job_id": job_id, "status": row[0] if row else "queued"}), 202
+
+
+@app.route("/api/v1/suggestion-jobs/<job_id>")
+def suggestion_job_status(job_id: str):
+    with db_connect() as conn:
+        row = conn.execute(
+            """
+            SELECT id,status,mode,processed,total,updated,with_suggestions,without_suggestions,
+                   message,logs_json,error,created_at,started_at,finished_at
+            FROM suggestion_jobs WHERE id=?
+            """,
+            (job_id,),
+        ).fetchone()
+    if not row:
+        return jsonify({"detail": "Calculo nao encontrado", "code": "NOT_FOUND"}), 404
+    return jsonify(suggestion_job_payload(row))
+
+
+@app.route("/api/v1/suggestion-jobs-active")
+def active_suggestion_job():
+    with db_connect() as conn:
+        row = conn.execute(
+            """
+            SELECT id,status,mode,processed,total,updated,with_suggestions,without_suggestions,
+                   message,logs_json,error,created_at,started_at,finished_at
+            FROM suggestion_jobs WHERE status IN ('queued','running') ORDER BY created_at DESC LIMIT 1
+            """
+        ).fetchone()
+    if not row:
+        return jsonify({"detail": "Nenhum calculo em andamento", "code": "NOT_FOUND"}), 404
+    return jsonify(suggestion_job_payload(row))
+
+
+@app.route("/api/v1/transactions/suggestions/summary")
+def suggestion_summary():
+    with db_connect() as conn:
+        row = conn.execute(
+            """
+            SELECT
+              SUM(CASE WHEN t.category_id IS NULL AND t.locked=0 THEN 1 ELSE 0 END),
+              SUM(CASE WHEN t.category_id IS NULL AND t.locked=0 AND t.history_match_id IS NOT NULL
+                            AND t.history_match_confirmed=0 AND t.identity_score>=? THEN 1 ELSE 0 END),
+              SUM(CASE WHEN t.category_id IS NULL AND t.locked=0 AND qs.dismissed=0
+                            AND qs.suggestion_count>0 AND qs.best_confidence>=70 THEN 1 ELSE 0 END),
+              SUM(CASE WHEN t.category_id IS NULL AND t.locked=0 AND qs.dismissed=0
+                            AND qs.suggestion_count>0 AND qs.best_confidence<70 THEN 1 ELSE 0 END),
+              SUM(CASE WHEN t.category_id IS NULL AND t.locked=0 AND qs.dismissed=0
+                            AND qs.status='completed' AND qs.suggestion_count=0 THEN 1 ELSE 0 END),
+              SUM(CASE WHEN t.category_id IS NULL AND t.locked=0 AND qs.transaction_id IS NULL
+                            AND NOT (t.history_match_id IS NOT NULL AND t.history_match_confirmed=0 AND t.identity_score>=?)
+                       THEN 1 ELSE 0 END),
+              SUM(CASE WHEN t.category_id IS NULL AND t.locked=0 AND qs.dismissed=1 THEN 1 ELSE 0 END),
+              SUM(CASE WHEN t.category_id IS NOT NULL THEN 1 ELSE 0 END)
+            FROM transactions t
+            LEFT JOIN transaction_suggestion_state qs ON qs.transaction_id=t.id
+            """,
+            (HISTORY_LINK_CANDIDATE_THRESHOLD, HISTORY_LINK_CANDIDATE_THRESHOLD),
+        ).fetchone()
+    return jsonify({
+        "pending": int(row[0] or 0), "links": int(row[1] or 0), "strong": int(row[2] or 0),
+        "weak": int(row[3] or 0), "none": int(row[4] or 0), "waiting": int(row[5] or 0),
+        "dismissed": int(row[6] or 0), "classified": int(row[7] or 0),
+    })
+
+
+@app.route("/api/v1/transactions/<tx_id>/suggestions/dismiss", methods=["POST"])
+def dismiss_transaction_suggestions(tx_id: str):
+    with db_connect() as conn:
+        tx = conn.execute(
+            "SELECT date,description,description_norm,amount,type,account_id,merchant_norm,transaction_method,counterparty_name,bank_reference FROM transactions WHERE id=?",
+            (tx_id,),
+        ).fetchone()
+        if not tx:
+            return jsonify({"detail": "Nao encontrado", "code": "NOT_FOUND"}), 404
+        fingerprint = suggestion_fingerprint(tx)
+        now = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
+        conn.execute(
+            """
+            INSERT INTO transaction_suggestion_state(
+              transaction_id,fingerprint,status,suggestion_count,best_confidence,dismissed,calculated_at,error
+            ) VALUES (?,?,'completed',0,0,1,?,'')
+            ON CONFLICT(transaction_id) DO UPDATE SET dismissed=1,calculated_at=excluded.calculated_at
+            """,
+            (tx_id, fingerprint, now),
+        )
+        record_audit(current_user(), "dismiss_suggestions", "transaction", tx_id, conn=conn)
+    return jsonify({"id": tx_id, "dismissed": True, "ok": True})
+
+
 @app.route("/api/v1/transactions/suggestions/batch", methods=["POST"])
 def tx_suggestions_batch():
     data = request.get_json(force=True) or {}
     tx_ids = list(dict.fromkeys(str(item).strip() for item in (data.get("transaction_ids") or []) if str(item).strip()))
-    if not tx_ids:
-        return jsonify({"items": {}})
     if len(tx_ids) > 100:
         return jsonify({"detail": "No maximo 100 lancamentos por lote", "code": "BATCH_TOO_LARGE"}), 400
     with db_connect() as conn:
-        evidence_by_type = load_suggestion_evidence(conn)
-        items = {}
-        for tx_id in tx_ids:
-            suggestion = build_suggestions_for_tx(conn, tx_id, evidence_by_type=evidence_by_type)
-            if suggestion is not None:
-                items[tx_id] = suggestion
-    return jsonify({"items": items})
+        items, states = cached_suggestions(conn, tx_ids)
+    return jsonify({"items": items, "states": states})
 
 
 @app.route("/api/v1/transactions/<tx_id>/suggestions")
 def tx_suggestions(tx_id: str):
     with db_connect() as conn:
-        sugg = build_suggestions_for_tx(conn, tx_id)
-    if sugg is None:
-        return jsonify({"detail": "Nao encontrado", "code": "NOT_FOUND"}), 404
-    return jsonify(sugg)
+        exists = conn.execute("SELECT id FROM transactions WHERE id=?", (tx_id,)).fetchone()
+        if not exists:
+            return jsonify({"detail": "Nao encontrado", "code": "NOT_FOUND"}), 404
+        items, states = cached_suggestions(conn, [tx_id])
+    return jsonify({"items": items[tx_id], "state": states[tx_id]})
 
 
 @app.route("/api/v1/transactions/recalculate-probabilities", methods=["POST"])
@@ -5305,6 +5797,8 @@ def _recalculate_probabilities_impl(job_id: str | None = None, batch_size: int =
                         r[0],
                     ),
                 )
+            conn.execute("DELETE FROM transaction_suggestions WHERE transaction_id=?", (r[0],))
+            conn.execute("DELETE FROM transaction_suggestion_state WHERE transaction_id=?", (r[0],))
             updated += 1
         if job_id:
             conn.execute(
@@ -5516,6 +6010,8 @@ def bulk_classify():
             updated = cursor.rowcount or 0
             for tid in target_ids:
                 record_audit(user, "bulk_classify", "transaction", tid, "category_id", "", cat, conn=conn)
+                conn.execute("DELETE FROM transaction_suggestions WHERE transaction_id=?", (tid,))
+                conn.execute("DELETE FROM transaction_suggestion_state WHERE transaction_id=?", (tid,))
     return jsonify({"updated": updated, "skipped_locked": len(locked_ids)})
 
 

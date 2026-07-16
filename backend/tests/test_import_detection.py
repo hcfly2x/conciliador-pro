@@ -288,6 +288,81 @@ class SuggestionEvidenceTests(unittest.TestCase):
         self.assertEqual(suggestions[0]["category_id"], "fuel")
         self.assertEqual(suggestions[0]["subcategory_id"], "gas")
         self.assertGreaterEqual(suggestions[0]["category_probability"], 20.0)
+        self.assertEqual(suggestions[0]["subcategories"][0]["subcategory_id"], "gas")
+
+
+class SuggestionJobTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.conn = sqlite3.connect(":memory:")
+        self.original_db_connect = app.db_connect
+        app.db_connect = lambda *args, **kwargs: self.conn
+        self.conn.executescript(
+            """
+            CREATE TABLE categories(id TEXT PRIMARY KEY,name TEXT,type TEXT);
+            CREATE TABLE subcategories(id TEXT PRIMARY KEY,name TEXT);
+            CREATE TABLE transactions(
+              id TEXT PRIMARY KEY,date TEXT,description TEXT,description_norm TEXT,
+              amount REAL,type TEXT,account_id TEXT,merchant_norm TEXT,
+              transaction_method TEXT,counterparty_name TEXT,bank_reference TEXT,
+              category_id TEXT,subcategory_id TEXT,notes TEXT,locked INTEGER,status TEXT,
+              history_match_id TEXT,history_match_confirmed INTEGER,identity_score REAL
+            );
+            CREATE TABLE classification_history(
+              id TEXT,source_file_id TEXT,account_id TEXT,date TEXT,description_norm TEXT,
+              amount REAL,type TEXT,category_id TEXT,subcategory_id TEXT
+            );
+            CREATE TABLE suggestion_jobs(
+              id TEXT PRIMARY KEY,status TEXT,mode TEXT,processed INTEGER DEFAULT 0,
+              total INTEGER DEFAULT 0,updated INTEGER DEFAULT 0,with_suggestions INTEGER DEFAULT 0,
+              without_suggestions INTEGER DEFAULT 0,message TEXT DEFAULT '',logs_json TEXT DEFAULT '[]',
+              error TEXT DEFAULT '',created_at TEXT,started_at TEXT DEFAULT '',finished_at TEXT DEFAULT ''
+            );
+            CREATE TABLE transaction_suggestion_state(
+              transaction_id TEXT PRIMARY KEY,fingerprint TEXT,status TEXT,suggestion_count INTEGER,
+              best_confidence REAL,dismissed INTEGER,calculated_at TEXT,error TEXT
+            );
+            CREATE TABLE transaction_suggestions(
+              transaction_id TEXT,rank INTEGER,category_id TEXT,subcategory_id TEXT,
+              confidence REAL,category_probability REAL,subcategory_probability REAL,
+              frequency INTEGER,history_evidence INTEGER,transaction_evidence INTEGER,
+              justification TEXT,subcategories_json TEXT,calculated_at TEXT,
+              PRIMARY KEY(transaction_id,rank)
+            );
+            INSERT INTO categories VALUES ('food','ALIMENTACAO','expense');
+            INSERT INTO subcategories VALUES ('market','MERCADO');
+            INSERT INTO classification_history VALUES
+              ('hist','seed:sheet:saidas','acc','2026-01-10','mercado central',100,'expense','food','market');
+            INSERT INTO transactions VALUES
+              ('target','2026-02-10','MERCADO CENTRAL','mercado central',-105,'expense','acc','mercado central','other','','',NULL,NULL,'',0,'pending',NULL,0,0);
+            INSERT INTO suggestion_jobs(id,status,mode,created_at) VALUES ('job-1','queued','incremental','2026-01-01');
+            """
+        )
+
+    def tearDown(self) -> None:
+        app.db_connect = self.original_db_connect
+        self.conn.close()
+
+    def test_job_persists_top_suggestions_and_zero_cost_incremental_rerun(self) -> None:
+        app._run_suggestion_job("job-1")
+
+        job = self.conn.execute(
+            "SELECT status,total,processed,with_suggestions FROM suggestion_jobs WHERE id='job-1'"
+        ).fetchone()
+        cached = self.conn.execute(
+            "SELECT category_id,subcategory_id,subcategories_json FROM transaction_suggestions WHERE transaction_id='target' AND rank=1"
+        ).fetchone()
+        self.assertEqual(job, ("completed", 1, 1, 1))
+        self.assertEqual(cached[0:2], ("food", "market"))
+        self.assertIn('"subcategory_id": "market"', cached[2])
+
+        self.conn.execute(
+            "INSERT INTO suggestion_jobs(id,status,mode,created_at) VALUES ('job-2','queued','incremental','2026-01-02')"
+        )
+        app._run_suggestion_job("job-2")
+        self.assertEqual(
+            self.conn.execute("SELECT status,total,processed FROM suggestion_jobs WHERE id='job-2'").fetchone(),
+            ("completed", 0, 0),
+        )
 
 
 class InstallmentTests(unittest.TestCase):

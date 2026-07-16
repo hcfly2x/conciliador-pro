@@ -144,10 +144,18 @@ primeira versao com dados persistentes.
 - [x] Calcular categoria primeiro e subcategoria condicionada a categoria.
 - [ ] Separar similaridade tecnica, confianca e probabilidade calibrada.
 - [x] Exibir Top 3 com justificativas curtas e fontes de evidencia.
+- [x] Persistir sugestoes e estado de calculo para que a tabela nao dependa de
+      processamento sincrono nem permaneca indefinidamente carregando.
+- [x] Executar o calculo em job incremental ou completo, com progresso, logs,
+      recuperacao do job ativo e tratamento explicito de falha.
+- [x] Criar Central de Classificacao com filas de vinculo, sugestoes fortes/fracas,
+      sem evidencia, aguardando calculo, ignoradas e classificadas.
+- [x] Adicionar `Salvar e proximo`, atalhos, classificacao em lote e aplicacao
+      confirmada a lancamentos similares.
 - [x] Filtrar categorias da interface pelo tipo receita/despesa.
 - [x] Adicionar subcategoria a classificacao em lote.
 - [ ] Criar avaliacao retrospectiva com Top 1, Top 3, cobertura e calibracao.
-- [ ] Manter toda aplicacao dependente de clique humano.
+- [x] Manter toda aplicacao dependente de clique humano.
 
 **Saida:** sugestoes mensuraveis, explicaveis e coerentes com as regras do produto.
 
@@ -209,7 +217,7 @@ primeira versao com dados persistentes.
 
 ## Verificacoes realizadas nesta revisao
 
-- 33 testes Python aprovados.
+- 36 testes Python aprovados.
 - Compilacao Python aprovada.
 - TypeScript sem erros.
 - Build de producao Next.js aprovado.

@@ -11,12 +11,13 @@ class WorkflowIntegrationTests(unittest.TestCase):
         self.conn = sqlite3.connect(":memory:")
         self.original_db_connect = app.db_connect
         self.original_auth_disabled = app.auth_mod.AUTH_DISABLED
+        self.original_user_for_token = app.auth_mod.user_for_token
         app.db_connect = lambda *args, **kwargs: self.conn
         app.auth_mod.AUTH_DISABLED = True
         self.client = app.app.test_client()
         self.conn.executescript(
             """
-            CREATE TABLE categories(id TEXT PRIMARY KEY, type TEXT);
+            CREATE TABLE categories(id TEXT PRIMARY KEY, name TEXT, type TEXT);
             CREATE TABLE subcategories(id TEXT PRIMARY KEY, name TEXT);
             CREATE TABLE transactions(
               id TEXT PRIMARY KEY, account_id TEXT, date TEXT, description TEXT,
@@ -42,7 +43,19 @@ class WorkflowIntegrationTests(unittest.TestCase):
               entity_id TEXT, field TEXT, old_value TEXT, new_value TEXT,
               detail TEXT, created_at TEXT
             );
-            INSERT INTO categories VALUES ('cat-expense','expense');
+            CREATE TABLE transaction_suggestion_state(
+              transaction_id TEXT PRIMARY KEY, fingerprint TEXT, status TEXT,
+              suggestion_count INTEGER, best_confidence REAL, dismissed INTEGER,
+              calculated_at TEXT, error TEXT
+            );
+            CREATE TABLE transaction_suggestions(
+              transaction_id TEXT, rank INTEGER, category_id TEXT, subcategory_id TEXT,
+              confidence REAL, category_probability REAL, subcategory_probability REAL,
+              frequency INTEGER, history_evidence INTEGER, transaction_evidence INTEGER,
+              justification TEXT, subcategories_json TEXT, calculated_at TEXT,
+              PRIMARY KEY(transaction_id, rank)
+            );
+            INSERT INTO categories VALUES ('cat-expense','DESPESA','expense');
             INSERT INTO subcategories VALUES ('sub-market','MERCADO');
             INSERT INTO installment_plans VALUES ('plan-1',NULL,NULL,'','','');
             INSERT INTO transactions VALUES
@@ -57,6 +70,7 @@ class WorkflowIntegrationTests(unittest.TestCase):
     def tearDown(self) -> None:
         app.db_connect = self.original_db_connect
         app.auth_mod.AUTH_DISABLED = self.original_auth_disabled
+        app.auth_mod.user_for_token = self.original_user_for_token
         self.conn.close()
 
     def test_classification_locks_and_propagates_only_category_fields(self) -> None:
@@ -117,6 +131,92 @@ class WorkflowIntegrationTests(unittest.TestCase):
         self.assertGreater(category.get_json()["references"]["historico"], 0)
         self.assertEqual(subcategory.status_code, 400)
         self.assertEqual(subcategory.get_json()["code"], "SUBCATEGORY_IN_USE")
+
+    def test_collaborator_can_read_cached_suggestions_through_batch_post(self) -> None:
+        app.auth_mod.AUTH_DISABLED = False
+        app.auth_mod.user_for_token = lambda _token: {
+            "id": "collab", "username": "collab", "role": app.auth_mod.ROLE_COLLAB,
+        }
+
+        response = self.client.post(
+            "/api/v1/transactions/suggestions/batch",
+            json={"transaction_ids": ["tx-1"]},
+            headers={"Authorization": "Bearer valid"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["states"]["tx-1"], "pending")
+
+
+class ClassificationQueueIntegrationTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.conn = sqlite3.connect(":memory:")
+        self.original_db_connect = app.db_connect
+        self.original_auth_disabled = app.auth_mod.AUTH_DISABLED
+        app.db_connect = lambda *args, **kwargs: self.conn
+        app.auth_mod.AUTH_DISABLED = True
+        app.init_db()
+        self.client = app.app.test_client()
+        self.conn.execute(
+            "INSERT INTO accounts(id,name,type,color,is_active,created_at) VALUES ('acc','CONTA','checking','#000',1,'2026-01-01')"
+        )
+        self.conn.execute(
+            "INSERT INTO categories(id,name,color,text_color,type) VALUES ('food','ALIMENTACAO','#000','#fff','expense')"
+        )
+        self.conn.execute("INSERT INTO subcategories(id,name) VALUES ('market','MERCADO')")
+        self.conn.execute(
+            """
+            INSERT INTO classification_history(
+              id,source_file_id,account_id,date,description,description_norm,amount,type,category_id,subcategory_id
+            ) VALUES ('hist','seed:sheet:saidas','acc','2026-01-01','MERCADO','mercado',100,'expense','food','market')
+            """
+        )
+        self.conn.execute(
+            """
+            INSERT INTO transactions(
+              id,tx_key,date,competence_month,description,description_norm,amount,type,status,
+              account_id,imported_file_id,locked
+            ) VALUES ('target','key','2026-02-01','2026/02','MERCADO','mercado',-100,'expense','pending','acc','file',0)
+            """
+        )
+        self.conn.execute(
+            """
+            INSERT INTO transactions(
+              id,tx_key,date,competence_month,description,description_norm,amount,type,status,
+              account_id,imported_file_id,locked,history_match_id,history_match_confirmed,identity_score
+            ) VALUES (
+              'link-target','link-key','2026-02-02','2026/02','MERCADO','mercado',-100,'expense',
+              'pending','acc','file',0,'hist',0,99
+            )
+            """
+        )
+        self.conn.execute(
+            "INSERT INTO suggestion_jobs(id,status,mode,created_at) VALUES ('queue-job','queued','incremental','2026-01-01')"
+        )
+
+    def tearDown(self) -> None:
+        app.db_connect = self.original_db_connect
+        app.auth_mod.AUTH_DISABLED = self.original_auth_disabled
+        self.conn.close()
+
+    def test_calculated_suggestion_appears_in_classification_queue(self) -> None:
+        app._run_suggestion_job("queue-job")
+
+        response = self.client.get(
+            "/api/v1/transactions?classification_queue=suggestions&ledger_id=all&sort_by=suggestion_confidence"
+        )
+        summary = self.client.get("/api/v1/transactions/suggestions/summary")
+        batch = self.client.post(
+            "/api/v1/transactions/suggestions/batch", json={"transaction_ids": ["target"]}
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["items"][0]["id"], "target")
+        self.assertEqual(response.get_json()["items"][0]["suggestion_state"], "completed")
+        self.assertEqual(summary.get_json()["strong"], 1)
+        self.assertEqual(summary.get_json()["links"], 1)
+        self.assertEqual(summary.get_json()["waiting"], 0)
+        self.assertEqual(batch.get_json()["items"]["target"][0]["category_id"], "food")
 
 
 if __name__ == "__main__":

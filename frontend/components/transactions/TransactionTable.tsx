@@ -94,6 +94,8 @@ export default function TransactionTable({
   const [rowDraft, setRowDraft] = useState<Record<string, { category_id: string; subcategory_id: string; notes: string }>>({})
   const [savingRow, setSavingRow] = useState<Record<string, boolean>>({})
   const [rowSuggestions, setRowSuggestions] = useState<Record<string, TransactionSuggestion[]>>({})
+  const [rowSuggestionStates, setRowSuggestionStates] = useState<Record<string, string>>({})
+  const [suggestionsLoading, setSuggestionsLoading] = useState<Set<string>>(new Set())
   const [suggestionErrors, setSuggestionErrors] = useState<Set<string>>(new Set())
 
   useEffect(() => {
@@ -253,10 +255,12 @@ export default function TransactionTable({
     async function loadPendingSuggestions() {
       const ids = needingSuggestions.filter(tx => rowSuggestions[tx.id] === undefined).map(tx => tx.id)
       if (!ids.length) return
+      setSuggestionsLoading(current => new Set([...current, ...ids]))
       try {
         const data = await getTransactionSuggestionsBatch(ids)
         if (!cancelled) {
-          setRowSuggestions(current => ({ ...current, ...data }))
+          setRowSuggestions(current => ({ ...current, ...data.items }))
+          setRowSuggestionStates(current => ({ ...current, ...data.states }))
           setSuggestionErrors(current => {
             const next = new Set(current)
             ids.forEach(id => next.delete(id))
@@ -265,6 +269,14 @@ export default function TransactionTable({
         }
       } catch {
         if (!cancelled) setSuggestionErrors(current => new Set([...current, ...ids]))
+      } finally {
+        if (!cancelled) {
+          setSuggestionsLoading(current => {
+            const next = new Set(current)
+            ids.forEach(id => next.delete(id))
+            return next
+          })
+        }
       }
     }
 
@@ -272,7 +284,12 @@ export default function TransactionTable({
     return () => { cancelled = true }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [txs])
-  useEffect(() => { setRowSuggestions({}); setSuggestionErrors(new Set()) }, [refreshKey])
+  useEffect(() => {
+    setRowSuggestions({})
+    setRowSuggestionStates({})
+    setSuggestionsLoading(new Set())
+    setSuggestionErrors(new Set())
+  }, [refreshKey])
   useEffect(() => { setStatusFilter(defaultStatus || '') }, [defaultStatus])
   useEffect(() => {
     setSortBy(defaultSortBy)
@@ -600,7 +617,13 @@ export default function TransactionTable({
                           <p className="mb-1 text-[10px] text-[#5a5f73]">
                             {suggestionErrors.has(tx.id)
                               ? 'Falha ao calcular sugestoes. Atualize para tentar novamente.'
-                              : suggestions === undefined ? 'Buscando sugestoes...' : 'Sem evidencia suficiente'}
+                              : suggestionsLoading.has(tx.id)
+                                ? 'Buscando resultados...'
+                                : rowSuggestionStates[tx.id] === 'pending'
+                                  ? 'Aguardando calculo na Central de Classificacao'
+                                  : rowSuggestionStates[tx.id] === 'failed'
+                                    ? 'Calculo falhou; tente novamente na Central'
+                                    : 'Sem evidencia suficiente'}
                           </p>
                         )
                       })()}

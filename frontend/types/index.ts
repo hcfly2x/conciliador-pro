@@ -99,6 +99,11 @@ export interface Transaction {
   locked?: boolean
   classified_by?: string
   classified_at?: string
+  suggestion_state?: 'pending' | 'running' | 'completed' | 'failed'
+  suggestion_count?: number
+  suggestion_confidence?: number
+  suggestion_dismissed?: boolean
+  suggestion_calculated_at?: string
 }
 
 export interface TransactionSummary {
@@ -127,6 +132,8 @@ export interface TransactionFilters {
   ledger_id?: string
   sort_by?: string
   sort_order?: 'asc' | 'desc'
+  classification_queue?: 'links' | 'suggestions' | 'none' | 'waiting' | 'dismissed' | 'classified'
+  suggestion_strength?: 'strong' | 'weak'
 }
 
 export interface PaginatedResponse<T> {

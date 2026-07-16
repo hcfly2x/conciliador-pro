@@ -2,6 +2,7 @@ import type { NextConfig } from "next";
 
 const apiProxyTarget = (process.env.API_PROXY_TARGET || "http://127.0.0.1:5061").replace(/\/$/, "");
 const publicApiUrl = process.env.NEXT_PUBLIC_API_URL || "/api/v1";
+const isDevelopment = process.env.NODE_ENV !== "production";
 let apiOrigin = "'self'";
 try {
   apiOrigin = new URL(publicApiUrl).origin;
@@ -19,7 +20,7 @@ const contentSecurityPolicy = [
   "font-src 'self' data:",
   "style-src 'self' 'unsafe-inline'",
   // Next.js em exportacao estatica injeta bootstrap inline; nonce exige middleware dinamico.
-  "script-src 'self' 'unsafe-inline'",
+  `script-src 'self' 'unsafe-inline'${isDevelopment ? " 'unsafe-eval'" : ""}`,
   `connect-src 'self' ${apiOrigin}`,
 ].join("; ");
 

@@ -6,6 +6,7 @@ import { logout, getStoredUser } from '@/lib/api'
 import type { AuthUser } from '@/types'
 
 const titles: Record<string, string> = {
+  '/classificacao': 'Central de Classificacao',
   '/':           'Todos os lançamentos',
   '/pendentes':  'Pendentes de classificação',
   '/relatorios': 'Relatórios',

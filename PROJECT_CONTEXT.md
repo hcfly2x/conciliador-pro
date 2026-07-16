@@ -15,7 +15,7 @@ A base historica e auxiliar: ela sugere categorias e subcategorias e pode ser vi
 - Banco de producao informado: Supabase/PostgreSQL.
 - Banco local alternativo: SQLite.
 - Build do frontend aprovado na auditoria de 15/07/2026.
-- Trinta e tres testes automatizados do backend aprovados na revisao de 15/07/2026.
+- Trinta e seis testes automatizados do backend aprovados na revisao de 15/07/2026.
 - A validacao completa dos seis tipos de documento ainda nao foi concluida.
 - A producao nao foi validada de ponta a ponta com autenticacao durante a auditoria.
 
@@ -55,9 +55,10 @@ A base historica e auxiliar: ela sugere categorias e subcategorias e pode ser vi
 - Bloqueio apos classificacao e desbloqueio administrativo.
 - Classificacao em lote.
 - Base historica separada dos lancamentos reais.
-- Sugestoes de categoria e subcategoria baseadas na base historica e nos lancamentos classificados.
+- Sugestoes Top 3 de categoria e subcategoria baseadas na base historica e nos lancamentos classificados, persistidas para consulta rapida.
 - O upload da base historica responde imediatamente e a importacao e o recalculo de vinculos rodam como jobs persistentes, sem manter a requisicao HTTP bloqueada.
-- A importacao historica exibe progresso por linhas e eventos; o calculo de sugestoes e iniciado separadamente por botao na tela Base Historica.
+- A importacao historica exibe progresso por linhas e eventos. O recalculo de vinculos historicos permanece separado, e o calculo de sugestoes de categoria e iniciado na Central de Classificacao, em modo incremental ou completo, com progresso e logs proprios.
+- A Central de Classificacao organiza filas de vinculos, sugestoes fortes ou fracas, sem evidencia, aguardando calculo, ignoradas e concluidas; permite salvar e avancar, atalhos, classificacao em lote e aplicacao confirmada a similares.
 - Vinculo entre registros da base historica e lancamentos reais.
 - Comparacao de vinculo com diferenca de data, diferenca de valor e similaridade de descricao explicitas.
 - Metadados de descricao em modo sombra preservam o texto original e extraem estabelecimento, metodo, contraparte e referencia sem alterar deduplicacao ou ranking oficial.
@@ -143,6 +144,7 @@ A base historica e auxiliar: ela sugere categorias e subcategorias e pode ser vi
 - Calcular categoria antes da subcategoria.
 - Condicionar as sugestoes de subcategoria a categoria.
 - Exibir as tres melhores sugestoes e suas justificativas.
+- Validar a nova Central de Classificacao em producao com os dados reais.
 - Criar metricas Top 1, Top 3 e calibracao.
 - Manter toda aplicacao de sugestao dependente de acao humana.
 - Ampliar testes de integracao.
