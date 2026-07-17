@@ -104,6 +104,15 @@ export interface Transaction {
   suggestion_confidence?: number
   suggestion_dismissed?: boolean
   suggestion_calculated_at?: string
+  reconciliation_id?: string | null
+  reconciliation_counterpart_id?: string | null
+  reconciliation_counterpart_date?: string | null
+  reconciliation_counterpart_description?: string
+  reconciliation_counterpart_amount?: number
+  reconciliation_counterpart_type?: TransactionType | null
+  reconciliation_counterpart_account_name?: string
+  reconciled_by?: string
+  reconciled_at?: string
 }
 
 export interface TransactionSummary {
@@ -134,6 +143,7 @@ export interface TransactionFilters {
   sort_order?: 'asc' | 'desc'
   classification_queue?: 'links' | 'suggestions' | 'none' | 'waiting' | 'dismissed' | 'classified'
   suggestion_strength?: 'strong' | 'weak'
+  reconciliation_status?: 'matched' | 'unmatched'
 }
 
 export interface PaginatedResponse<T> {

@@ -15,7 +15,7 @@ A base historica e auxiliar: ela sugere categorias e subcategorias e pode ser vi
 - Banco de producao informado: Supabase/PostgreSQL.
 - Banco local alternativo: SQLite.
 - Build do frontend aprovado na auditoria de 15/07/2026.
-- Trinta e seis testes automatizados do backend aprovados na revisao de 15/07/2026.
+- Trinta e oito testes automatizados do backend aprovados na revisao de 16/07/2026.
 - A validacao completa dos seis tipos de documento ainda nao foi concluida.
 - A producao nao foi validada de ponta a ponta com autenticacao durante a auditoria.
 
@@ -64,6 +64,7 @@ A base historica e auxiliar: ela sugere categorias e subcategorias e pode ser vi
 - Metadados de descricao em modo sombra preservam o texto original e extraem estabelecimento, metodo, contraparte e referencia sem alterar deduplicacao ou ranking oficial.
 - Agrupamento e propagacao de classificacao entre parcelas reconhecidas.
 - Relatorios de resumo, categoria e evolucao mensal.
+- Conciliacao manual e reversivel entre uma entrada e uma saida de mesmo valor, com comparacao lado a lado, auditoria e exclusao dos dois lancamentos dos totais e relatorios.
 - Contas correntes internas (`ledgers`) implementadas no codigo, mas ainda nao utilizadas pelo usuario.
 - Reset administrativo.
 
@@ -95,7 +96,9 @@ A base historica e auxiliar: ela sugere categorias e subcategorias e pode ser vi
 - Depois da classificacao, o lancamento fica bloqueado contra alteracoes acidentais.
 - Apenas administradores podem desbloquear um lancamento.
 - Relatorios devem considerar somente lancamentos reais.
-- Relatorios incluem todos os lancamentos reais, classificados ou pendentes, e excluem apenas duplicados e ignorados.
+- Relatorios incluem todos os lancamentos reais, classificados ou pendentes, e excluem duplicados, ignorados e os dois lados de conciliacoes manuais ativas.
+- Uma conciliacao exige confirmacao humana, uma entrada e uma saida de mesmo valor absoluto; nenhum lancamento pode pertencer a mais de uma conciliacao.
+- Conciliar nao apaga nem altera a classificacao dos lancamentos. Desfazer a conciliacao devolve imediatamente os dois valores aos totais e relatorios.
 - Excluir um documento do cofre nao exclui lancamentos sem uma segunda operacao e confirmacao explicitas.
 - Duplicados ja existentes no banco nunca podem ser reinseridos, nem por parametro interno da API.
 - Documentos originais devem permanecer disponiveis para uma eventual auditoria futura, mesmo que sejam consultados raramente.
@@ -125,6 +128,7 @@ A base historica e auxiliar: ela sugere categorias e subcategorias e pode ser vi
 - Contas correntes internas ficam estacionadas. Antes de evolui-las, deve-se avaliar se os relatorios atendem a necessidade.
 - Os documentos originais sao mantidos para auditoria eventual.
 - Alteracoes Git so sao publicadas com autorizacao explicita.
+- Transferencias entre contas podem ser conciliadas manualmente e de forma reversivel para nao distorcer receitas, despesas ou saldo.
 
 ## Tarefas pendentes confirmadas
 

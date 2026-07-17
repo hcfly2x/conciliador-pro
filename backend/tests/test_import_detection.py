@@ -328,6 +328,9 @@ class SuggestionJobTests(unittest.TestCase):
               justification TEXT,subcategories_json TEXT,calculated_at TEXT,
               PRIMARY KEY(transaction_id,rank)
             );
+            CREATE TABLE transaction_reconciliations(
+              id TEXT PRIMARY KEY,expense_transaction_id TEXT,income_transaction_id TEXT
+            );
             INSERT INTO categories VALUES ('food','ALIMENTACAO','expense');
             INSERT INTO subcategories VALUES ('market','MERCADO');
             INSERT INTO classification_history VALUES

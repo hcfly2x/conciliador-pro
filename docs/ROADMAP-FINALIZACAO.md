@@ -161,6 +161,10 @@ primeira versao com dados persistentes.
 
 ### Etapa 5 - Consolidar cofre, relatorios e escopo
 
+- [x] Implementar conciliacao manual e reversivel entre entrada e saida de mesmo
+      valor, preservando os lancamentos e excluindo o par dos totais.
+- [x] Exibir candidatos lado a lado, exigir confirmacao humana, impedir reuso do
+      mesmo lancamento e registrar criacao/desfazimento na auditoria.
 - [x] Implementar a UX de exclusao decidida na Etapa 0.
 - [x] Escolher Base64 no PostgreSQL ou armazenamento de objetos para os originais.
 - [ ] Testar upload, download, exclusao, cobertura e auditoria no destino escolhido.
@@ -217,7 +221,7 @@ primeira versao com dados persistentes.
 
 ## Verificacoes realizadas nesta revisao
 
-- 36 testes Python aprovados.
+- 38 testes Python aprovados.
 - Compilacao Python aprovada.
 - TypeScript sem erros.
 - Build de producao Next.js aprovado.
