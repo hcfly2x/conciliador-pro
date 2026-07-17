@@ -418,6 +418,34 @@ aplicam nem reexibem a sugestao automaticamente.
 
 ---
 
+## RECONCILIATIONS
+
+### GET /reconciliations
+
+Query: `?view=candidates|completed&search=texto`.
+
+- `candidates` retorna pares ainda livres com uma saida e uma entrada de mesmo
+  valor, ordenados pela proximidade das datas.
+- `completed` retorna conciliacoes confirmadas e seus dois lancamentos.
+
+### POST /reconciliations
+```json
+{
+  "expense_transaction_id": "uuid-saida",
+  "income_transaction_id": "uuid-entrada"
+}
+```
+
+Exige tipos opostos, mesmo valor em centavos e confirmacao humana na interface.
+Cada lancamento pode pertencer a somente uma conciliacao ativa.
+
+### POST /reconciliations/{id}/undo
+
+Desfaz o vinculo sem alterar ou apagar os lancamentos. Os dois valores voltam a
+compor totais e relatorios imediatamente.
+
+---
+
 ## REPORTS
 
 ### GET /reports/summary

@@ -73,6 +73,7 @@ PUBLIC_PATHS = {"/api/v1/health", "/api/v1/auth/login"}
 _COLLAB_WRITE_SUFFIXES = (
     "/classify", "/bulk-classify", "/flags", "/history-link", "/auth/logout",
     "/suggestions/jobs", "/suggestions/dismiss", "/suggestions/batch",
+    "/reconciliations", "/undo",
 )
 
 
@@ -1476,6 +1477,18 @@ def init_db() -> None:
         )
         conn.execute(
             """
+            CREATE TABLE IF NOT EXISTS transaction_reconciliations(
+              id TEXT PRIMARY KEY,
+              expense_transaction_id TEXT NOT NULL,
+              income_transaction_id TEXT NOT NULL,
+              amount REAL NOT NULL,
+              created_by TEXT NOT NULL DEFAULT '',
+              created_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
             CREATE TABLE IF NOT EXISTS installment_plans(
               id TEXT PRIMARY KEY,
               account_id TEXT NOT NULL,
@@ -1759,6 +1772,8 @@ def init_db() -> None:
         create_index_safely(conn, "idx_tx_installment_plan", "CREATE INDEX IF NOT EXISTS idx_tx_installment_plan ON transactions(installment_plan_id)")
         create_index_safely(conn, "idx_suggestion_state_status", "CREATE INDEX IF NOT EXISTS idx_suggestion_state_status ON transaction_suggestion_state(status,dismissed,best_confidence)")
         create_index_safely(conn, "idx_suggestions_category", "CREATE INDEX IF NOT EXISTS idx_suggestions_category ON transaction_suggestions(category_id,subcategory_id)")
+        create_index_safely(conn, "idx_reconciliation_expense", "CREATE UNIQUE INDEX IF NOT EXISTS idx_reconciliation_expense ON transaction_reconciliations(expense_transaction_id)")
+        create_index_safely(conn, "idx_reconciliation_income", "CREATE UNIQUE INDEX IF NOT EXISTS idx_reconciliation_income ON transaction_reconciliations(income_transaction_id)")
         create_index_safely(
             conn,
             "idx_suggestion_jobs_single_active",
@@ -3084,6 +3099,14 @@ def import_document(
         prev = conn.execute("SELECT id, imported_at, total_parsed FROM imported_files WHERE file_hash=?", (h,)).fetchone()
         if prev and int(prev[2] or 0) == 0:
             # Permite reprocessar arquivo que antes foi salvo sem lancamentos.
+            conn.execute(
+                """
+                DELETE FROM transaction_reconciliations
+                WHERE expense_transaction_id IN (SELECT id FROM transactions WHERE imported_file_id=?)
+                   OR income_transaction_id IN (SELECT id FROM transactions WHERE imported_file_id=?)
+                """,
+                (prev[0], prev[0]),
+            )
             conn.execute("DELETE FROM transactions WHERE imported_file_id=?", (prev[0],))
             conn.execute("DELETE FROM installment_plans WHERE id NOT IN (SELECT installment_plan_id FROM transactions WHERE installment_plan_id IS NOT NULL)")
             conn.execute("DELETE FROM imported_files WHERE id=?", (prev[0],))
@@ -3440,6 +3463,8 @@ def ledgers():
                        IFNULL(SUM(CASE WHEN t.type='expense' THEN t.amount ELSE 0 END),0)
                 FROM ledgers l
                 LEFT JOIN transactions t ON t.ledger_id=l.id AND t.status NOT IN ('duplicate','ignored')
+                  AND NOT EXISTS (SELECT 1 FROM transaction_reconciliations r
+                                  WHERE r.expense_transaction_id=t.id OR r.income_transaction_id=t.id)
                 WHERE l.is_active=1
                 GROUP BY l.id
                 ORDER BY l.name
@@ -4178,6 +4203,14 @@ def coverage_delete_file():
                 tx_deleted += int(conn.execute(
                     "SELECT COUNT(1) FROM transactions WHERE imported_file_id=?", (imported_id,)
                 ).fetchone()[0] or 0)
+                conn.execute(
+                    """
+                    DELETE FROM transaction_reconciliations
+                    WHERE expense_transaction_id IN (SELECT id FROM transactions WHERE imported_file_id=?)
+                       OR income_transaction_id IN (SELECT id FROM transactions WHERE imported_file_id=?)
+                    """,
+                    (imported_id, imported_id),
+                )
                 conn.execute("DELETE FROM transactions WHERE imported_file_id=?", (imported_id,))
                 conn.execute("DELETE FROM imported_files WHERE id=?", (imported_id,))
             if imported_ids:
@@ -4217,6 +4250,14 @@ def coverage_delete_file():
                 "SELECT COUNT(1) FROM transactions WHERE imported_file_id=?",
                 (imported_id,),
             ).fetchone()[0] or 0)
+            conn.execute(
+                """
+                DELETE FROM transaction_reconciliations
+                WHERE expense_transaction_id IN (SELECT id FROM transactions WHERE imported_file_id=?)
+                   OR income_transaction_id IN (SELECT id FROM transactions WHERE imported_file_id=?)
+                """,
+                (imported_id, imported_id),
+            )
             conn.execute("DELETE FROM transactions WHERE imported_file_id=?", (imported_id,))
             conn.execute("DELETE FROM installment_plans WHERE id NOT IN (SELECT installment_plan_id FROM transactions WHERE installment_plan_id IS NOT NULL)")
             conn.execute("DELETE FROM imported_files WHERE id=?", (imported_id,))
@@ -4266,6 +4307,7 @@ def system_reset():
         conn.execute("DELETE FROM transaction_suggestions")
         conn.execute("DELETE FROM transaction_suggestion_state")
         conn.execute("DELETE FROM suggestion_jobs")
+        conn.execute("DELETE FROM transaction_reconciliations")
         conn.execute("DELETE FROM transactions")
         conn.execute("DELETE FROM installment_plans")
         conn.execute("DELETE FROM import_previews")
@@ -4656,6 +4698,11 @@ def transactions():
         where.append("t.subcategory_id=?")
         params.append(subcategory_id)
     classification_queue = (request.args.get("classification_queue") or "").strip().lower()
+    if classification_queue:
+        where.append(
+            "NOT EXISTS (SELECT 1 FROM transaction_reconciliations qr "
+            "WHERE qr.expense_transaction_id=t.id OR qr.income_transaction_id=t.id)"
+        )
     if classification_queue == "links":
         where.extend([
             "t.category_id IS NULL",
@@ -4699,6 +4746,17 @@ def transactions():
         where.append("EXISTS (SELECT 1 FROM transaction_suggestion_state qf WHERE qf.transaction_id=t.id AND qf.best_confidence>=70)")
     elif suggestion_strength == "weak":
         where.append("EXISTS (SELECT 1 FROM transaction_suggestion_state qf WHERE qf.transaction_id=t.id AND qf.best_confidence>0 AND qf.best_confidence<70)")
+    reconciliation_status = (request.args.get("reconciliation_status") or "").strip().lower()
+    if reconciliation_status == "matched":
+        where.append(
+            "EXISTS (SELECT 1 FROM transaction_reconciliations rf "
+            "WHERE rf.expense_transaction_id=t.id OR rf.income_transaction_id=t.id)"
+        )
+    elif reconciliation_status == "unmatched":
+        where.append(
+            "NOT EXISTS (SELECT 1 FROM transaction_reconciliations rf "
+            "WHERE rf.expense_transaction_id=t.id OR rf.income_transaction_id=t.id)"
+        )
     is_installment = (request.args.get("is_installment") or "").strip().lower()
     if is_installment in {"1", "true", "yes", "sim"}:
         where.append("t.installment_current IS NOT NULL AND t.installment_total IS NOT NULL")
@@ -4794,7 +4852,8 @@ def transactions():
                    t.merchant_norm,t.transaction_method,t.counterparty_name,t.bank_reference,
                    hm.category_id,hm.subcategory_id,
                    COALESCE(tss.status,'pending'),COALESCE(tss.suggestion_count,0),
-                   COALESCE(tss.best_confidence,0),COALESCE(tss.dismissed,0),tss.calculated_at
+                   COALESCE(tss.best_confidence,0),COALESCE(tss.dismissed,0),tss.calculated_at,
+                   tr.id,rt.id,rt.date,rt.description,rt.amount,rt.type,ra.name,tr.created_by,tr.created_at
             FROM transactions t
             JOIN accounts a ON a.id=t.account_id
             LEFT JOIN installment_plans p ON p.id=t.installment_plan_id
@@ -4808,6 +4867,12 @@ def transactions():
             LEFT JOIN categories hc ON hc.id=hm.category_id
             LEFT JOIN subcategories hs ON hs.id=hm.subcategory_id
             LEFT JOIN transaction_suggestion_state tss ON tss.transaction_id=t.id
+            LEFT JOIN transaction_reconciliations tr
+              ON tr.expense_transaction_id=t.id OR tr.income_transaction_id=t.id
+            LEFT JOIN transactions rt
+              ON rt.id=CASE WHEN tr.expense_transaction_id=t.id
+                            THEN tr.income_transaction_id ELSE tr.expense_transaction_id END
+            LEFT JOIN accounts ra ON ra.id=rt.account_id
             WHERE {' AND '.join(where)}
             ORDER BY {order_by} {order}
             LIMIT ? OFFSET ?
@@ -4817,10 +4882,22 @@ def transactions():
 
         sum_row = conn.execute(
             f"""
-            SELECT IFNULL(SUM(CASE WHEN t.type='income' THEN t.amount ELSE 0 END),0),
-                   IFNULL(SUM(CASE WHEN t.type='expense' THEN t.amount ELSE 0 END),0),
-                   SUM(CASE WHEN t.status='pending' THEN 1 ELSE 0 END),
-                   SUM(CASE WHEN t.status='reconciled' THEN 1 ELSE 0 END)
+            SELECT IFNULL(SUM(CASE WHEN t.type='income' AND NOT EXISTS (
+                                      SELECT 1 FROM transaction_reconciliations rx
+                                      WHERE rx.expense_transaction_id=t.id OR rx.income_transaction_id=t.id
+                                    ) THEN t.amount ELSE 0 END),0),
+                   IFNULL(SUM(CASE WHEN t.type='expense' AND NOT EXISTS (
+                                      SELECT 1 FROM transaction_reconciliations rx
+                                      WHERE rx.expense_transaction_id=t.id OR rx.income_transaction_id=t.id
+                                    ) THEN t.amount ELSE 0 END),0),
+                   SUM(CASE WHEN t.status='pending' AND NOT EXISTS (
+                                  SELECT 1 FROM transaction_reconciliations rx
+                                  WHERE rx.expense_transaction_id=t.id OR rx.income_transaction_id=t.id
+                                ) THEN 1 ELSE 0 END),
+                   SUM(CASE WHEN t.status='reconciled' AND NOT EXISTS (
+                                  SELECT 1 FROM transaction_reconciliations rx
+                                  WHERE rx.expense_transaction_id=t.id OR rx.income_transaction_id=t.id
+                                ) THEN 1 ELSE 0 END)
             FROM transactions t
             JOIN accounts a ON a.id=t.account_id
             LEFT JOIN categories c ON c.id=t.category_id
@@ -4899,6 +4976,15 @@ def transactions():
             "suggestion_confidence": float(r[56] or 0.0),
             "suggestion_dismissed": bool(r[57]),
             "suggestion_calculated_at": r[58] or "",
+            "reconciliation_id": r[59],
+            "reconciliation_counterpart_id": r[60],
+            "reconciliation_counterpart_date": r[61],
+            "reconciliation_counterpart_description": r[62] or "",
+            "reconciliation_counterpart_amount": float(r[63] or 0.0),
+            "reconciliation_counterpart_type": r[64],
+            "reconciliation_counterpart_account_name": r[65] or "",
+            "reconciled_by": r[66] or "",
+            "reconciled_at": r[67] or "",
         }
         item.update(historical_match_factors(r[1], r[4], r[3], r[29], r[31], r[30]))
         items.append(item)
@@ -5310,6 +5396,8 @@ def _run_suggestion_job(job_id: str, full: bool = False, batch_size: int = 20) -
                 LEFT JOIN transaction_suggestion_state qs ON qs.transaction_id=t.id
                 WHERE t.category_id IS NULL AND t.locked=0 AND t.status='pending'
                   AND NOT (t.history_match_id IS NOT NULL AND t.history_match_confirmed=0 AND t.identity_score>=?)
+                  AND NOT EXISTS (SELECT 1 FROM transaction_reconciliations r
+                                  WHERE r.expense_transaction_id=t.id OR r.income_transaction_id=t.id)
                 ORDER BY t.date DESC,t.id
                 """,
                 (HISTORY_LINK_CANDIDATE_THRESHOLD,),
@@ -5537,6 +5625,8 @@ def suggestion_summary():
               SUM(CASE WHEN t.category_id IS NOT NULL THEN 1 ELSE 0 END)
             FROM transactions t
             LEFT JOIN transaction_suggestion_state qs ON qs.transaction_id=t.id
+            WHERE NOT EXISTS (SELECT 1 FROM transaction_reconciliations r
+                              WHERE r.expense_transaction_id=t.id OR r.income_transaction_id=t.id)
             """,
             (HISTORY_LINK_CANDIDATE_THRESHOLD, HISTORY_LINK_CANDIDATE_THRESHOLD),
         ).fetchone()
@@ -6015,6 +6105,169 @@ def bulk_classify():
     return jsonify({"updated": updated, "skipped_locked": len(locked_ids)})
 
 
+def _reconciliation_tx_payload(row: Any, offset: int) -> dict[str, Any]:
+    return {
+        "id": row[offset], "date": row[offset + 1], "description": row[offset + 2],
+        "amount": float(row[offset + 3] or 0), "type": row[offset + 4],
+        "account_id": row[offset + 5], "account_name": row[offset + 6] or "",
+        "status": row[offset + 7],
+    }
+
+
+@app.route("/api/v1/reconciliations")
+def reconciliations():
+    view = (request.args.get("view") or "candidates").strip().lower()
+    search = (request.args.get("search") or "").strip().lower()
+    with db_connect() as conn:
+        if view == "completed":
+            params: list[Any] = []
+            search_sql = ""
+            if search:
+                search_sql = "AND (LOWER(e.description) LIKE ? OR LOWER(i.description) LIKE ? OR LOWER(ea.name) LIKE ? OR LOWER(ia.name) LIKE ?)"
+                term = f"%{search}%"
+                params.extend([term, term, term, term])
+            rows = conn.execute(
+                f"""
+                SELECT r.id,r.amount,r.created_by,r.created_at,
+                       e.id,e.date,e.description,e.amount,e.type,e.account_id,ea.name,e.status,
+                       i.id,i.date,i.description,i.amount,i.type,i.account_id,ia.name,i.status
+                FROM transaction_reconciliations r
+                JOIN transactions e ON e.id=r.expense_transaction_id
+                JOIN accounts ea ON ea.id=e.account_id
+                JOIN transactions i ON i.id=r.income_transaction_id
+                JOIN accounts ia ON ia.id=i.account_id
+                WHERE 1=1 {search_sql}
+                ORDER BY r.created_at DESC
+                LIMIT 200
+                """,
+                params,
+            ).fetchall()
+            return jsonify({"items": [{
+                "id": row[0], "amount": float(row[1] or 0), "created_by": row[2] or "",
+                "created_at": row[3], "expense": _reconciliation_tx_payload(row, 4),
+                "income": _reconciliation_tx_payload(row, 12),
+            } for row in rows]})
+
+        params = []
+        search_sql = ""
+        if search:
+            search_sql = "AND (LOWER(e.description) LIKE ? OR LOWER(i.description) LIKE ? OR LOWER(ea.name) LIKE ? OR LOWER(ia.name) LIKE ?)"
+            term = f"%{search}%"
+            params.extend([term, term, term, term])
+        rows = conn.execute(
+            f"""
+            SELECT e.id,e.date,e.description,e.amount,e.type,e.account_id,ea.name,e.status,
+                   i.id,i.date,i.description,i.amount,i.type,i.account_id,ia.name,i.status
+            FROM transactions e
+            JOIN accounts ea ON ea.id=e.account_id
+            JOIN transactions i
+              ON i.type='income' AND ABS(ABS(e.amount)-ABS(i.amount))<0.005
+            JOIN accounts ia ON ia.id=i.account_id
+            WHERE e.type='expense'
+              AND e.status NOT IN ('duplicate','ignored')
+              AND i.status NOT IN ('duplicate','ignored')
+              AND NOT EXISTS (
+                SELECT 1 FROM transaction_reconciliations r
+                WHERE r.expense_transaction_id=e.id OR r.income_transaction_id=e.id
+                   OR r.expense_transaction_id=i.id OR r.income_transaction_id=i.id
+              )
+              {search_sql}
+            ORDER BY e.date DESC,i.date DESC
+            LIMIT 500
+            """,
+            params,
+        ).fetchall()
+    candidates = []
+    for row in rows:
+        expense = _reconciliation_tx_payload(row, 0)
+        income = _reconciliation_tx_payload(row, 8)
+        try:
+            date_difference = abs((dt.date.fromisoformat(expense["date"][:10]) - dt.date.fromisoformat(income["date"][:10])).days)
+        except (TypeError, ValueError):
+            date_difference = 999999
+        candidates.append({
+            "expense": expense, "income": income, "amount": abs(expense["amount"]),
+            "date_difference_days": date_difference,
+        })
+    candidates.sort(key=lambda item: (item["date_difference_days"], -item["amount"]))
+    return jsonify({"items": candidates[:100]})
+
+
+@app.route("/api/v1/reconciliations", methods=["POST"])
+def create_reconciliation():
+    data = request.get_json(force=True) or {}
+    expense_id = (data.get("expense_transaction_id") or "").strip()
+    income_id = (data.get("income_transaction_id") or "").strip()
+    if not expense_id or not income_id or expense_id == income_id:
+        return jsonify({"detail": "Escolha uma entrada e uma saida", "code": "VALIDATION_ERROR"}), 400
+    with db_connect() as conn:
+        rows = conn.execute(
+            "SELECT id,amount,type,status FROM transactions WHERE id IN (?,?)",
+            (expense_id, income_id),
+        ).fetchall()
+        by_id = {row[0]: row for row in rows}
+        expense = by_id.get(expense_id)
+        income = by_id.get(income_id)
+        if not expense or not income:
+            return jsonify({"detail": "Lancamento nao encontrado", "code": "NOT_FOUND"}), 404
+        if expense[2] != "expense" or income[2] != "income":
+            return jsonify({"detail": "O par deve conter uma saida e uma entrada", "code": "TYPE_MISMATCH"}), 400
+        if expense[3] in ("duplicate", "ignored") or income[3] in ("duplicate", "ignored"):
+            return jsonify({"detail": "Duplicados ou ignorados nao podem ser conciliados", "code": "INVALID_STATUS"}), 409
+        expense_cents = int(round(abs(float(expense[1])) * 100))
+        income_cents = int(round(abs(float(income[1])) * 100))
+        if expense_cents != income_cents:
+            return jsonify({"detail": "Entrada e saida precisam ter o mesmo valor", "code": "AMOUNT_MISMATCH"}), 400
+        existing = conn.execute(
+            """
+            SELECT id FROM transaction_reconciliations
+            WHERE expense_transaction_id IN (?,?) OR income_transaction_id IN (?,?)
+            """,
+            (expense_id, income_id, expense_id, income_id),
+        ).fetchone()
+        if existing:
+            return jsonify({"detail": "Um dos lancamentos ja esta conciliado", "code": "ALREADY_RECONCILED"}), 409
+        reconciliation_id = str(uuid.uuid4())
+        now = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
+        user = current_user()
+        try:
+            conn.execute(
+                """
+                INSERT INTO transaction_reconciliations(
+                  id,expense_transaction_id,income_transaction_id,amount,created_by,created_at
+                ) VALUES (?,?,?,?,?,?)
+                """,
+                (reconciliation_id, expense_id, income_id, expense_cents / 100, user.get("username") or "", now),
+            )
+        except Exception:
+            conn.rollback()
+            return jsonify({"detail": "Um dos lancamentos acabou de ser conciliado", "code": "ALREADY_RECONCILED"}), 409
+        record_audit(
+            user, "create_reconciliation", "reconciliation", reconciliation_id,
+            detail=f"expense={expense_id}; income={income_id}; amount={expense_cents / 100:.2f}", conn=conn,
+        )
+    return jsonify({"id": reconciliation_id, "expense_transaction_id": expense_id,
+                    "income_transaction_id": income_id, "amount": expense_cents / 100,
+                    "created_at": now}), 201
+
+
+@app.route("/api/v1/reconciliations/<reconciliation_id>/undo", methods=["POST"])
+def undo_reconciliation(reconciliation_id: str):
+    with db_connect() as conn:
+        row = conn.execute(
+            "SELECT expense_transaction_id,income_transaction_id,amount FROM transaction_reconciliations WHERE id=?",
+            (reconciliation_id,),
+        ).fetchone()
+        if not row:
+            return jsonify({"detail": "Conciliacao nao encontrada", "code": "NOT_FOUND"}), 404
+        conn.execute("DELETE FROM transaction_reconciliations WHERE id=?", (reconciliation_id,))
+        record_audit(
+            current_user(), "undo_reconciliation", "reconciliation", reconciliation_id,
+            detail=f"expense={row[0]}; income={row[1]}; amount={float(row[2] or 0):.2f}", conn=conn,
+        )
+    return jsonify({"id": reconciliation_id, "ok": True})
+
+
 @app.route("/api/v1/transactions/months")
 def months():
     with db_connect() as conn:
@@ -6026,10 +6279,14 @@ def months():
 def report_summary():
     competence_month = (request.args.get("competence_month") or "").strip()
     if competence_month:
-        where = "WHERE competence_month=? AND status NOT IN ('duplicate','ignored')"
+        where = """WHERE competence_month=? AND status NOT IN ('duplicate','ignored')
+                   AND NOT EXISTS (SELECT 1 FROM transaction_reconciliations r
+                                   WHERE r.expense_transaction_id=transactions.id OR r.income_transaction_id=transactions.id)"""
         params: list[Any] = [competence_month]
     else:
-        where = "WHERE status NOT IN ('duplicate','ignored')"
+        where = """WHERE status NOT IN ('duplicate','ignored')
+                   AND NOT EXISTS (SELECT 1 FROM transaction_reconciliations r
+                                   WHERE r.expense_transaction_id=transactions.id OR r.income_transaction_id=transactions.id)"""
         params: list[Any] = []
     with db_connect() as conn:
         row = conn.execute(
@@ -6062,7 +6319,10 @@ def report_summary():
 def report_by_category():
     tx_type = (request.args.get("type") or "expense").strip()
     competence_month = (request.args.get("competence_month") or "").strip()
-    where = ["t.type=?", "t.status NOT IN ('duplicate','ignored')"]
+    where = [
+        "t.type=?", "t.status NOT IN ('duplicate','ignored')",
+        "NOT EXISTS (SELECT 1 FROM transaction_reconciliations r WHERE r.expense_transaction_id=t.id OR r.income_transaction_id=t.id)",
+    ]
     params: list[Any] = [tx_type]
     if competence_month:
         where.append("t.competence_month=?")
@@ -6109,6 +6369,8 @@ def report_monthly():
                    COUNT(1)
             FROM transactions
             WHERE status NOT IN ('duplicate','ignored')
+              AND NOT EXISTS (SELECT 1 FROM transaction_reconciliations r
+                              WHERE r.expense_transaction_id=transactions.id OR r.income_transaction_id=transactions.id)
             GROUP BY competence_month
             ORDER BY competence_month DESC
             """

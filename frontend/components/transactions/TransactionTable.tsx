@@ -22,6 +22,7 @@ interface Props {
   defaultLedgerId?: string
   moveTargetLedgerId?: string
   moveTargetLedgerName?: string
+  defaultReconciliationStatus?: 'matched' | 'unmatched'
 }
 
 const TAG_OPTIONS = [
@@ -59,6 +60,7 @@ export default function TransactionTable({
   defaultLedgerId = 'none',
   moveTargetLedgerId = '',
   moveTargetLedgerName = '',
+  defaultReconciliationStatus,
 }: Props) {
   const { months, accounts, categories, subcategories, addToast, refreshKey, bumpRefresh } = useStore()
   const [txs, setTxs] = useState<Transaction[]>([])
@@ -226,6 +228,7 @@ export default function TransactionTable({
         ...(subcategoryFilter && { subcategory_id: subcategoryFilter }),
         ...(installmentFilter && { is_installment: installmentFilter }),
         ...(tagFilters.length && { tags: tagFilters.join(','), tag_mode: tagMode }),
+        ...(defaultReconciliationStatus && { reconciliation_status: defaultReconciliationStatus }),
         ledger_id: defaultLedgerId,
         sort_by: sortBy, sort_order: sortOrder,
       }
@@ -240,14 +243,14 @@ export default function TransactionTable({
     } finally {
       setLoading(false)
     }
-  }, [search, statusFilter, typeFilter, monthFilter, dateFrom, dateTo, accountFilter, categoryFilter, subcategoryFilter, installmentFilter, tagFilters, tagMode, sortBy, sortOrder, pageSize, defaultLedgerId])
+  }, [search, statusFilter, typeFilter, monthFilter, dateFrom, dateTo, accountFilter, categoryFilter, subcategoryFilter, installmentFilter, tagFilters, tagMode, sortBy, sortOrder, pageSize, defaultLedgerId, defaultReconciliationStatus])
 
-  useEffect(() => { load(1) }, [search, statusFilter, typeFilter, monthFilter, dateFrom, dateTo, accountFilter, categoryFilter, subcategoryFilter, installmentFilter, tagFilters, tagMode, sortBy, sortOrder, pageSize, refreshKey, defaultLedgerId])
+  useEffect(() => { load(1) }, [search, statusFilter, typeFilter, monthFilter, dateFrom, dateTo, accountFilter, categoryFilter, subcategoryFilter, installmentFilter, tagFilters, tagMode, sortBy, sortOrder, pageSize, refreshKey, defaultLedgerId, defaultReconciliationStatus])
   useEffect(() => {
     getLedgers().then(setLedgers).catch(() => undefined)
   }, [refreshKey])
   useEffect(() => {
-    const needingSuggestions = txs.filter(tx => !tx.locked && !tx.category_id)
+    const needingSuggestions = txs.filter(tx => !tx.locked && !tx.category_id && !tx.reconciliation_id)
     if (!needingSuggestions.length) return
 
     let cancelled = false
@@ -524,9 +527,11 @@ export default function TransactionTable({
               {loading && <tr><td colSpan={9} className="text-center py-12 text-[#5a5f73]"><div className="inline-block w-5 h-5 border-2 border-[#22273a] border-t-[#c9a84c] rounded-full animate-spin" /></td></tr>}
               {!loading && txs.length === 0 && <tr><td colSpan={9} className="text-center py-12 text-[#5a5f73]">Nenhum lancamento encontrado</td></tr>}
               {!loading && txs.map(tx => {
-                const st = tx.history_match_confirmed
-                  ? { label: 'Vinculado', bg: 'rgba(96,165,250,0.12)', color: '#60a5fa' }
-                  : (STATUS_STYLES[tx.status] || STATUS_STYLES.pending)
+                const st = tx.reconciliation_id
+                  ? { label: 'Conciliado', bg: 'rgba(167,139,250,0.14)', color: '#c4b5fd' }
+                  : tx.history_match_confirmed
+                    ? { label: 'Vinculado', bg: 'rgba(96,165,250,0.12)', color: '#60a5fa' }
+                    : (STATUS_STYLES[tx.status] || STATUS_STYLES.pending)
                 return (
                   <tr key={tx.id} style={{ borderBottom: '1px solid rgba(255,255,255,0.04)' }} className="hover:brightness-110 transition-all">
                     <td className="px-3 py-2.5"><input type="checkbox" checked={selected.has(tx.id)} onChange={() => toggleOne(tx.id)} className="cursor-pointer" /></td>
@@ -536,6 +541,11 @@ export default function TransactionTable({
                       {!!tx.merchant_norm && (
                         <span className="mt-0.5 block truncate text-[10px] text-[#5a5f73]" title="Metadado em modo sombra">
                           {tx.transaction_method || 'other'} · {tx.merchant_norm}
+                        </span>
+                      )}
+                      {!!tx.reconciliation_id && (
+                        <span className="mt-1 block truncate text-[10px] text-violet-300" title={tx.reconciliation_counterpart_description}>
+                          Conciliado com {tx.reconciliation_counterpart_account_name}: {tx.reconciliation_counterpart_description}
                         </span>
                       )}
                     </td>
@@ -564,7 +574,7 @@ export default function TransactionTable({
                       )}
                     </td>
                     <td className="px-3 py-2.5">
-                      {!tx.locked && !rowDraft[tx.id]?.category_id && (() => {
+                      {!tx.locked && !tx.reconciliation_id && !rowDraft[tx.id]?.category_id && (() => {
                         const suggestions = rowSuggestions[tx.id]
                         if (suggestions && suggestions.length > 0) {
                           return (
@@ -631,7 +641,7 @@ export default function TransactionTable({
                         className="h-8 w-[190px] rounded-md px-2 text-xs text-[#e8eaf0] outline-none disabled:opacity-45 disabled:cursor-not-allowed"
                         style={{ background: '#1a1e28', border: '1px solid rgba(255,255,255,0.12)' }}
                         value={rowDraft[tx.id]?.category_id || ''}
-                        disabled={!!tx.locked}
+                        disabled={!!tx.locked || !!tx.reconciliation_id}
                         onChange={(e) => patchRowDraft(tx, { category_id: e.target.value, subcategory_id: '' })}
                       >
                         <option value="">Selecionar...</option>
@@ -646,7 +656,7 @@ export default function TransactionTable({
                       </select>
                     </td>
                     <td className="px-3 py-2.5">
-                      {!tx.locked && !rowDraft[tx.id]?.subcategory_id && (() => {
+                      {!tx.locked && !tx.reconciliation_id && !rowDraft[tx.id]?.subcategory_id && (() => {
                         const subSuggestions = (rowSuggestions[tx.id] || [])
                           .filter(sg => sg.category_id === rowDraft[tx.id]?.category_id)
                           .filter(sg => !!sg.subcategory_id && !!sg.subcategory_name)
@@ -678,7 +688,7 @@ export default function TransactionTable({
                         className="h-8 w-[170px] rounded-md px-2 text-xs text-[#e8eaf0] outline-none disabled:opacity-45 disabled:cursor-not-allowed"
                         style={{ background: '#1a1e28', border: '1px solid rgba(255,255,255,0.12)' }}
                         value={rowDraft[tx.id]?.subcategory_id || ''}
-                        disabled={!!tx.locked}
+                        disabled={!!tx.locked || !!tx.reconciliation_id}
                         onChange={(e) => patchRowDraft(tx, { subcategory_id: e.target.value })}
                       >
                         <option value="">Sem subcategoria</option>
@@ -697,7 +707,7 @@ export default function TransactionTable({
                         className="h-8 w-[180px] rounded-md px-2 text-xs text-[#e8eaf0] outline-none disabled:opacity-45 disabled:cursor-not-allowed"
                         style={{ background: '#1a1e28', border: '1px solid rgba(255,255,255,0.12)' }}
                         value={rowDraft[tx.id]?.notes || ''}
-                        disabled={!!tx.locked}
+                        disabled={!!tx.locked || !!tx.reconciliation_id}
                         onChange={(e) => {
                           const val = e.target.value
                           setRowDraft(s => ({ ...s, [tx.id]: { ...(s[tx.id] || { category_id: '', subcategory_id: '', notes: '' }), notes: val } }))
@@ -721,7 +731,7 @@ export default function TransactionTable({
                             Possivel vinculo {Number(tx.identity_score || 0).toFixed(0)}%
                           </button>
                         )}
-                        {!tx.locked && (
+                        {!tx.locked && !tx.reconciliation_id && (
                           <button
                             type="button"
                             onClick={() => saveRow(tx)}

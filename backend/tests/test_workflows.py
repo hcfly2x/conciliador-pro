@@ -219,5 +219,92 @@ class ClassificationQueueIntegrationTests(unittest.TestCase):
         self.assertEqual(batch.get_json()["items"]["target"][0]["category_id"], "food")
 
 
+class ReconciliationIntegrationTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.conn = sqlite3.connect(":memory:")
+        self.original_db_connect = app.db_connect
+        self.original_auth_disabled = app.auth_mod.AUTH_DISABLED
+        app.db_connect = lambda *args, **kwargs: self.conn
+        app.auth_mod.AUTH_DISABLED = True
+        app.init_db()
+        self.conn.execute(
+            """
+            CREATE TABLE audit_log(
+              id TEXT, user_id TEXT, username TEXT, action TEXT, entity TEXT,
+              entity_id TEXT, field TEXT, old_value TEXT, new_value TEXT,
+              detail TEXT, created_at TEXT
+            )
+            """
+        )
+        self.client = app.app.test_client()
+        self.conn.execute(
+            "INSERT INTO accounts(id,name,type,color,is_active,created_at) VALUES ('bank-a','BANCO A','checking','#000',1,'2026-01-01')"
+        )
+        self.conn.execute(
+            "INSERT INTO accounts(id,name,type,color,is_active,created_at) VALUES ('bank-b','BANCO B','checking','#111',1,'2026-01-01')"
+        )
+        self.conn.execute(
+            """
+            INSERT INTO transactions(
+              id,tx_key,date,competence_month,description,description_norm,amount,type,status,
+              account_id,imported_file_id,locked
+            ) VALUES
+              ('expense','expense-key','2026-01-10','2026/01','TRANSFERENCIA ENVIADA','transferencia enviada',-250,'expense','pending','bank-a','file-a',0),
+              ('income','income-key','2026-01-11','2026/01','TRANSFERENCIA RECEBIDA','transferencia recebida',250,'income','pending','bank-b','file-b',0),
+              ('other-income','other-key','2026-01-12','2026/01','OUTRA ENTRADA','outra entrada',200,'income','pending','bank-b','file-b',0)
+            """
+        )
+
+    def tearDown(self) -> None:
+        app.db_connect = self.original_db_connect
+        app.auth_mod.AUTH_DISABLED = self.original_auth_disabled
+        self.conn.close()
+
+    def test_manual_pair_is_excluded_from_reports_and_can_be_undone(self) -> None:
+        candidates = self.client.get("/api/v1/reconciliations?view=candidates")
+        created = self.client.post("/api/v1/reconciliations", json={
+            "expense_transaction_id": "expense", "income_transaction_id": "income",
+        })
+        report_after = self.client.get("/api/v1/reports/summary?competence_month=2026/01")
+        transactions_after = self.client.get("/api/v1/transactions?ledger_id=all")
+        duplicate = self.client.post("/api/v1/reconciliations", json={
+            "expense_transaction_id": "expense", "income_transaction_id": "income",
+        })
+        reconciliation_id = created.get_json()["id"]
+        undone = self.client.post(f"/api/v1/reconciliations/{reconciliation_id}/undo", json={})
+        report_restored = self.client.get("/api/v1/reports/summary?competence_month=2026/01")
+
+        self.assertEqual(candidates.status_code, 200)
+        self.assertEqual(len(candidates.get_json()["items"]), 1)
+        self.assertEqual(created.status_code, 201)
+        self.assertEqual(report_after.get_json()["total_income"], 200)
+        self.assertEqual(report_after.get_json()["total_expense"], 0)
+        paired_items = {
+            item["id"]: item for item in transactions_after.get_json()["items"]
+            if item["id"] in {"expense", "income"}
+        }
+        self.assertEqual(paired_items["expense"]["reconciliation_id"], reconciliation_id)
+        self.assertEqual(paired_items["expense"]["reconciliation_counterpart_id"], "income")
+        self.assertEqual(paired_items["income"]["reconciliation_counterpart_id"], "expense")
+        self.assertEqual(transactions_after.get_json()["summary"]["total_income"], 200)
+        self.assertEqual(duplicate.status_code, 409)
+        self.assertEqual(undone.status_code, 200)
+        self.assertEqual(report_restored.get_json()["total_income"], 450)
+        self.assertEqual(report_restored.get_json()["total_expense"], -250)
+
+    def test_reconciliation_requires_opposite_types_and_equal_amounts(self) -> None:
+        mismatch = self.client.post("/api/v1/reconciliations", json={
+            "expense_transaction_id": "expense", "income_transaction_id": "other-income",
+        })
+        inverted = self.client.post("/api/v1/reconciliations", json={
+            "expense_transaction_id": "income", "income_transaction_id": "expense",
+        })
+
+        self.assertEqual(mismatch.status_code, 400)
+        self.assertEqual(mismatch.get_json()["code"], "AMOUNT_MISMATCH")
+        self.assertEqual(inverted.status_code, 400)
+        self.assertEqual(inverted.get_json()["code"], "TYPE_MISMATCH")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -426,6 +426,48 @@ export async function getMonths(): Promise<string[]> {
   return http<string[]>('GET', '/transactions/months')
 }
 
+export interface ReconciliationTransaction {
+  id: string
+  date: string
+  description: string
+  amount: number
+  type: 'income' | 'expense'
+  account_id: string
+  account_name: string
+  status: string
+}
+
+export interface ReconciliationCandidate {
+  expense: ReconciliationTransaction
+  income: ReconciliationTransaction
+  amount: number
+  date_difference_days: number
+}
+
+export interface ReconciliationRecord {
+  id: string
+  expense: ReconciliationTransaction
+  income: ReconciliationTransaction
+  amount: number
+  created_by: string
+  created_at: string
+}
+
+export async function getReconciliations(view: 'candidates' | 'completed', search = ''): Promise<{ items: Array<ReconciliationCandidate | ReconciliationRecord> }> {
+  if (USE_MOCK) { await delay(); return { items: [] } }
+  const params = new URLSearchParams({ view })
+  if (search) params.set('search', search)
+  return http('GET', `/reconciliations?${params}`)
+}
+
+export async function createReconciliation(expense_transaction_id: string, income_transaction_id: string): Promise<{ id: string }> {
+  return http('POST', '/reconciliations', { expense_transaction_id, income_transaction_id })
+}
+
+export async function undoReconciliation(id: string): Promise<{ id: string; ok: boolean }> {
+  return http('POST', `/reconciliations/${id}/undo`, {})
+}
+
 // Importacao sempre usa preview e confirmacao.
 export async function previewImportFile(file: File, account_id?: string): Promise<ImportPreviewResult> {
   if (USE_MOCK) {

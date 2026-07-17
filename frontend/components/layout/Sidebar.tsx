@@ -2,7 +2,7 @@
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { useEffect, useState } from 'react'
-import { LayoutList, Clock, BarChart2, Tag, Upload, CreditCard, AlertTriangle, Database, FolderOpen, WalletCards, Settings, Sparkles } from 'lucide-react'
+import { LayoutList, Clock, BarChart2, Tag, Upload, CreditCard, AlertTriangle, Database, FolderOpen, WalletCards, Settings, Sparkles, ArrowRightLeft } from 'lucide-react'
 import { useStore } from '@/store/app'
 import { isAdmin } from '@/lib/api'
 import { getLedgers } from '@/lib/api'
@@ -13,6 +13,7 @@ const nav = [
   { href: '/',           label: 'Lançamentos', icon: LayoutList, section: 'principal' },
   { href: '/pendentes',  label: 'Pendentes',   icon: Clock,      section: 'principal', badge: 'pending' },
   { href: '/classificacao', label: 'Central de Classificacao', icon: Sparkles, section: 'principal' },
+  { href: '/conciliacao', label: 'Conciliacao', icon: ArrowRightLeft, section: 'principal' },
   { href: '/relatorios', label: 'Relatórios',  icon: BarChart2,  section: 'principal' },
   { href: '/importar',   label: 'Importar',    icon: Upload,     section: 'importacao' },
   { href: '/arquivos',   label: 'Cofre Arquivos', icon: FolderOpen, section: 'importacao' },
