@@ -1960,9 +1960,9 @@ def detect_document_identity(path: Path, sample_text: str | None = None) -> dict
     if "nubank" in content:
         add_bank("NUBANK", 5, "Conteudo identifica Nubank")
 
-    if any(term in filename for term in ("cartao", "fatura")):
+    if any(term in filename for term in ("cartao", "fatura", "card")):
         add_kind("credit_card", 5, "Nome indica fatura de cartao")
-    if "extrato" in filename:
+    if "extrato" in filename or "statement" in filename:
         add_kind("checking", 5, "Nome indica extrato de conta")
 
     card_markers = (
@@ -1975,6 +1975,7 @@ def detect_document_identity(path: Path, sample_text: str | None = None) -> dict
     )
     statement_markers = (
         "extrato consolidado",
+        "extrato de",
         "conta corrente",
         "saldo em",
         "saldo anterior",
@@ -3097,6 +3098,15 @@ def import_document(
         warnings = preview_data["warnings"]
 
         prev = conn.execute("SELECT id, imported_at, total_parsed FROM imported_files WHERE file_hash=?", (h,)).fetchone()
+        if prev and int(prev[2] or 0) > 0:
+            return {
+                "detail": (
+                    f"Arquivo ja importado em {prev[1]} "
+                    f"com {int(prev[2] or 0)} lancamentos."
+                ),
+                "code": "FILE_ALREADY_IMPORTED",
+                "imported_file_id": prev[0],
+            }, 409
         if prev and int(prev[2] or 0) == 0:
             # Permite reprocessar arquivo que antes foi salvo sem lancamentos.
             conn.execute(

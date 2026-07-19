@@ -522,7 +522,12 @@ def _looks_like_transaction_row(row: list[Any]) -> bool:
         return False
     has_date = any(parse_date(v) for v in values)
     has_amount = any(parse_money(v) is not None for v in values)
-    has_text = any(re.search(r"[A-Za-zÀ-ÿ]{3,}", v) and parse_date(v) is None and parse_money(v) is None for v in values)
+    has_text = any(
+        re.search(r"[^\W\d_]{3,}", v, re.UNICODE)
+        and parse_date(v) == ""
+        and parse_money(v) is None
+        for v in values
+    )
     return has_date and has_amount and has_text
 
 
@@ -577,11 +582,17 @@ def parse_csv(path: Path, encoding: str = "utf-8-sig") -> list[RawTx]:
                 for h in (reader.fieldnames or [])
             }
 
-            h_date = headers.get("data") or headers.get("date") or headers.get("dia")
+            h_date = (
+                headers.get("data")
+                or headers.get("data_de_compra")
+                or headers.get("date")
+                or headers.get("dia")
+            )
             h_desc = (
                 headers.get("descricao")
                 or headers.get("historico")
                 or headers.get("estabelecimento")
+                or headers.get("nome_no_extrato")
                 or headers.get("lancamento")
                 or headers.get("title")
             )

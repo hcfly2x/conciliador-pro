@@ -15,8 +15,8 @@ A base historica e auxiliar: ela sugere categorias e subcategorias e pode ser vi
 - Banco de producao informado: Supabase/PostgreSQL.
 - Banco local alternativo: SQLite.
 - Build do frontend aprovado na auditoria de 15/07/2026.
-- Trinta e oito testes automatizados do backend aprovados na revisao de 16/07/2026.
-- A validacao completa dos seis tipos de documento ainda nao foi concluida.
+- Quarenta e oito testes automatizados do backend aprovados na regressao de importacoes de 19/07/2026.
+- Os seis tipos oficiais de documento possuem fixtures anonimizadas com resultados financeiros exatos.
 - A producao nao foi validada de ponta a ponta com autenticacao durante a auditoria.
 
 ## Arquitetura e stack
@@ -139,8 +139,8 @@ A base historica e auxiliar: ela sugere categorias e subcategorias e pode ser vi
   confirmados pelo proprietario como periodos validos sem movimentacao.
 - O importador historico aceita as variantes degradadas de abas e cabecalhos
   observadas na planilha real, sem alterar os dados financeiros de origem.
-- Validar integralmente os parsers de extrato e cartao de Santander, XP e Nubank.
-- Conferir quantidade, data, valor, sinal, competencia e duplicidade.
+- Manter a regressao automatizada dos parsers de extrato e cartao de Santander, XP e Nubank.
+- Revalidar as fixtures sempre que quantidade, data, valor, sinal, competencia ou deduplicacao forem alterados.
 - Melhorar a normalizacao de descricoes e estabelecimentos.
 - Separar similaridade tecnica de probabilidade apresentada ao usuario.
 - Considerar descricao, conta quando conhecida, valor e data nas sugestoes.

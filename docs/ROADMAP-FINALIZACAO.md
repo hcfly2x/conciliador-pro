@@ -105,14 +105,15 @@ primeira versao com dados persistentes.
       inclusive no calculo do progresso da importacao.
 - [x] Diferenciar extrato vazio confirmado de falha de parser para os casos reais
       Nubank PDF e XP CSV, mantendo os demais vazios bloqueados.
-- [ ] Criar fixtures anonimizadas dos seis tipos oficiais: extrato e cartao de
+- [x] Criar fixtures anonimizadas dos seis tipos oficiais: extrato e cartao de
       Santander, XP e Nubank.
-- [ ] Para cada fixture, afirmar quantidade, datas, valores, sinais, competencia,
+- [x] Para cada fixture, afirmar quantidade, datas, valores, sinais, competencia,
       conta detectada, duplicados internos, duplicados no banco e linhas rejeitadas.
-- [ ] Testar PDFs vazios, protegidos, corrompidos e com layout inesperado.
-- [ ] Testar CSV/XLS/XLSX com encoding, separador, coluna e formato monetario
-      diferentes.
-- [ ] Testar reimportacao do mesmo arquivo e arquivos distintos com lancamentos
+- [x] Testar PDFs vazios, protegidos, corrompidos e com layout inesperado.
+- [x] Testar CSV e XLSX com encoding, separador, coluna e formato monetario
+      diferentes. O XLS legado continua suportado pelo mesmo parser tabular e
+      permanece como compatibilidade secundaria, pois nao integra os seis formatos oficiais.
+- [x] Testar reimportacao do mesmo arquivo e arquivos distintos com lancamentos
       coincidentes.
 - [x] Remover a opcao de reinserir duplicados do banco, se confirmada na Etapa 0.
 - [x] Garantir limite de tamanho e extensao antes de ler arquivos em memoria.

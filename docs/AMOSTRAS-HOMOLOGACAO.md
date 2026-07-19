@@ -72,6 +72,11 @@ variantes degradadas observadas na amostra.
 
 ## Protocolo para criar fixtures
 
+Concluido em 19/07/2026: as fixtures anonimizadas dos seis tipos oficiais ficam
+em `backend/tests/fixtures/imports` e a matriz executavel em
+`backend/tests/test_import_regression.py`. Nenhum dado financeiro privado foi
+copiado para o repositorio.
+
 - Selecionar ao menos um representante de cada um dos seis tipos oficiais.
 - Anonimizar nomes, documentos, contas, referencias e valores identificaveis.
 - Preservar estrutura, separador, encoding, ordem de colunas e padroes de data.
