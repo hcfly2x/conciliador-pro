@@ -435,9 +435,9 @@ export async function getHistory(filters: HistoryFilters = {}): Promise<Paginate
   return http<PaginatedResponse<HistoryItem>>('GET', `/history?${params}`)
 }
 
-export async function bulkClassify(ids: string[], category_id: string, subcategory_id?: string): Promise<{ updated: number; skipped_locked?: number }> {
+export async function bulkClassify(ids: string[], category_id: string, subcategory_id?: string): Promise<{ updated: number; skipped_locked?: number; skipped_history_links?: number }> {
   if (USE_MOCK) { await delay(); return { updated: ids.length } }
-  return http<{ updated: number; skipped_locked?: number }>('PATCH', '/transactions/bulk-classify', { ids, category_id, subcategory_id })
+  return http<{ updated: number; skipped_locked?: number; skipped_history_links?: number }>('PATCH', '/transactions/bulk-classify', { ids, category_id, subcategory_id })
 }
 
 export async function getMonths(): Promise<string[]> {

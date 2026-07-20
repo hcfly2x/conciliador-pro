@@ -5182,7 +5182,8 @@ def classify(tx_id: str):
             """
             SELECT id,account_id,date,description,description_norm,amount,type,
                    locked,category_id,subcategory_id,notes,status,
-                   installment_plan_id,installment_current,installment_total
+                   installment_plan_id,installment_current,installment_total,
+                   history_match_id,history_match_confirmed,identity_score
             FROM transactions
             WHERE id=?
             """,
@@ -5196,6 +5197,11 @@ def classify(tx_id: str):
                 "detail": "Lancamento protegido. Desbloqueie explicitamente para alterar.",
                 "code": "TX_LOCKED",
             }), 423
+        if tx[15] and not bool(tx[16]) and float(tx[17] or 0) >= HISTORY_LINK_CANDIDATE_THRESHOLD:
+            return jsonify({
+                "detail": "Revise o vinculo historico antes de classificar este lancamento.",
+                "code": "HISTORY_LINK_REVIEW_REQUIRED",
+            }), 409
         validation_error, validation_status = validate_classification_selection(conn, cat, sub, tx[6])
         if validation_error:
             return jsonify(validation_error), validation_status
@@ -5236,8 +5242,13 @@ def classify(tx_id: str):
                 """
                 SELECT id FROM transactions
                 WHERE installment_plan_id=? AND id<>? AND locked=0
+                  AND NOT (
+                    history_match_id IS NOT NULL
+                    AND history_match_confirmed=0
+                    AND identity_score>=?
+                  )
                 """,
-                (installment_plan_id, tx_id),
+                (installment_plan_id, tx_id, HISTORY_LINK_CANDIDATE_THRESHOLD),
             ).fetchall()
             sibling_ids = [row[0] for row in siblings]
             for sibling_id in sibling_ids:
@@ -6242,11 +6253,19 @@ def bulk_classify():
         validation_error, validation_status = validate_classification_selection(conn, cat, sub, tx_types[0][0])
         if validation_error:
             return jsonify(validation_error), validation_status
-        locked_rows = conn.execute(
-            f"SELECT id FROM transactions WHERE locked=1 AND id IN ({qmarks})", ids
+        blocked_rows = conn.execute(
+            f"""
+            SELECT id,locked,history_match_id,history_match_confirmed,identity_score
+            FROM transactions WHERE id IN ({qmarks})
+            """,
+            ids,
         ).fetchall()
-        locked_ids = {r[0] for r in locked_rows}
-        target_ids = [i for i in ids if i not in locked_ids]
+        locked_ids = {r[0] for r in blocked_rows if int(r[1] or 0) == 1}
+        link_ids = {
+            r[0] for r in blocked_rows
+            if r[2] and not bool(r[3]) and float(r[4] or 0) >= HISTORY_LINK_CANDIDATE_THRESHOLD
+        }
+        target_ids = [i for i in ids if i not in locked_ids and i not in link_ids]
         updated = 0
         if target_ids:
             qmarks2 = ",".join(["?"] * len(target_ids))
@@ -6264,7 +6283,11 @@ def bulk_classify():
                 record_audit(user, "bulk_classify", "transaction", tid, "category_id", "", cat, conn=conn)
                 conn.execute("DELETE FROM transaction_suggestions WHERE transaction_id=?", (tid,))
                 conn.execute("DELETE FROM transaction_suggestion_state WHERE transaction_id=?", (tid,))
-    return jsonify({"updated": updated, "skipped_locked": len(locked_ids)})
+    return jsonify({
+        "updated": updated,
+        "skipped_locked": len(locked_ids),
+        "skipped_history_links": len(link_ids),
+    })
 
 
 def _reconciliation_tx_payload(row: Any, offset: int) -> dict[str, Any]:

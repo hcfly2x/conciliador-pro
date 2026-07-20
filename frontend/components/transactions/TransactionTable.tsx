@@ -53,6 +53,14 @@ function flagLabels(flags?: string) {
     .map(flag => labels[flag] || flag)
 }
 
+function hasPendingDirectHistoryLink(tx: Transaction) {
+  return Boolean(
+    tx.history_match_id
+    && !tx.history_match_confirmed
+    && Number(tx.identity_score || 0) >= Number(tx.history_link_threshold || 96)
+  )
+}
+
 export default function TransactionTable({
   defaultStatus,
   defaultSortBy = 'date',
@@ -203,6 +211,16 @@ export default function TransactionTable({
         } : {}),
       }))
       setLinkReviewId(null)
+      setRowSuggestions(current => {
+        const next = { ...current }
+        delete next[tx.id]
+        return next
+      })
+      setRowSuggestionStates(current => {
+        const next = { ...current }
+        delete next[tx.id]
+        return next
+      })
       addToast(action === 'confirm' ? 'Vinculo confirmado e classificacao historica aplicada' : 'Sugestao de vinculo rejeitada')
       bumpRefresh()
     } catch {
@@ -250,7 +268,9 @@ export default function TransactionTable({
     getLedgers().then(setLedgers).catch(() => undefined)
   }, [refreshKey])
   useEffect(() => {
-    const needingSuggestions = txs.filter(tx => !tx.locked && !tx.category_id && !tx.reconciliation_id)
+    const needingSuggestions = txs.filter(tx => (
+      !tx.locked && !tx.category_id && !tx.reconciliation_id && !hasPendingDirectHistoryLink(tx)
+    ))
     if (!needingSuggestions.length) return
 
     let cancelled = false
@@ -324,8 +344,12 @@ export default function TransactionTable({
   async function handleBulkClassify() {
     if (!bulkCatId || !selected.size) return
     try {
-      const { updated, skipped_locked } = await bulkClassify([...selected], bulkCatId, bulkSubId || undefined)
-      addToast(`${updated} lancamentos classificados${skipped_locked ? ` (${skipped_locked} protegidos ignorados)` : ''}`)
+      const { updated, skipped_locked, skipped_history_links } = await bulkClassify([...selected], bulkCatId, bulkSubId || undefined)
+      const skipped = [
+        skipped_locked ? `${skipped_locked} protegidos` : '',
+        skipped_history_links ? `${skipped_history_links} aguardando revisao de vinculo` : '',
+      ].filter(Boolean).join(', ')
+      addToast(`${updated} lancamentos classificados${skipped ? ` (${skipped} ignorados)` : ''}`)
       setSelected(new Set()); setBulkCatId(''); setBulkSubId('')
       load(page)
     } catch { addToast('Erro na classificacao em lote', 'err') }
@@ -527,6 +551,11 @@ export default function TransactionTable({
               {loading && <tr><td colSpan={9} className="text-center py-12 text-[#5a5f73]"><div className="inline-block w-5 h-5 border-2 border-[#22273a] border-t-[#c9a84c] rounded-full animate-spin" /></td></tr>}
               {!loading && txs.length === 0 && <tr><td colSpan={9} className="text-center py-12 text-[#5a5f73]">Nenhum lancamento encontrado</td></tr>}
               {!loading && txs.map(tx => {
+                const pendingDirectLink = hasPendingDirectHistoryLink(tx)
+                const chosenCategorySuggestion = (rowSuggestions[tx.id] || []).find(
+                  suggestion => suggestion.category_id === rowDraft[tx.id]?.category_id
+                )
+                const subcategorySuggestions = chosenCategorySuggestion?.subcategories || []
                 const st = tx.reconciliation_id
                   ? { label: 'Conciliado', bg: 'rgba(167,139,250,0.14)', color: '#c4b5fd' }
                   : tx.history_match_confirmed
@@ -574,7 +603,11 @@ export default function TransactionTable({
                       )}
                     </td>
                     <td className="px-3 py-2.5">
-                      {!tx.locked && !tx.reconciliation_id && !rowDraft[tx.id]?.category_id && (() => {
+                      {pendingDirectLink ? (
+                        <p className="mb-1 max-w-[190px] text-[10px] leading-4 text-blue-300">
+                          A classificacao sera espelhada apos confirmar o vinculo.
+                        </p>
+                      ) : !tx.locked && !tx.reconciliation_id && !rowDraft[tx.id]?.category_id && (() => {
                         const suggestions = rowSuggestions[tx.id]
                         if (suggestions && suggestions.length > 0) {
                           return (
@@ -597,29 +630,9 @@ export default function TransactionTable({
                                   title={`${sg.justification} Clique para selecionar a categoria; a subcategoria sera escolhida separadamente.`}
                                 >
                                   {sg.category_name}
-                                  <span style={{ opacity: 0.65 }}>score {(sg.confidence ?? sg.category_probability ?? 0).toFixed(0)}</span>
+                                  <span style={{ opacity: 0.65 }}>confianca {(sg.confidence ?? sg.category_probability ?? 0).toFixed(0)}%</span>
                                 </button>
                               ))}
-                            </div>
-                          )
-                        }
-                        if (tx.match_category_name && (!suggestions || suggestions.length === 0)) {
-                          return (
-                            <div className="mb-1">
-                              <button
-                                type="button"
-                                onClick={() => patchRowDraft(tx, {
-                                  category_id: tx.match_category_id || '',
-                                  subcategory_id: tx.match_subcategory_id || '',
-                                })}
-                                disabled={!tx.match_category_id}
-                                className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-semibold disabled:cursor-default"
-                                style={{ background: 'rgba(201,168,76,0.08)', color: '#c9a84c', border: '1px solid rgba(201,168,76,0.15)' }}
-                                title="Classificacao do registro historico candidato; clique para selecionar"
-                              >
-                                {tx.match_category_name}
-                                <span style={{ opacity: 0.5 }}>base historica</span>
-                              </button>
                             </div>
                           )
                         }
@@ -641,14 +654,14 @@ export default function TransactionTable({
                         className="h-8 w-[190px] rounded-md px-2 text-xs text-[#e8eaf0] outline-none disabled:opacity-45 disabled:cursor-not-allowed"
                         style={{ background: '#1a1e28', border: '1px solid rgba(255,255,255,0.12)' }}
                         value={rowDraft[tx.id]?.category_id || ''}
-                        disabled={!!tx.locked || !!tx.reconciliation_id}
+                        disabled={!!tx.locked || !!tx.reconciliation_id || pendingDirectLink}
                         onChange={(e) => patchRowDraft(tx, { category_id: e.target.value, subcategory_id: '' })}
                       >
                         <option value="">Selecionar...</option>
                         {(rowSuggestions[tx.id] || []).length > 0 && <option value="" disabled>-- Sugeridas --</option>}
                         {(rowSuggestions[tx.id] || []).map((sg, i) => (
                           <option key={`sg-cat-${tx.id}-${i}-${sg.category_id}`} value={sg.category_id}>
-                            {sg.category_name} (score {(sg.confidence ?? sg.category_probability).toFixed(0)})
+                            {sg.category_name} (confianca {(sg.confidence ?? sg.category_probability).toFixed(0)}%)
                           </option>
                         ))}
                         {(rowSuggestions[tx.id] || []).length > 0 && <option value="" disabled>-- Todas --</option>}
@@ -656,20 +669,15 @@ export default function TransactionTable({
                       </select>
                     </td>
                     <td className="px-3 py-2.5">
-                      {!tx.locked && !tx.reconciliation_id && !rowDraft[tx.id]?.subcategory_id && (() => {
-                        const subSuggestions = (rowSuggestions[tx.id] || [])
-                          .filter(sg => sg.category_id === rowDraft[tx.id]?.category_id)
-                          .filter(sg => !!sg.subcategory_id && !!sg.subcategory_name)
-                          .filter((sg, i, arr) => arr.findIndex(x => x.subcategory_id === sg.subcategory_id) === i)
-                          .slice(0, 2)
-                        if (!subSuggestions.length) return null
+                      {!pendingDirectLink && !tx.locked && !tx.reconciliation_id && !rowDraft[tx.id]?.subcategory_id && (() => {
+                        if (!subcategorySuggestions.length) return null
                         return (
                           <div className="mb-1 flex flex-wrap gap-1">
-                            {subSuggestions.map((sg, i) => (
+                            {subcategorySuggestions.slice(0, 3).map(sg => (
                               <button
-                                key={`chip-sub-${tx.id}-${i}`}
+                                key={`chip-sub-${tx.id}-${sg.subcategory_id}`}
                                 type="button"
-                                onClick={() => patchRowDraft(tx, { subcategory_id: sg.subcategory_id || '' })}
+                                onClick={() => patchRowDraft(tx, { subcategory_id: sg.subcategory_id })}
                                 className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-semibold transition-all hover:opacity-80"
                                 style={{
                                   background: 'rgba(96,165,250,0.10)',
@@ -678,7 +686,7 @@ export default function TransactionTable({
                                   cursor: 'pointer',
                                 }}
                               >
-                                {sg.subcategory_name}
+                                {sg.subcategory_name} <span className="opacity-65">{sg.confidence.toFixed(0)}%</span>
                               </button>
                             ))}
                           </div>
@@ -688,18 +696,18 @@ export default function TransactionTable({
                         className="h-8 w-[170px] rounded-md px-2 text-xs text-[#e8eaf0] outline-none disabled:opacity-45 disabled:cursor-not-allowed"
                         style={{ background: '#1a1e28', border: '1px solid rgba(255,255,255,0.12)' }}
                         value={rowDraft[tx.id]?.subcategory_id || ''}
-                        disabled={!!tx.locked || !!tx.reconciliation_id}
+                        disabled={!!tx.locked || !!tx.reconciliation_id || pendingDirectLink}
                         onChange={(e) => patchRowDraft(tx, { subcategory_id: e.target.value })}
                       >
                         <option value="">Sem subcategoria</option>
-                        {(rowSuggestions[tx.id] || [])
-                          .filter(sg => !!sg.subcategory_id)
-                          .map((sg, i) => (
-                            <option key={`sg-sub-${tx.id}-${i}-${sg.subcategory_id}`} value={sg.subcategory_id || ''}>
-                              {sg.subcategory_name} (score {(sg.subcategory_probability ?? 0).toFixed(0)})
+                        {subcategorySuggestions.map(sg => (
+                            <option key={`sg-sub-${tx.id}-${sg.subcategory_id}`} value={sg.subcategory_id}>
+                              {sg.subcategory_name} (confianca {sg.confidence.toFixed(0)}%)
                             </option>
                           ))}
-                        {subcategories.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                        {subcategories
+                          .filter(subcategory => !subcategorySuggestions.some(candidate => candidate.subcategory_id === subcategory.id))
+                          .map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
                       </select>
                     </td>
                     <td className="px-3 py-2.5">
@@ -707,7 +715,7 @@ export default function TransactionTable({
                         className="h-8 w-[180px] rounded-md px-2 text-xs text-[#e8eaf0] outline-none disabled:opacity-45 disabled:cursor-not-allowed"
                         style={{ background: '#1a1e28', border: '1px solid rgba(255,255,255,0.12)' }}
                         value={rowDraft[tx.id]?.notes || ''}
-                        disabled={!!tx.locked || !!tx.reconciliation_id}
+                        disabled={!!tx.locked || !!tx.reconciliation_id || pendingDirectLink}
                         onChange={(e) => {
                           const val = e.target.value
                           setRowDraft(s => ({ ...s, [tx.id]: { ...(s[tx.id] || { category_id: '', subcategory_id: '', notes: '' }), notes: val } }))
@@ -719,7 +727,7 @@ export default function TransactionTable({
                     <td className="px-3 py-2.5">
                       <div className="flex items-center gap-1.5">
                         <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full" style={{ background: st.bg, color: st.color }}>{st.label}</span>
-                        {!!tx.history_match_id && !tx.history_match_confirmed && Number(tx.identity_score || 0) >= Number(tx.history_link_threshold || 96) && (
+                        {pendingDirectLink && (
                           <button
                             type="button"
                             onClick={() => setLinkReviewId(tx.id)}
@@ -731,7 +739,7 @@ export default function TransactionTable({
                             Possivel vinculo {Number(tx.identity_score || 0).toFixed(0)}%
                           </button>
                         )}
-                        {!tx.locked && !tx.reconciliation_id && (
+                        {!tx.locked && !tx.reconciliation_id && !pendingDirectLink && (
                           <button
                             type="button"
                             onClick={() => saveRow(tx)}

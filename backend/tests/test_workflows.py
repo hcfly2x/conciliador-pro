@@ -114,6 +114,37 @@ class WorkflowIntegrationTests(unittest.TestCase):
         ).fetchone()
         self.assertEqual(row, (None, "hist-1", None, None))
 
+    def test_direct_link_must_be_reviewed_before_manual_classification(self) -> None:
+        blocked = self.client.patch(
+            "/api/v1/transactions/tx-link/classify",
+            json={"category_id": "cat-expense", "subcategory_id": "sub-market"},
+        )
+        rejected = self.client.post(
+            "/api/v1/transactions/tx-link/history-link", json={"action": "reject"}
+        )
+        classified = self.client.patch(
+            "/api/v1/transactions/tx-link/classify",
+            json={"category_id": "cat-expense", "subcategory_id": "sub-market"},
+        )
+
+        self.assertEqual(blocked.status_code, 409)
+        self.assertEqual(blocked.get_json()["code"], "HISTORY_LINK_REVIEW_REQUIRED")
+        self.assertEqual(rejected.status_code, 200)
+        self.assertEqual(classified.status_code, 200)
+
+    def test_bulk_classification_skips_pending_direct_links(self) -> None:
+        response = self.client.patch(
+            "/api/v1/transactions/bulk-classify",
+            json={"ids": ["tx-1", "tx-link"], "category_id": "cat-expense"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["updated"], 1)
+        self.assertEqual(response.get_json()["skipped_history_links"], 1)
+        self.assertIsNone(
+            self.conn.execute("SELECT category_id FROM transactions WHERE id='tx-link'").fetchone()[0]
+        )
+
     def test_document_transaction_deletion_requires_confirmation(self) -> None:
         response = self.client.delete("/api/v1/coverage/files", json={
             "path": "db://document-1", "delete_transactions": True,

@@ -226,7 +226,7 @@ primeira versao com dados persistentes.
 
 ## Verificacoes realizadas nesta revisao
 
-- 51 testes Python aprovados.
+- 53 testes Python aprovados.
 - 3 jornadas Playwright aprovadas em Chromium com SQLite isolado.
 - Compilacao Python aprovada.
 - TypeScript sem erros.

@@ -77,6 +77,9 @@ A base historica e auxiliar: ela sugere categorias e subcategorias e pode ser vi
 - As sugestoes devem considerar a base historica e os lancamentos ja classificados.
 - Quando um lancamento estiver vinculado a base historica, a coluna de status deve exibir `Vinculado`, e nao `Manual`.
 - Um candidato a vinculo historico so deve ser apresentado a partir de 96% de compatibilidade.
+- Enquanto um candidato a vinculo direto aguarda revisao, categoria e subcategoria
+  nao recebem sugestoes nem classificacao manual; ao rejeitar o vinculo, o
+  lancamento volta ao fluxo probabilistico calculado separadamente.
 - O candidato deve mostrar lado a lado os dados do lancamento real e do registro historico.
 - O vinculo so e confirmado depois de acao humana explicita; uma rejeicao deve impedir que o mesmo candidato reapareca para o lancamento.
 - Confirmar um vinculo replica a categoria e a subcategoria do registro historico, marca o lancamento como classificado e o protege contra alteracoes acidentais.
