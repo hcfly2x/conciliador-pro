@@ -218,6 +218,48 @@ class ClassificationQueueIntegrationTests(unittest.TestCase):
         self.assertEqual(summary.get_json()["waiting"], 0)
         self.assertEqual(batch.get_json()["items"]["target"][0]["category_id"], "food")
 
+    def test_objective_evaluation_uses_leave_one_out_and_reports_coverage(self) -> None:
+        self.conn.execute(
+            "INSERT INTO categories(id,name,color,text_color,type) VALUES ('home','MORADIA','#111','#fff','expense')"
+        )
+        self.conn.execute("INSERT INTO subcategories(id,name) VALUES ('rent','ALUGUEL')")
+        self.conn.execute(
+            """
+            INSERT INTO classification_history(
+              id,source_file_id,account_id,date,description,description_norm,amount,type,category_id,subcategory_id
+            ) VALUES ('hist-home','seed:sheet:saidas','acc','2026-01-05','ALUGUEL','aluguel',900,'expense','home','rent')
+            """
+        )
+        self.conn.executemany(
+            """
+            INSERT INTO transactions(
+              id,tx_key,date,competence_month,description,description_norm,amount,type,status,
+              account_id,imported_file_id,locked,category_id,subcategory_id,history_match_confirmed
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,0)
+            """,
+            [
+                ('eval-food','eval-food-key','2026-03-01','2026/03','MERCADO','mercado',-105,'expense','pending','acc','file',1,'food','market'),
+                ('eval-home','eval-home-key','2026-03-05','2026/03','ALUGUEL','aluguel',-900,'expense','pending','acc','file',1,'home','rent'),
+                ('eval-unknown','eval-unknown-key','2026-03-06','2026/03','EVENTO SEM PADRAO','evento sem padrao',-77,'expense','pending','acc','file',1,'home','rent'),
+            ],
+        )
+
+        result = app.evaluate_suggestion_quality(
+            self.conn, target_ids=['eval-food', 'eval-home', 'eval-unknown']
+        )
+        endpoint = self.client.get('/api/v1/transactions/suggestions/evaluation?limit=2')
+
+        self.assertEqual(result['evaluated'], 3)
+        self.assertEqual(result['with_suggestions'], 2)
+        self.assertEqual(result['coverage'], 66.67)
+        self.assertEqual(result['category']['top1_accuracy'], 100.0)
+        self.assertEqual(result['category']['top3_accuracy'], 100.0)
+        self.assertEqual(result['subcategory']['top1_accuracy'], 100.0)
+        self.assertEqual(sum(bucket['count'] for bucket in result['calibration']), 2)
+        self.assertEqual(endpoint.status_code, 200)
+        self.assertEqual(endpoint.get_json()['evaluated'], 2)
+        self.assertTrue(endpoint.get_json()['truncated'])
+
 
 class ReconciliationIntegrationTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -304,6 +346,106 @@ class ReconciliationIntegrationTests(unittest.TestCase):
         self.assertEqual(mismatch.get_json()["code"], "AMOUNT_MISMATCH")
         self.assertEqual(inverted.status_code, 400)
         self.assertEqual(inverted.get_json()["code"], "TYPE_MISMATCH")
+
+
+class FinancialReportingIntegrationTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.conn = sqlite3.connect(":memory:")
+        self.original_db_connect = app.db_connect
+        self.original_auth_disabled = app.auth_mod.AUTH_DISABLED
+        app.db_connect = lambda *args, **kwargs: self.conn
+        app.auth_mod.AUTH_DISABLED = True
+        app.init_db()
+        app.auth_mod.init_auth_db()
+        self.client = app.app.test_client()
+        self.conn.executescript(
+            """
+            CREATE TABLE audit_log(
+              id TEXT, user_id TEXT, username TEXT, action TEXT, entity TEXT,
+              entity_id TEXT, field TEXT, old_value TEXT, new_value TEXT,
+              detail TEXT, created_at TEXT
+            );
+            INSERT INTO accounts(id,name,type,color,is_active,created_at) VALUES
+              ('bank-a','BANCO A','checking','#000',1,'2026-01-01'),
+              ('bank-b','BANCO B','checking','#111',1,'2026-01-01');
+            INSERT INTO categories(id,name,color,text_color,type) VALUES
+              ('food','ALIMENTACAO','#111','#fff','expense'),
+              ('home','MORADIA','#222','#fff','expense'),
+              ('salary','RECEITA','#333','#fff','income');
+            INSERT INTO transactions(
+              id,tx_key,date,competence_month,description,description_norm,amount,type,status,
+              account_id,imported_file_id,locked,category_id
+            ) VALUES
+              ('jan-income','k1','2026-01-05','2026/01','SALARIO','salario',1000,'income','reconciled','bank-a','f1',1,'salary'),
+              ('jan-food','k2','2026-01-06','2026/01','MERCADO','mercado',-400,'expense','reconciled','bank-a','f1',1,'food'),
+              ('jan-home','k3','2026-01-07','2026/01','CONDOMINIO','condominio',-100,'expense','pending','bank-a','f1',0,'home'),
+              ('transfer-out','k4','2026-01-08','2026/01','TRANSFERENCIA ENVIADA','transferencia enviada',-300,'expense','pending','bank-a','f1',0,NULL),
+              ('transfer-in','k5','2026-01-09','2026/01','TRANSFERENCIA RECEBIDA','transferencia recebida',300,'income','pending','bank-b','f2',0,NULL),
+              ('ignored','k6','2026-01-10','2026/01','IGNORADO','ignorado',-999,'expense','ignored','bank-a','f1',0,NULL),
+              ('duplicate','k7','2026-01-11','2026/01','DUPLICADO','duplicado',999,'income','duplicate','bank-a','f1',0,NULL),
+              ('feb-income','k8','2026-02-05','2026/02','FREELA','freela',500,'income','reconciled','bank-a','f3',1,'salary'),
+              ('feb-food','k9','2026-02-06','2026/02','RESTAURANTE','restaurante',-125,'expense','reconciled','bank-a','f3',1,'food');
+            """
+        )
+
+    def tearDown(self) -> None:
+        app.db_connect = self.original_db_connect
+        app.auth_mod.AUTH_DISABLED = self.original_auth_disabled
+        self.conn.close()
+
+    def test_summary_category_percentages_and_monthly_totals_are_exact(self) -> None:
+        january = self.client.get("/api/v1/reports/summary?competence_month=2026/01").get_json()
+        expenses = self.client.get("/api/v1/reports/by-category?type=expense&competence_month=2026/01").get_json()
+        monthly = self.client.get("/api/v1/reports/monthly").get_json()
+
+        self.assertEqual(january, {
+            "total_transactions": 5,
+            "pending": 3,
+            "reconciled": 2,
+            "total_income": 1300.0,
+            "total_expense": -800.0,
+            "balance": 500.0,
+        })
+        by_name = {row["category_name"]: row for row in expenses}
+        self.assertEqual((by_name["ALIMENTACAO"]["total"], by_name["ALIMENTACAO"]["percentage"]), (-400.0, 50.0))
+        self.assertEqual((by_name["SEM CATEGORIA"]["total"], by_name["SEM CATEGORIA"]["percentage"]), (-300.0, 37.5))
+        self.assertEqual((by_name["MORADIA"]["total"], by_name["MORADIA"]["percentage"]), (-100.0, 12.5))
+        self.assertEqual(monthly, [
+            {"month": "2026/02", "income": 500.0, "expense": -125.0, "balance": 375.0, "transaction_count": 2},
+            {"month": "2026/01", "income": 1300.0, "expense": -800.0, "balance": 500.0, "transaction_count": 5},
+        ])
+
+    def test_reconciliation_removes_both_sides_from_every_report_and_undo_restores_them(self) -> None:
+        created = self.client.post("/api/v1/reconciliations", json={
+            "expense_transaction_id": "transfer-out", "income_transaction_id": "transfer-in",
+        })
+        self.assertEqual(created.status_code, 201)
+
+        january = self.client.get("/api/v1/reports/summary?competence_month=2026/01").get_json()
+        expenses = self.client.get("/api/v1/reports/by-category?type=expense&competence_month=2026/01").get_json()
+        monthly = self.client.get("/api/v1/reports/monthly").get_json()
+        self.assertEqual(
+            (january["total_transactions"], january["total_income"], january["total_expense"], january["balance"]),
+            (3, 1000.0, -500.0, 500.0),
+        )
+        self.assertEqual(
+            [(row["category_name"], row["total"], row["percentage"]) for row in expenses],
+            [("ALIMENTACAO", -400.0, 80.0), ("MORADIA", -100.0, 20.0)],
+        )
+        january_month = next(row for row in monthly if row["month"] == "2026/01")
+        self.assertEqual(january_month, {
+            "month": "2026/01", "income": 1000.0, "expense": -500.0,
+            "balance": 500.0, "transaction_count": 3,
+        })
+
+        reconciliation_id = created.get_json()["id"]
+        undone = self.client.post(f"/api/v1/reconciliations/{reconciliation_id}/undo", json={})
+        restored = self.client.get("/api/v1/reports/summary?competence_month=2026/01").get_json()
+        self.assertEqual(undone.status_code, 200)
+        self.assertEqual(
+            (restored["total_transactions"], restored["total_income"], restored["total_expense"], restored["balance"]),
+            (5, 1300.0, -800.0, 500.0),
+        )
 
 
 if __name__ == "__main__":

@@ -26,8 +26,10 @@ from pathlib import Path
 from typing import Any, Iterable
 
 BASE = Path(__file__).resolve().parent
-DATA = BASE / "data"
-DB_PATH = DATA / "conciliador_pro.db"
+DATA = Path(os.environ.get("CONCILIADOR_DATA_DIR") or BASE / "data").resolve()
+# Testes E2E podem isolar completamente o SQLite sem tocar no banco local.
+DB_PATH = (DATA / "conciliador_pro.db").resolve()
+DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
 DATABASE_URL = (os.environ.get("DATABASE_URL") or "").strip()
 IS_POSTGRES = DATABASE_URL.startswith(("postgres://", "postgresql://"))

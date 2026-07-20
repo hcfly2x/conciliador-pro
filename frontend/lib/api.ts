@@ -336,6 +336,21 @@ export interface SuggestionSummary {
   classified: number
 }
 
+export interface SuggestionEvaluation {
+  generated_at: string
+  eligible_total: number
+  evaluated: number
+  limit: number
+  truncated: boolean
+  with_suggestions: number
+  coverage: number
+  category: { top1_hits: number; top3_hits: number; top1_accuracy: number; top3_accuracy: number }
+  subcategory: { labeled: number; evaluated: number; top1_hits: number; top3_hits: number; top1_accuracy: number; top3_accuracy: number }
+  calibration: Array<{ range: string; count: number; accuracy: number; average_confidence: number }>
+  by_type: Array<{ type: string; evaluated: number; with_suggestions: number; top1_hits: number; top3_hits: number; coverage: number; top1_accuracy: number; top3_accuracy: number }>
+  methodology: string
+}
+
 export async function startSuggestionJob(full = false): Promise<{ job_id: string; status: string }> {
   return http('POST', '/transactions/suggestions/jobs', { full })
 }
@@ -351,6 +366,10 @@ export async function getActiveSuggestionJob(): Promise<SuggestionJob | null> {
 
 export async function getSuggestionSummary(): Promise<SuggestionSummary> {
   return http('GET', '/transactions/suggestions/summary')
+}
+
+export async function getSuggestionEvaluation(limit = 250): Promise<SuggestionEvaluation> {
+  return http('GET', `/transactions/suggestions/evaluation?limit=${limit}`)
 }
 
 export async function dismissTransactionSuggestions(id: string): Promise<{ id: string; dismissed: boolean }> {

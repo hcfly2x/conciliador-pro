@@ -155,7 +155,8 @@ primeira versao com dados persistentes.
       confirmada a lancamentos similares.
 - [x] Filtrar categorias da interface pelo tipo receita/despesa.
 - [x] Adicionar subcategoria a classificacao em lote.
-- [ ] Criar avaliacao retrospectiva com Top 1, Top 3, cobertura e calibracao.
+- [x] Criar avaliacao retrospectiva leave-one-out com Top 1, Top 3, cobertura
+      e faixas de calibracao, sem alterar classificacoes ou pesos.
 - [x] Manter toda aplicacao dependente de clique humano.
 
 **Saida:** sugestoes mensuraveis, explicaveis e coerentes com as regras do produto.
@@ -170,7 +171,8 @@ primeira versao com dados persistentes.
 - [x] Escolher Base64 no PostgreSQL ou armazenamento de objetos para os originais.
 - [ ] Testar upload, download, exclusao, cobertura e auditoria no destino escolhido.
 - [ ] Exibir claramente pendentes/sem categoria nos relatorios, se incluidos.
-- [ ] Testar totais e percentuais contra consultas de referencia.
+- [x] Testar totais, saldos e percentuais por categoria contra cenarios financeiros
+      deterministas, incluindo exclusao e restauracao de conciliacoes.
 - [ ] Avaliar com o usuario se os relatorios eliminam a necessidade de `ledgers`.
 - [ ] Se eliminarem, ocultar e depois remover `ledgers`; se nao, definir seu caso de
       uso antes de evoluir a funcionalidade.
@@ -208,6 +210,8 @@ primeira versao com dados persistentes.
 
 ### Etapa 8 - Homologacao e encerramento
 
+- [x] Adicionar Playwright ao CI com banco isolado e cobrir login, importacao com
+      preview, classificacao/bloqueio e conciliacao/desfazimento.
 - [ ] Executar suite completa em SQLite e PostgreSQL limpo.
 - [ ] Restaurar backup em ambiente de teste e validar migrations.
 - [ ] Importar os seis documentos oficiais em homologacao e conferir manualmente.
@@ -222,7 +226,8 @@ primeira versao com dados persistentes.
 
 ## Verificacoes realizadas nesta revisao
 
-- 38 testes Python aprovados.
+- 51 testes Python aprovados.
+- 3 jornadas Playwright aprovadas em Chromium com SQLite isolado.
 - Compilacao Python aprovada.
 - TypeScript sem erros.
 - Build de producao Next.js aprovado.

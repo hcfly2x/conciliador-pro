@@ -23,7 +23,7 @@ from werkzeug.utils import secure_filename
 
 from parsers.engine import ImportResult, run_import_pipeline
 
-from db import db_connect, IS_POSTGRES
+from db import DB_PATH, db_connect, IS_POSTGRES
 import auth as auth_mod
 from auth import record_audit, ROLE_ADMIN
 
@@ -45,11 +45,11 @@ except Exception:
     PdfReader = None
 
 BASE = Path(__file__).resolve().parent
-DATA = BASE / "data"
+DATA = Path(os.environ.get("CONCILIADOR_DATA_DIR") or BASE / "data").resolve()
 UPLOADS = DATA / "uploads"
 DOCS = DATA / "documents"
 TOOLS = BASE.parent / "tools"
-DB = DATA / "conciliador_pro.db"
+DB = DB_PATH
 for d in (DATA, UPLOADS, DOCS):
     d.mkdir(parents=True, exist_ok=True)
 
@@ -2595,6 +2595,147 @@ def build_suggestions_for_tx(
         for r in ranked[:12]
         if float(r.get("category_probability", r.get("probability", 0.0))) >= 20.0
     ]
+
+
+def evaluate_suggestion_quality(
+    conn: sqlite3.Connection,
+    limit: int = 250,
+    target_ids: list[str] | None = None,
+) -> dict[str, Any]:
+    """Avalia o motor contra classificacoes conhecidas sem usar o alvo como evidencia."""
+    safe_limit = max(1, min(int(limit or 250), 1000))
+    eligible_rows = conn.execute(
+        """
+        SELECT id,category_id,subcategory_id,type
+        FROM transactions
+        WHERE category_id IS NOT NULL
+          AND COALESCE(history_match_confirmed,0)=0
+          AND COALESCE(status,'') NOT IN ('duplicate','ignored')
+        ORDER BY date DESC,id
+        """
+    ).fetchall()
+    if target_ids is not None:
+        requested = set(target_ids)
+        eligible_rows = [row for row in eligible_rows if row[0] in requested]
+    eligible_total = len(eligible_rows)
+    rows = eligible_rows[:safe_limit]
+
+    calibration_ranges = (
+        (0.0, 50.0, "0-49%"),
+        (50.0, 70.0, "50-69%"),
+        (70.0, 85.0, "70-84%"),
+        (85.0, 101.0, "85-100%"),
+    )
+    calibration = {
+        label: {"range": label, "count": 0, "correct": 0, "confidence_sum": 0.0}
+        for _, _, label in calibration_ranges
+    }
+    by_type: dict[str, dict[str, int]] = {}
+    with_suggestions = category_top1 = category_top3 = 0
+    subcategory_labeled = subcategory_evaluated = subcategory_top1 = subcategory_top3 = 0
+
+    for tx_id, expected_category, expected_subcategory, tx_type in rows:
+        type_metrics = by_type.setdefault(
+            tx_type or "unknown", {"evaluated": 0, "with_suggestions": 0, "top1_hits": 0, "top3_hits": 0}
+        )
+        type_metrics["evaluated"] += 1
+        if expected_subcategory:
+            subcategory_labeled += 1
+
+        # Nao reutiliza o cache em lote: a consulta individual exclui tx_id das
+        # evidencias e torna a medicao retrospectiva um verdadeiro leave-one-out.
+        suggestions = build_suggestions_for_tx(conn, tx_id) or []
+        if not suggestions:
+            continue
+        top_categories = suggestions[:3]
+        with_suggestions += 1
+        type_metrics["with_suggestions"] += 1
+        top1_correct = top_categories[0]["category_id"] == expected_category
+        top3_correct = any(item["category_id"] == expected_category for item in top_categories)
+        if top1_correct:
+            category_top1 += 1
+            type_metrics["top1_hits"] += 1
+        if top3_correct:
+            category_top3 += 1
+            type_metrics["top3_hits"] += 1
+
+        confidence = float(top_categories[0].get("confidence") or 0.0)
+        for lower, upper, label in calibration_ranges:
+            if lower <= confidence < upper:
+                bucket = calibration[label]
+                bucket["count"] += 1
+                bucket["correct"] += int(top1_correct)
+                bucket["confidence_sum"] += confidence
+                break
+
+        if expected_subcategory:
+            expected_category_suggestion = next(
+                (item for item in suggestions if item["category_id"] == expected_category), None
+            )
+            if expected_category_suggestion:
+                subcategory_evaluated += 1
+                subcategory_ids: list[str] = []
+                for candidate in expected_category_suggestion.get("subcategories") or []:
+                    candidate_id = candidate.get("subcategory_id")
+                    if candidate_id and candidate_id not in subcategory_ids:
+                        subcategory_ids.append(candidate_id)
+                if subcategory_ids and subcategory_ids[0] == expected_subcategory:
+                    subcategory_top1 += 1
+                if expected_subcategory in subcategory_ids[:3]:
+                    subcategory_top3 += 1
+
+    def percent(numerator: int, denominator: int) -> float:
+        return round((numerator / denominator) * 100.0, 2) if denominator else 0.0
+
+    calibration_items = []
+    for _, _, label in calibration_ranges:
+        bucket = calibration[label]
+        count = int(bucket["count"])
+        calibration_items.append({
+            "range": label,
+            "count": count,
+            "accuracy": percent(int(bucket["correct"]), count),
+            "average_confidence": round(float(bucket["confidence_sum"]) / count, 2) if count else 0.0,
+        })
+
+    type_items = []
+    for tx_type, metrics in sorted(by_type.items()):
+        suggested = metrics["with_suggestions"]
+        type_items.append({
+            "type": tx_type,
+            **metrics,
+            "coverage": percent(suggested, metrics["evaluated"]),
+            "top1_accuracy": percent(metrics["top1_hits"], suggested),
+            "top3_accuracy": percent(metrics["top3_hits"], suggested),
+        })
+
+    evaluated = len(rows)
+    return {
+        "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
+        "eligible_total": eligible_total,
+        "evaluated": evaluated,
+        "limit": safe_limit,
+        "truncated": eligible_total > evaluated,
+        "with_suggestions": with_suggestions,
+        "coverage": percent(with_suggestions, evaluated),
+        "category": {
+            "top1_hits": category_top1,
+            "top3_hits": category_top3,
+            "top1_accuracy": percent(category_top1, with_suggestions),
+            "top3_accuracy": percent(category_top3, with_suggestions),
+        },
+        "subcategory": {
+            "labeled": subcategory_labeled,
+            "evaluated": subcategory_evaluated,
+            "top1_hits": subcategory_top1,
+            "top3_hits": subcategory_top3,
+            "top1_accuracy": percent(subcategory_top1, subcategory_evaluated),
+            "top3_accuracy": percent(subcategory_top3, subcategory_evaluated),
+        },
+        "calibration": calibration_items,
+        "by_type": type_items,
+        "methodology": "leave-one-out; vinculos historicos confirmados nao entram como gabarito",
+    }
 
 
 def find_category_id(conn: sqlite3.Connection, name: str, tx_type: str):
@@ -5645,6 +5786,17 @@ def suggestion_summary():
         "weak": int(row[3] or 0), "none": int(row[4] or 0), "waiting": int(row[5] or 0),
         "dismissed": int(row[6] or 0), "classified": int(row[7] or 0),
     })
+
+
+@app.route("/api/v1/transactions/suggestions/evaluation")
+def suggestion_evaluation():
+    try:
+        limit = int(request.args.get("limit", "250"))
+    except ValueError:
+        return jsonify({"detail": "Limite invalido", "code": "INVALID_LIMIT"}), 400
+    with db_connect() as conn:
+        result = evaluate_suggestion_quality(conn, limit=limit)
+    return jsonify(result)
 
 
 @app.route("/api/v1/transactions/<tx_id>/suggestions/dismiss", methods=["POST"])

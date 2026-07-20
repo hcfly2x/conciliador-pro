@@ -15,7 +15,8 @@ A base historica e auxiliar: ela sugere categorias e subcategorias e pode ser vi
 - Banco de producao informado: Supabase/PostgreSQL.
 - Banco local alternativo: SQLite.
 - Build do frontend aprovado na auditoria de 15/07/2026.
-- Quarenta e oito testes automatizados do backend aprovados na regressao de importacoes de 19/07/2026.
+- Cinquenta testes automatizados do backend aprovados, incluindo regressao de importacoes e matematica financeira dos relatorios.
+- Tres jornadas Playwright cobrem autenticacao, importacao/classificacao e conciliacao reversivel em ambiente SQLite isolado.
 - Os seis tipos oficiais de documento possuem fixtures anonimizadas com resultados financeiros exatos.
 - A producao nao foi validada de ponta a ponta com autenticacao durante a auditoria.
 
@@ -149,9 +150,10 @@ A base historica e auxiliar: ela sugere categorias e subcategorias e pode ser vi
 - Condicionar as sugestoes de subcategoria a categoria.
 - Exibir as tres melhores sugestoes e suas justificativas.
 - Validar a nova Central de Classificacao em producao com os dados reais.
-- Criar metricas Top 1, Top 3 e calibracao.
+- Acompanhar a avaliacao retrospectiva leave-one-out de Top 1, Top 3, cobertura
+  e faixas de calibracao na Central de Classificacao antes de ajustar pesos.
 - Manter toda aplicacao de sugestao dependente de acao humana.
-- Ampliar testes de integracao.
+- Ampliar Playwright para vinculos historicos, sugestoes, cofre e relatorios.
 - Revisar seguranca, banco e deploy de producao.
 - Avaliar se a aba de relatorios elimina a necessidade de evoluir contas correntes internas.
 - Limpar codigo e documentacao legados depois de verificar o impacto.

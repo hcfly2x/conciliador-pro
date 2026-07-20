@@ -1,19 +1,21 @@
 'use client'
 
 import { useCallback, useEffect, useState } from 'react'
-import { AlertCircle, CheckCircle2, ChevronLeft, ChevronRight, Loader2, Play, RefreshCw } from 'lucide-react'
+import { AlertCircle, BarChart3, CheckCircle2, ChevronLeft, ChevronRight, Loader2, Play, RefreshCw } from 'lucide-react'
 import {
   bulkClassify,
   classifyTransaction,
   dismissTransactionSuggestions,
   getActiveSuggestionJob,
   getSuggestionJob,
+  getSuggestionEvaluation,
   getSuggestionSummary,
   getTransactionSuggestionsBatch,
   getTransactions,
   reviewHistoricalMatch,
   startSuggestionJob,
   type SuggestionJob,
+  type SuggestionEvaluation,
   type SuggestionSummary,
   type TransactionSuggestion,
 } from '@/lib/api'
@@ -42,6 +44,8 @@ export default function ClassificationCenter() {
   const [drafts, setDrafts] = useState<Record<string, Draft>>({})
   const [summary, setSummary] = useState<SuggestionSummary>(EMPTY_SUMMARY)
   const [job, setJob] = useState<SuggestionJob | null>(null)
+  const [evaluation, setEvaluation] = useState<SuggestionEvaluation | null>(null)
+  const [evaluationLoading, setEvaluationLoading] = useState(false)
   const [loading, setLoading] = useState(false)
   const [busyId, setBusyId] = useState('')
   const [page, setPage] = useState(1)
@@ -137,6 +141,17 @@ export default function ClassificationCenter() {
       })
     } catch {
       addToast('Nao foi possivel iniciar o calculo', 'err')
+    }
+  }
+
+  async function runEvaluation() {
+    setEvaluationLoading(true)
+    try {
+      setEvaluation(await getSuggestionEvaluation())
+    } catch {
+      addToast('Nao foi possivel avaliar as sugestoes', 'err')
+    } finally {
+      setEvaluationLoading(false)
     }
   }
 
@@ -255,15 +270,37 @@ export default function ClassificationCenter() {
           <h1 className="font-display text-2xl font-bold text-[#e8eaf0]">Central de Classificacao</h1>
           <p className="mt-1 text-sm text-[#8b90a4]">Revise vinculos primeiro; depois use o Top 3 para classificar com poucos cliques.</p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
           <button onClick={() => runSuggestions(false)} disabled={!!job && ['queued', 'running'].includes(job.status)} className="h-10 rounded-lg px-4 text-sm font-semibold disabled:opacity-50" style={{ background: '#c9a84c', color: '#0d0f14' }}>
             <span className="flex items-center gap-2"><Play size={14} /> Calcular pendentes</span>
           </button>
           <button onClick={() => runSuggestions(true)} disabled={!!job && ['queued', 'running'].includes(job.status)} className="h-10 rounded-lg px-4 text-sm font-semibold text-[#8b90a4] disabled:opacity-50" style={{ background: '#1a1e28', border: '1px solid rgba(255,255,255,0.10)' }}>
             <span className="flex items-center gap-2"><RefreshCw size={14} /> Recalcular tudo</span>
           </button>
+          <button onClick={runEvaluation} disabled={evaluationLoading} className="h-10 rounded-lg px-4 text-sm font-semibold text-blue-300 disabled:opacity-50" style={{ background: '#1a1e28', border: '1px solid rgba(96,165,250,.25)' }}>
+            <span className="flex items-center gap-2">{evaluationLoading ? <Loader2 size={14} className="animate-spin" /> : <BarChart3 size={14} />} Avaliar qualidade</span>
+          </button>
         </div>
       </div>
+
+      {evaluation && (
+        <section className="rounded-xl p-4" style={{ background: '#13161d', border: '1px solid rgba(96,165,250,.25)' }}>
+          <div className="flex flex-wrap items-start justify-between gap-2">
+            <div><h2 className="text-sm font-semibold text-[#e8eaf0]">Avaliacao objetiva das sugestoes</h2><p className="mt-1 text-xs text-[#8b90a4]">Cada lancamento e retirado das proprias evidencias. A avaliacao nao altera classificacoes nem pesos.</p></div>
+            <span className="text-xs text-[#5a5f73]">{evaluation.evaluated} de {evaluation.eligible_total} classificados{evaluation.truncated ? ' (amostra)' : ''}</span>
+          </div>
+          <div className="mt-4 grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
+            {[
+              ['Cobertura', evaluation.coverage, `${evaluation.with_suggestions} com sugestao`],
+              ['Categoria Top 1', evaluation.category.top1_accuracy, `${evaluation.category.top1_hits} acertos`],
+              ['Categoria Top 3', evaluation.category.top3_accuracy, `${evaluation.category.top3_hits} acertos`],
+              ['Subcategoria Top 1', evaluation.subcategory.top1_accuracy, `${evaluation.subcategory.top1_hits}/${evaluation.subcategory.evaluated}`],
+              ['Subcategoria Top 3', evaluation.subcategory.top3_accuracy, `${evaluation.subcategory.top3_hits}/${evaluation.subcategory.evaluated}`],
+            ].map(([label, value, detail]) => <div key={String(label)} className="rounded-lg bg-white/[.025] p-3"><p className="text-[10px] font-semibold uppercase tracking-wider text-[#5a5f73]">{label}</p><p className="mt-1 text-xl font-bold text-[#e8c96e]">{Number(value).toFixed(1)}%</p><p className="text-[11px] text-[#8b90a4]">{detail}</p></div>)}
+          </div>
+          <div className="mt-4"><p className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-[#5a5f73]">Confianca x acerto Top 1</p><div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">{evaluation.calibration.map(bucket => <div key={bucket.range} className="rounded-md bg-black/10 px-3 py-2 text-xs text-[#8b90a4]"><span className="text-[#e8eaf0]">{bucket.range}</span><span className="float-right">{bucket.count} caso(s)</span><p className="mt-1">Confianca media {bucket.average_confidence.toFixed(1)}% · acerto {bucket.accuracy.toFixed(1)}%</p></div>)}</div></div>
+        </section>
+      )}
 
       {job && (
         <section className="rounded-xl p-4" style={{ background: '#13161d', border: `1px solid ${job.status === 'failed' ? 'rgba(248,113,113,.35)' : 'rgba(201,168,76,.28)'}` }}>
