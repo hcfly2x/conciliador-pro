@@ -1664,6 +1664,11 @@ def init_db() -> None:
               preview_id TEXT NOT NULL UNIQUE,
               filename TEXT NOT NULL,
               status TEXT NOT NULL DEFAULT 'queued',
+              phase TEXT NOT NULL DEFAULT 'queued',
+              processed INTEGER NOT NULL DEFAULT 0,
+              total INTEGER NOT NULL DEFAULT 0,
+              message TEXT NOT NULL DEFAULT '',
+              logs_json TEXT NOT NULL DEFAULT '[]',
               result_json TEXT NOT NULL DEFAULT '',
               error TEXT NOT NULL DEFAULT '',
               created_at TEXT NOT NULL,
@@ -1755,6 +1760,16 @@ def init_db() -> None:
         ):
             if col not in seed_job_cols:
                 conn.execute(f"ALTER TABLE seed_import_jobs ADD COLUMN {col} {definition}")
+        import_job_cols = [r[1] for r in conn.execute("PRAGMA table_info(import_jobs)").fetchall()]
+        for col, definition in (
+            ("phase", "TEXT NOT NULL DEFAULT 'queued'"),
+            ("processed", "INTEGER NOT NULL DEFAULT 0"),
+            ("total", "INTEGER NOT NULL DEFAULT 0"),
+            ("message", "TEXT NOT NULL DEFAULT ''"),
+            ("logs_json", "TEXT NOT NULL DEFAULT '[]'"),
+        ):
+            if col not in import_job_cols:
+                conn.execute(f"ALTER TABLE import_jobs ADD COLUMN {col} {definition}")
         conn.execute(
             """
             UPDATE seed_import_jobs
@@ -1777,7 +1792,9 @@ def init_db() -> None:
         conn.execute(
             """
             UPDATE import_jobs
-            SET status='failed', error='Processamento interrompido por reinicializacao do servidor', finished_at=?
+            SET status='failed', phase='interrupted',
+                message='Processamento interrompido; tente novamente',
+                error='Processamento interrompido por reinicializacao do servidor', finished_at=?
             WHERE status IN ('queued','running')
             """,
             (dt.datetime.now().isoformat(timespec="seconds"),),
@@ -3412,6 +3429,7 @@ def import_document(
     account_id: str,
     confirm_duplicates: bool = False,
     competence_month_override: str = "",
+    progress=None,
 ):
     h = hashlib.sha1(path.read_bytes()).hexdigest()
     ext = path.suffix.lower().replace(".", "")
@@ -3427,6 +3445,8 @@ def import_document(
         txs = preview_data["txs"]
         parsed_rows = preview_data["parsed_rows"]
         warnings = preview_data["warnings"]
+        if progress:
+            progress("validating", 0, len(parsed_rows), f"{len(parsed_rows)} lancamento(s) lido(s); validando duplicidade no banco")
 
         prev = conn.execute("SELECT id, imported_at, total_parsed FROM imported_files WHERE file_hash=?", (h,)).fetchone()
         if prev and int(prev[2] or 0) > 0:
@@ -3463,8 +3483,9 @@ def import_document(
 
         internal_duplicates = sum(max(0, c - 1) for c in internal_counter.values())
 
-        # Duplicidade com base existente. Por padrao nao reinsere; a UI pode autorizar
-        # importar mesmo assim, mantendo a tag DUPLICATE_DB para conferencia posterior.
+        # Repeticoes internas representam ocorrencias reais distintas e sao preservadas.
+        # Qualquer coincidencia com o banco bloqueia o lote inteiro: indica que o
+        # arquivo (ou parte dele) ja foi importado e evita contabilidade parcial.
         db_counts = {r["sig"]: existing_db_duplicate_count(conn, acc[0], r) for r in parsed_rows}
         preview_occ: dict[tuple[Any, ...], int] = {}
         existing_db_duplicates = 0
@@ -3473,14 +3494,13 @@ def import_document(
             if preview_occ[r["sig"]] <= db_counts.get(r["sig"], 0):
                 existing_db_duplicates += 1
 
-        if existing_db_duplicates > 0 and not confirm_duplicates:
+        if existing_db_duplicates > 0:
             return {
                 "detail": (
-                    f"{existing_db_duplicates} lancamentos ja foram encontrados no banco. "
-                    f"{internal_duplicates} sao duplicados dentro do proprio arquivo. "
-                    "Deseja continuar a importacao desconsiderando apenas os itens duplicados no banco?"
+                    f"Importacao bloqueada: {existing_db_duplicates} lancamento(s) do arquivo "
+                    "ja existem no banco. Isso indica que o arquivo ja foi importado."
                 ),
-                "code": "DUPLICATES_FOUND",
+                "code": "DATABASE_DUPLICATES_FOUND",
                 "duplicates_found": existing_db_duplicates,
                 "duplicates_db_found": existing_db_duplicates,
                 "duplicates_internal_found": internal_duplicates,
@@ -3500,22 +3520,17 @@ def import_document(
         duplicates_internal = internal_duplicates
         preview = []
         occ: dict[tuple[str, float, str, str], int] = {}
-        for r in parsed_rows:
+        if progress:
+            progress("saving", 0, len(parsed_rows), "Salvando lancamentos no banco")
+        for row_index, r in enumerate(parsed_rows, start=1):
             occ[r["sig"]] = occ.get(r["sig"], 0) + 1
-            is_db_duplicate = occ[r["sig"]] <= db_counts.get(r["sig"], 0)
-            if is_db_duplicate:
-                duplicates_db += 1
-                continue
 
-            # Duplicados internos sao permitidos: diferencia tx_key por ocorrência.
+            # Ocorrencias internas repetidas sao legitimas e recebem chaves distintas.
             key = (
                 f"{acc[0]}|{r['date']}|{r['amount_signed']:.2f}|{r['description_norm']}|"
                 f"{r['tx_type']}|{int(r['installment_current'] or 0)}|{int(r['installment_total'] or 0)}"
                 f"#{occ[r['sig']]}"
             )
-            if is_db_duplicate:
-                key = f"{key}|dupdb|{uuid.uuid4()}"
-
             installment_plan_id, installment_plan = find_or_create_installment_plan(conn, acc[0], r)
 
             status = "pending"
@@ -3555,8 +3570,6 @@ def import_document(
             )
             tx_id = str(uuid.uuid4())
             row_flags = [flag for flag in (r.get("flags", "") or "").split(",") if flag]
-            if is_db_duplicate and "DUPLICATE_DB" not in row_flags:
-                row_flags.append("DUPLICATE_DB")
             flags_text = ",".join(row_flags)
             conn.execute(
                 """
@@ -3603,6 +3616,8 @@ def import_document(
                 r["installment_current"], r["installment_total"],
             )
             inserted += 1
+            if progress and (row_index == len(parsed_rows) or row_index % 25 == 0):
+                progress("saving", row_index, len(parsed_rows), f"{row_index} de {len(parsed_rows)} lancamentos preparados")
             if len(preview) < 20:
                 preview.append(
                     {
@@ -3651,6 +3666,8 @@ def import_document(
 
         # O documento e os lancamentos pertencem a mesma transacao. Se o cofre
         # persistente falhar, todo o lote e revertido.
+        if progress:
+            progress("document", len(parsed_rows), len(parsed_rows), "Preservando o arquivo original no cofre")
         store_document_in_db(
             path,
             acc[1],
@@ -3666,6 +3683,8 @@ def import_document(
         archive_import_file(path, archived_target)
     except Exception as exc:
         warnings.append(f"Documento preservado no cofre, mas a copia local falhou: {type(exc).__name__}")
+    if progress:
+        progress("completed", len(parsed_rows), len(parsed_rows), f"Importacao concluida: {inserted} lancamento(s) salvo(s)")
 
     return {
         "imported_file_id": imported_file_id,
@@ -4187,6 +4206,11 @@ def import_preview():
             critical_errors: list[str] = []
             if not parsed_rows and not bool(import_meta.get("empty_statement_confirmed")):
                 critical_errors.append("Nenhum lancamento foi identificado no arquivo.")
+            if existing_db_duplicates > 0:
+                critical_errors.append(
+                    f"{existing_db_duplicates} lancamento(s) ja existem no banco. "
+                    "O arquivo foi bloqueado para evitar uma importacao repetida."
+                )
 
         return jsonify({
             "preview_id": preview_id,
@@ -4261,7 +4285,8 @@ def import_commit():
             conn.execute(
                 """
                 UPDATE import_jobs
-                SET status='queued',result_json='',error='',started_at='',finished_at=?
+                SET status='queued',phase='queued',processed=0,total=0,message='',logs_json='[]',
+                    result_json='',error='',started_at='',finished_at=?
                 WHERE id=?
                 """,
                 ("", job_id),
@@ -4309,15 +4334,34 @@ def _run_import_job(
     competence_month: str,
 ) -> None:
     temp_path: Path | None = None
+    def progress(phase: str, processed: int, total: int, message: str) -> None:
+        try:
+            timestamp = dt.datetime.now().strftime("%H:%M:%S")
+            with db_connect() as conn:
+                row = conn.execute("SELECT logs_json FROM import_jobs WHERE id=?", (job_id,)).fetchone()
+                logs = json.loads(row[0] or "[]") if row else []
+                if not logs or logs[-1].get("message") != message:
+                    logs = (logs + [{"time": timestamp, "message": message}])[-40:]
+                conn.execute(
+                    """
+                    UPDATE import_jobs
+                    SET phase=?,processed=?,total=?,message=?,logs_json=? WHERE id=?
+                    """,
+                    (phase, processed, total, message, json.dumps(logs, ensure_ascii=False), job_id),
+                )
+        except Exception:
+            # Log de progresso nunca pode abortar a transacao financeira.
+            pass
     try:
         with db_connect() as conn:
             preview = conn.execute(
                 "SELECT temp_path,account_id FROM import_previews WHERE id=?", (preview_id,)
             ).fetchone()
             conn.execute(
-                "UPDATE import_jobs SET status='running',started_at=? WHERE id=?",
+                "UPDATE import_jobs SET status='running',phase='starting',message='Preparando importacao',started_at=? WHERE id=?",
                 (dt.datetime.now().isoformat(timespec="seconds"), job_id),
             )
+        progress("starting", 0, 0, "Preparando importacao")
         if not preview:
             raise RuntimeError("Preview nao encontrado para processar a importacao")
         temp_path = Path(preview[0])
@@ -4328,6 +4372,7 @@ def _run_import_job(
             preview[1],
             confirm_duplicates=confirm_duplicates,
             competence_month_override=competence_month,
+            progress=progress,
         )
         if status == 409 and result.get("code") == "FILE_ALREADY_IMPORTED":
             recovered = _imported_file_result(str(result.get("imported_file_id") or ""))
@@ -4339,10 +4384,12 @@ def _run_import_job(
             conn.execute(
                 """
                 UPDATE import_jobs
-                SET status=?,result_json=?,error=?,finished_at=? WHERE id=?
+                SET status=?,phase=?,message=?,result_json=?,error=?,finished_at=? WHERE id=?
                 """,
                 (
                     "completed" if completed else "failed",
+                    "completed" if completed else "failed",
+                    "Importacao concluida" if completed else error,
                     json.dumps(result, ensure_ascii=False), error,
                     dt.datetime.now().isoformat(timespec="seconds"), job_id,
                 ),
@@ -4356,17 +4403,20 @@ def _run_import_job(
                 pass
     except Exception as exc:
         with db_connect() as conn:
+            error = f"{type(exc).__name__}: {exc}"[:1000]
             conn.execute(
-                "UPDATE import_jobs SET status='failed',error=?,finished_at=? WHERE id=?",
-                (f"{type(exc).__name__}: {exc}"[:1000], dt.datetime.now().isoformat(timespec="seconds"), job_id),
+                "UPDATE import_jobs SET status='failed',phase='failed',message=?,error=?,finished_at=? WHERE id=?",
+                (str(exc)[:500], error, dt.datetime.now().isoformat(timespec="seconds"), job_id),
             )
 
 
 def _import_job_payload(row: Any) -> dict[str, Any]:
     return {
         "id": row[0], "preview_id": row[1], "filename": row[2], "status": row[3],
-        "result": json.loads(row[4]) if row[4] else None, "error": row[5] or "",
-        "created_at": row[6], "started_at": row[7] or "", "finished_at": row[8] or "",
+        "phase": row[4] or "", "processed": int(row[5] or 0), "total": int(row[6] or 0),
+        "message": row[7] or "", "logs": json.loads(row[8] or "[]"),
+        "result": json.loads(row[9]) if row[9] else None, "error": row[10] or "",
+        "created_at": row[11], "started_at": row[12] or "", "finished_at": row[13] or "",
     }
 
 
@@ -4375,7 +4425,8 @@ def import_job_status(job_id: str):
     with db_connect() as conn:
         row = conn.execute(
             """
-            SELECT id,preview_id,filename,status,result_json,error,created_at,started_at,finished_at
+            SELECT id,preview_id,filename,status,phase,processed,total,message,logs_json,
+                   result_json,error,created_at,started_at,finished_at
             FROM import_jobs WHERE id=?
             """,
             (job_id,),

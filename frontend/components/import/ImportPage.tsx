@@ -55,6 +55,7 @@ export default function ImportPage() {
         }
         setImportJob({
           id: jobId, preview_id: '', filename: '', status: 'queued', result: null, error: '',
+          phase: 'queued', processed: 0, total: 0, message: 'Retomando acompanhamento', logs: [],
           created_at: '', started_at: '', finished_at: '',
         })
       })
@@ -149,6 +150,7 @@ export default function ImportPage() {
       setImportJob({
         id: queued.job_id, preview_id: preview.preview_id, filename: preview.filename,
         status: 'queued', result: null, error: '',
+        phase: 'queued', processed: 0, total: 0, message: 'Aguardando processamento', logs: [],
         created_at: '', started_at: '', finished_at: '',
       })
       addToast('Importação iniciada. Você pode aguardar nesta tela.')
@@ -215,9 +217,11 @@ export default function ImportPage() {
       )}
 
       {importJob && ['queued', 'running'].includes(importJob.status) && (
-        <div className="flex items-center gap-3 p-4 rounded-xl" style={{ background: 'rgba(96,165,250,0.08)', border: '1px solid rgba(96,165,250,0.25)' }}>
-          <div className="h-4 w-4 animate-spin rounded-full border-2 border-[#1e3a5f] border-t-[#93c5fd]" />
-          <div><p className="text-sm font-semibold text-[#93c5fd]">Importação em processamento</p><p className="text-xs text-[#8b90a4]">O servidor está salvando o arquivo e os lançamentos. O acompanhamento será retomado mesmo se esta página for atualizada.</p></div>
+        <div className="p-4 rounded-xl" style={{ background: 'rgba(96,165,250,0.08)', border: '1px solid rgba(96,165,250,0.25)' }}>
+          <div className="flex items-center gap-3"><div className="h-4 w-4 animate-spin rounded-full border-2 border-[#1e3a5f] border-t-[#93c5fd]" /><div className="flex-1"><p className="text-sm font-semibold text-[#93c5fd]">Importação em processamento</p><p className="text-xs text-[#8b90a4]">{importJob.message || 'Preparando importação'}</p></div><span className="text-xs font-mono text-[#93c5fd]">{importJob.total > 0 ? `${importJob.processed}/${importJob.total}` : importJob.phase}</span></div>
+          {importJob.total > 0 && <div className="mt-3 h-2 overflow-hidden rounded bg-[#0f1320]"><div className="h-full bg-[#60a5fa] transition-all" style={{ width: `${Math.min(100, (importJob.processed / importJob.total) * 100)}%` }} /></div>}
+          {importJob.logs.length > 0 && <div className="mt-3 max-h-36 overflow-auto rounded bg-[#0d0f14] p-3 font-mono text-xs text-[#8b90a4]">{importJob.logs.map((entry, index) => <p key={`${entry.time}-${index}`}><span className="text-[#5a5f73]">{entry.time}</span> {entry.message}</p>)}</div>}
+          <p className="mt-2 text-[11px] text-[#5a5f73]">O acompanhamento será retomado mesmo se esta página for atualizada.</p>
         </div>
       )}
 
@@ -281,7 +285,7 @@ export default function ImportPage() {
           <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mb-4">
             <div className="rounded-lg p-3" style={{ background: '#0f1320', border: '1px solid rgba(255,255,255,0.07)' }}><p className="text-xs text-[#8b90a4]">Lidos</p><p className="text-xl text-[#e8eaf0] font-semibold">{preview.total_parsed}</p></div>
             <div className="rounded-lg p-3" style={{ background: '#0f1320', border: '1px solid rgba(255,255,255,0.07)' }}><p className="text-xs text-[#8b90a4]">Duplicados no banco</p><p className="text-xl text-[#fbbf24] font-semibold">{preview.duplicates_db}</p></div>
-            <div className="rounded-lg p-3" style={{ background: '#0f1320', border: '1px solid rgba(255,255,255,0.07)' }}><p className="text-xs text-[#8b90a4]">Duplicados internos</p><p className="text-xl text-[#c084fc] font-semibold">{preview.duplicates_internal}</p></div>
+            <div className="rounded-lg p-3" style={{ background: '#0f1320', border: '1px solid rgba(255,255,255,0.07)' }}><p className="text-xs text-[#8b90a4]">Repetições válidas no arquivo</p><p className="text-xl text-[#3ecf8e] font-semibold">{preview.duplicates_internal}</p></div>
             <div className="rounded-lg p-3" style={{ background: '#0f1320', border: '1px solid rgba(255,255,255,0.07)' }}><p className="text-xs text-[#8b90a4]">Novos para inserir</p><p className="text-xl text-[#3ecf8e] font-semibold">{preview.new_records}</p></div>
             <div className="rounded-lg p-3" style={{ background: '#0f1320', border: '1px solid rgba(255,255,255,0.07)' }}><p className="text-xs text-[#8b90a4]">Sugestões do histórico</p><p className="text-xl text-[#93c5fd] font-semibold">{preview.historical_matches || 0}</p></div>
           </div>
@@ -392,7 +396,7 @@ export default function ImportPage() {
                     <td className={`px-3 py-2 font-medium ${r.amount >= 0 ? 'text-[#3ecf8e]' : 'text-[#f87171]'}`}>{fmtCurrency(r.amount)}</td>
                     <td className="px-3 py-2 text-[#8b90a4]">{r.type === 'income' ? 'Entrada' : 'Saída'}</td>
                     <td className="px-3 py-2">
-                      {r.duplicate_db ? <span className="text-[#fbbf24]">Duplicado no banco</span> : r.duplicate_internal ? <span className="text-[#c084fc]">Duplicado interno (ok)</span> : <span className="text-[#3ecf8e]">Novo</span>}
+                      {r.duplicate_db ? <span className="text-[#f87171]">Já existe no banco — arquivo bloqueado</span> : r.duplicate_internal ? <span className="text-[#3ecf8e]">Repetição válida</span> : <span className="text-[#3ecf8e]">Novo</span>}
                     </td>
                     <td className="px-3 py-2 text-[#93c5fd]">{r.match_probability ? `${r.match_probability.toFixed(0)}%` : '-'}</td>
                   </tr>
@@ -414,7 +418,7 @@ export default function ImportPage() {
         <div className="p-5 rounded-xl" style={{ background: 'rgba(62,207,142,0.06)', border: '1px solid rgba(62,207,142,0.2)' }}>
           <div className="flex items-center gap-2 mb-4"><CheckCircle size={16} className="text-[#3ecf8e]" /><span className="font-semibold text-[#3ecf8e]">{result.import_meta?.empty_statement_confirmed ? 'Extrato vazio registrado' : 'Importação concluída'}</span></div>
           <div className="grid grid-cols-3 gap-3 text-center">
-            {[['Inseridos', result.total_inserted, '#3ecf8e'], ['Duplicatas', result.total_duplicates, '#fbbf24'], ['Total lidos', result.total_parsed, '#8b90a4']].map(([l, v, c]) => (
+            {[['Inseridos', result.total_inserted, '#3ecf8e'], ['Repetições válidas', result.total_duplicates_internal || 0, '#3ecf8e'], ['Total lidos', result.total_parsed, '#8b90a4']].map(([l, v, c]) => (
               <div key={String(l)}><p className="text-2xl font-bold" style={{ color: String(c) }}>{String(v)}</p><p className="text-xs text-[#5a5f73] mt-0.5">{String(l)}</p></div>
             ))}
           </div>

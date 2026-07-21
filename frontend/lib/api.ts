@@ -534,6 +534,11 @@ export interface DocumentImportJob {
   preview_id: string
   filename: string
   status: 'queued' | 'running' | 'completed' | 'failed'
+  phase: string
+  processed: number
+  total: number
+  message: string
+  logs: Array<{ time: string; message: string }>
   result: ImportResult | null
   error: string
   created_at: string
@@ -554,6 +559,7 @@ export async function getDocumentImportJob(id: string): Promise<DocumentImportJo
     await delay(700)
     return {
       id, preview_id: 'mock-preview', filename: 'mock.csv', status: 'completed', error: '',
+      phase: 'completed', processed: 45, total: 45, message: 'Importacao concluida', logs: [],
       created_at: '', started_at: '', finished_at: '',
       result: {
         imported_file_id: Date.now().toString(), filename: 'mock.csv', account_name: 'CONTA XP',
@@ -565,10 +571,11 @@ export async function getDocumentImportJob(id: string): Promise<DocumentImportJo
   return http<DocumentImportJob>('GET', `/import/jobs/${id}`)
 }
 
-export async function waitForDocumentImportJob(id: string): Promise<DocumentImportJob> {
+export async function waitForDocumentImportJob(id: string, onProgress?: (job: DocumentImportJob) => void): Promise<DocumentImportJob> {
   for (;;) {
     try {
       const job = await getDocumentImportJob(id)
+      onProgress?.(job)
       if (job.status === 'completed' || job.status === 'failed') return job
     } catch (error: any) {
       if (error?.status === 401 || error?.status === 404) throw error

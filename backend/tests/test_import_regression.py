@@ -144,11 +144,20 @@ class DuplicateDatabaseRegressionTests(unittest.TestCase):
             first, first_status = app.import_document(path, account_id, confirm_duplicates=True)
             shutil.copyfile(FIXTURES / "xp_statement.csv", path)
             second, second_status = app.import_document(path, account_id, confirm_duplicates=True)
+            path.write_text(
+                "Data;Hora;Descricao;Valor;Saldo\n"
+                "01/03/2026;09:00;PIX RECEBIDO CLIENTE TESTE;1.250,00;2.250,00\n"
+                "04/03/2026;12:00;NOVO LANCAMENTO;-50,00;2.200,00\n",
+                encoding="utf-8",
+            )
+            partial, partial_status = app.import_document(path, account_id, confirm_duplicates=True)
 
         self.assertEqual(first_status, 201)
         self.assertEqual(first["total_inserted"], 3)
         self.assertEqual(second_status, 409)
         self.assertEqual(second["code"], "FILE_ALREADY_IMPORTED")
+        self.assertEqual(partial_status, 409)
+        self.assertEqual(partial["code"], "DATABASE_DUPLICATES_FOUND")
         self.assertEqual(conn.execute("SELECT COUNT(1) FROM transactions").fetchone()[0], 3)
 
 

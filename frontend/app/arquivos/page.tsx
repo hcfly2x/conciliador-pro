@@ -15,6 +15,7 @@ import {
   type CoverageAccount,
   type CoverageFile,
   type CoverageResponse,
+  type DocumentImportJob,
 } from '@/lib/api'
 import { formatCurrencyAbs } from '@/lib/utils'
 import { useStore } from '@/store/app'
@@ -52,6 +53,7 @@ export default function ArquivosPage() {
   const [busy, setBusy] = useState(false)
   const [preview, setPreview] = useState<any | null>(null)
   const [competenceMonth, setCompetenceMonth] = useState('')
+  const [importJob, setImportJob] = useState<DocumentImportJob | null>(null)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -70,7 +72,7 @@ export default function ArquivosPage() {
     if (!jobId) return
     recoveryStartedRef.current = true
     setBusy(true)
-    waitForDocumentImportJob(jobId)
+    waitForDocumentImportJob(jobId, setImportJob)
       .then(job => {
         if (job.status === 'completed' && job.result) {
           addToast(`${job.result.total_inserted} lancamentos importados`)
@@ -83,6 +85,7 @@ export default function ArquivosPage() {
       .finally(() => {
         window.sessionStorage.removeItem('conciliador_active_import_job')
         setBusy(false)
+        setImportJob(null)
       })
   }, [addToast, bumpRefresh, load])
 
@@ -161,11 +164,12 @@ export default function ArquivosPage() {
     try {
       const queued = await commitImportPreview(preview.preview_id, true, competenceMonth.replace('-', '/'))
       window.sessionStorage.setItem('conciliador_active_import_job', queued.job_id)
-      const job = await waitForDocumentImportJob(queued.job_id)
+      const job = await waitForDocumentImportJob(queued.job_id, setImportJob)
       window.sessionStorage.removeItem('conciliador_active_import_job')
       if (job.status === 'failed' || !job.result) throw { detail: job.error || 'Erro ao importar arquivo' }
       addToast(`${job.result.total_inserted} lancamentos importados`)
       setPreview(null)
+      setImportJob(null)
       bumpRefresh()
       await load()
       if (selected) await selectCell({ id: selected.accountId, name: selected.accountName } as CoverageAccount, selected.yearMonth)
@@ -336,6 +340,13 @@ export default function ArquivosPage() {
           </section>
 
           <section className="rounded-lg border border-white/10 bg-[#13161d] p-4">
+            {importJob && ['queued', 'running'].includes(importJob.status) && (
+              <div className="mb-4 rounded-lg border border-blue-400/25 bg-blue-500/10 p-3">
+                <div className="flex items-center gap-2"><RefreshCw size={14} className="animate-spin text-blue-300" /><p className="text-sm font-semibold text-blue-300">{importJob.message || 'Importando arquivo'}</p><span className="ml-auto text-xs font-mono text-blue-200">{importJob.total > 0 ? `${importJob.processed}/${importJob.total}` : importJob.phase}</span></div>
+                {importJob.total > 0 && <div className="mt-2 h-1.5 overflow-hidden rounded bg-[#0d0f14]"><div className="h-full bg-blue-400" style={{ width: `${Math.min(100, (importJob.processed / importJob.total) * 100)}%` }} /></div>}
+                {importJob.logs.length > 0 && <div className="mt-2 max-h-28 overflow-auto rounded bg-[#0d0f14] p-2 font-mono text-[11px] text-[#8b90a4]">{importJob.logs.map((entry, index) => <p key={`${entry.time}-${index}`}><span className="text-[#5a5f73]">{entry.time}</span> {entry.message}</p>)}</div>}
+              </div>
+            )}
             {!preview ? (
               <div className="h-full min-h-52 flex items-center justify-center text-sm text-[#8b90a4]">
                 Analise um arquivo para ver totais, duplicados e linhas lidas.
@@ -364,7 +375,7 @@ export default function ArquivosPage() {
                 <div className="grid grid-cols-5 gap-2 mb-4">
                   <Mini label="Lidos" value={preview.total_parsed} />
                   <Mini label="Dup. banco" value={preview.duplicates_db} />
-                  <Mini label="Dup. internos" value={preview.duplicates_internal} />
+                  <Mini label="Repetições válidas" value={preview.duplicates_internal} />
                   <Mini label="Novos" value={preview.new_records} />
                   <Mini label="Match hist." value={preview.historical_matches || 0} />
                 </div>

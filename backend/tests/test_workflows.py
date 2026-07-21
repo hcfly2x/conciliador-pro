@@ -275,7 +275,9 @@ class AsyncDocumentImportIntegrationTests(unittest.TestCase):
                 (str(source),),
             )
 
-        def successful_import(*_args, **_kwargs):
+        def successful_import(*_args, **kwargs):
+            kwargs["progress"]("saving", 1, 2, "1 de 2 lancamentos preparados")
+            kwargs["progress"]("saving", 2, 2, "2 de 2 lancamentos preparados")
             time.sleep(0.05)
             return ({
                 "imported_file_id": "file-1", "filename": "arquivo.csv", "account_name": "CONTA TESTE",
@@ -300,6 +302,8 @@ class AsyncDocumentImportIntegrationTests(unittest.TestCase):
         payload = status.get_json()
         self.assertEqual(payload["status"], "completed")
         self.assertEqual(payload["result"]["total_inserted"], 2)
+        self.assertEqual((payload["processed"], payload["total"]), (2, 2))
+        self.assertTrue(any("2 de 2" in entry["message"] for entry in payload["logs"]))
         self.assertFalse(source.exists())
         with app.db_connect() as conn:
             self.assertIsNone(conn.execute("SELECT id FROM import_previews WHERE id='preview-1'").fetchone())

@@ -45,6 +45,7 @@ vínculo histórico.
 - Confirmação da importação executada em job assíncrono, com retomada do
   acompanhamento após atualização da página e proteção contra confirmação
   duplicada.
+- O job de importação expõe fase, progresso numérico e logs recentes na tela.
 - Detecção automática de conta com possibilidade de seleção manual.
 - Parsers para Santander, Nubank e XP.
 - Cadastro de contas, categorias e subcategorias.
@@ -64,8 +65,10 @@ vínculo histórico.
 - A base histórica não cria lançamentos reais; serve como evidência de
   classificação.
 - Não existe autoclassificação: toda classificação exige ação humana.
-- Duplicados já existentes no banco não são reinseridos.
-- Duplicados internos são sinalizados, pois podem ser legítimos.
+- Qualquer lançamento do arquivo que já exista no banco bloqueia o lote inteiro,
+  pois indica arquivo repetido; não existe importação parcial nesse caso.
+- Ocorrências repetidas dentro do mesmo arquivo são lançamentos legítimos e são
+  preservadas integralmente com chaves distintas.
 - Despesas possuem valor negativo; receitas possuem valor positivo.
 - Um vínculo histórico é apresentado para revisão com score mínimo de 96%.
 - Em compras parceladas, o valor da parcela e a data reconstruída da primeira

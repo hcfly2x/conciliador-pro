@@ -249,6 +249,8 @@ export interface ImportResult {
   total_parsed: number
   total_inserted: number
   total_duplicates: number
+  total_duplicates_db?: number
+  total_duplicates_internal?: number
   total_errors: number
   warnings?: string[]
   balance_check?: ImportBalanceCheck
