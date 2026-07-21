@@ -64,9 +64,9 @@ function handleUnauthorized() {
   }
 }
 
-async function http<T>(method: string, path: string, body?: unknown): Promise<T> {
+async function http<T>(method: string, path: string, body?: unknown, timeoutMs = 30000): Promise<T> {
   const controller = new AbortController()
-  const timeout = window.setTimeout(() => controller.abort(), 30000)
+  const timeout = window.setTimeout(() => controller.abort(), timeoutMs)
   let res: Response
   try {
     res = await fetch(`${BASE}${path}`, {
@@ -703,9 +703,12 @@ export async function prepareHistoricalLinks(ids: string[]): Promise<{
   skipped_ids: string[]
   failed_ids: string[]
   affected_ids: string[]
+  operation_id: string
+  duration_ms: number
+  logs: Array<{ time: string; message: string }>
 }> {
-  if (USE_MOCK) { await delay(); return { selected: ids.length, matched: ids.length, without_match: 0, skipped: 0, failed: 0, matched_ids: ids, without_match_ids: [], skipped_ids: [], failed_ids: [], affected_ids: ids } }
-  return http('POST', '/transactions/history-links/batch', { ids })
+  if (USE_MOCK) { await delay(); return { selected: ids.length, matched: ids.length, without_match: 0, skipped: 0, failed: 0, matched_ids: ids, without_match_ids: [], skipped_ids: [], failed_ids: [], affected_ids: ids, operation_id: 'mock', duration_ms: 250, logs: [{ time: new Date().toLocaleTimeString('pt-BR'), message: `Lote concluido: ${ids.length} confirmado(s)` }] } }
+  return http('POST', '/transactions/history-links/batch', { ids }, 120000)
 }
 
 export async function getCoverage(year = 2026): Promise<CoverageResponse> {

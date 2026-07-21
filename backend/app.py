@@ -10,6 +10,7 @@ import json
 import re
 import shutil
 import sqlite3
+import time
 import unicodedata
 import uuid
 from dataclasses import dataclass
@@ -5849,8 +5850,59 @@ def confirm_history_link_in_batch(conn, tx_id: str) -> tuple[dict[str, Any], str
     }, ""
 
 
+def strict_history_match_for_batch(
+    row: Any,
+    history_index: dict[tuple[str, str, int], list[Any]],
+) -> dict[str, Any] | None:
+    """Encontra somente candidatos exatos exigidos pelo botao de vinculo em lote."""
+    tx_type = str(row[5] or "")
+    tx_date = str(row[1] or "")
+    tx_description = str(row[3] or row[2] or "")
+    tx_amount = abs(float(row[4] or 0))
+    rejected_id = row[10]
+    comparisons: list[tuple[str, str, float]] = [("standard", tx_date, tx_amount)]
+    try:
+        installment_current = int(row[7] or 0)
+        installment_total = int(row[8] or 0)
+    except (TypeError, ValueError):
+        installment_current = installment_total = 0
+    if 0 < installment_current <= installment_total and installment_total > 1:
+        first_date = shift_months(tx_date, -(installment_current - 1))
+        comparisons.append(("installment_total", first_date, round(tx_amount * installment_total, 2)))
+
+    best: dict[str, Any] | None = None
+    seen: set[str] = set()
+    for match_basis, comparison_date, comparison_amount in comparisons:
+        key = (tx_type, comparison_date, int(round(comparison_amount * 100)))
+        for history in history_index.get(key, []):
+            history_id = str(history[0])
+            if history_id in seen or history_id == rejected_id:
+                continue
+            seen.add(history_id)
+            similarity = round(description_similarity(tx_description, history[2] or "") * 100, 1)
+            if similarity <= 95.0:
+                continue
+            candidate = {
+                "history_match_id": history_id,
+                "identity_score": 100.0,
+                "category_id": history[5],
+                "subcategory_id": history[6],
+                "match_basis": match_basis,
+                "comparison_date": comparison_date,
+                "comparison_amount": comparison_amount,
+                "description_similarity": similarity,
+                "date_difference_days": 0,
+                "amount_difference": 0.0,
+            }
+            if best is None or similarity > float(best["description_similarity"]):
+                best = candidate
+    return best
+
+
 @app.route("/api/v1/transactions/history-links/batch", methods=["POST"])
 def prepare_history_links_batch():
+    started_at = time.perf_counter()
+    operation_id = uuid.uuid4().hex[:8]
     data = request.get_json(silent=True) or {}
     ids = list(dict.fromkeys(str(item).strip() for item in (data.get("ids") or []) if str(item).strip()))
     if not ids:
@@ -5863,17 +5915,35 @@ def prepare_history_links_batch():
     skipped_ids: list[str] = []
     failed_ids: list[str] = []
     affected_ids: set[str] = set()
+    progress_logs: list[dict[str, str]] = []
+
+    def log_progress(message: str) -> None:
+        timestamp = dt.datetime.now().strftime("%H:%M:%S")
+        progress_logs.append({"time": timestamp, "message": message})
+        app.logger.info("[history-link-batch:%s] %s", operation_id, message)
+
+    def log_position(position: int) -> None:
+        if position % 10 == 0 or position == len(ids):
+            log_progress(
+                f"Progresso: {position}/{len(ids)} analisados; "
+                f"{len(matched_ids)} confirmados; {len(without_match_ids)} sem vinculo"
+            )
+
+    log_progress(f"Lote iniciado: {len(ids)} lancamento(s) selecionado(s)")
     with db_connect() as conn:
-        hist_cache = {
-            tx_type: conn.execute(
-                """
-                SELECT id,date,description_norm,ABS(amount),account_id,category_id,subcategory_id
-                FROM classification_history WHERE type=?
-                """,
-                (tx_type,),
-            ).fetchall()
-            for tx_type in ("expense", "income")
-        }
+        history_rows = conn.execute(
+            """
+            SELECT id,date,description_norm,ABS(amount),account_id,category_id,subcategory_id,type
+            FROM classification_history
+            """
+        ).fetchall()
+        history_index: dict[tuple[str, str, int], list[Any]] = {}
+        for history in history_rows:
+            history_index.setdefault(
+                (str(history[7] or ""), str(history[1] or ""), int(round(float(history[3] or 0) * 100))),
+                [],
+            ).append(history)
+        log_progress(f"Base historica indexada: {len(history_rows)} registro(s)")
         rows = conn.execute(
             f"""
             SELECT id,date,description,description_norm,amount,type,account_id,
@@ -5884,28 +5954,19 @@ def prepare_history_links_batch():
             ids,
         ).fetchall()
         by_id = {row[0]: row for row in rows}
-        for tx_id in ids:
+        for position, tx_id in enumerate(ids, start=1):
             row = by_id.get(tx_id)
             current_state = conn.execute(
                 "SELECT history_match_confirmed,locked FROM transactions WHERE id=?", (tx_id,)
             ).fetchone() if row else None
             if not row or not current_state or bool(current_state[0]) or bool(current_state[1]):
                 skipped_ids.append(tx_id)
+                log_position(position)
                 continue
-            identity = find_identity_match(conn, {
-                "date": row[1], "description": row[2], "description_norm": row[3],
-                "amount": row[4], "type": row[5], "account_id": row[6],
-                "installment_current": row[7], "installment_total": row[8],
-            }, hist_cache=hist_cache)
-            if (
-                not identity
-                or float(identity.get("identity_score") or 0) < HISTORY_LINK_CANDIDATE_THRESHOLD
-                or float(identity.get("description_similarity") or 0) <= 95.0
-                or int(identity.get("date_difference_days") or 0) != 0
-                or round(float(identity.get("amount_difference") or 0), 2) != 0
-                or identity.get("history_match_id") == row[10]
-            ):
+            identity = strict_history_match_for_batch(row, history_index)
+            if not identity:
                 without_match_ids.append(tx_id)
+                log_position(position)
                 continue
             note = (
                 "Match pelo valor total parcelado na base historica"
@@ -5930,14 +5991,22 @@ def prepare_history_links_batch():
             confirmation, confirmation_error = confirm_history_link_in_batch(conn, tx_id)
             if confirmation_error:
                 failed_ids.append(tx_id)
+                log_position(position)
                 continue
             matched_ids.append(tx_id)
             affected_ids.update(confirmation.get("affected_ids") or [tx_id])
+            log_position(position)
+    duration_ms = round((time.perf_counter() - started_at) * 1000)
+    log_progress(
+        f"Lote concluido em {duration_ms} ms: {len(matched_ids)} confirmado(s), "
+        f"{len(without_match_ids)} sem vinculo, {len(skipped_ids)} ignorado(s), {len(failed_ids)} falha(s)"
+    )
     return jsonify({
         "selected": len(ids), "matched": len(matched_ids), "without_match": len(without_match_ids),
         "skipped": len(skipped_ids), "failed": len(failed_ids), "matched_ids": matched_ids,
         "without_match_ids": without_match_ids, "skipped_ids": skipped_ids,
         "failed_ids": failed_ids, "affected_ids": sorted(affected_ids),
+        "operation_id": operation_id, "duration_ms": duration_ms, "logs": progress_logs,
     })
 
 

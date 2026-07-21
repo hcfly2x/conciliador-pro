@@ -102,6 +102,7 @@ export default function TransactionTable({
   const [bulkSubId, setBulkSubId] = useState('')
   const [bulkLedgerId, setBulkLedgerId] = useState('')
   const [linkingBatch, setLinkingBatch] = useState(false)
+  const [linkBatchLogs, setLinkBatchLogs] = useState<Array<{ time: string; message: string }>>([])
   const [rowDraft, setRowDraft] = useState<Record<string, { category_id: string; subcategory_id: string; notes: string }>>({})
   const [savingRow, setSavingRow] = useState<Record<string, boolean>>({})
   const [rowSuggestions, setRowSuggestions] = useState<Record<string, TransactionSuggestion[]>>({})
@@ -364,21 +365,47 @@ export default function TransactionTable({
   async function handlePrepareHistoricalLinks() {
     if (!selected.size || linkingBatch) return
     setLinkingBatch(true)
+    const selectedIds = [...selected]
+    const startedAt = Date.now()
+    const localTime = () => new Date().toLocaleTimeString('pt-BR', { hour12: false })
+    setLinkBatchLogs([
+      { time: localTime(), message: `Iniciando vinculo em lote para ${selectedIds.length} lancamento(s)` },
+      { time: localTime(), message: 'Enviando para analise e confirmacao no servidor' },
+    ])
+    const waitingLog = window.setInterval(() => {
+      const elapsed = Math.round((Date.now() - startedAt) / 1000)
+      setLinkBatchLogs(current => [
+        ...current.slice(-11),
+        { time: localTime(), message: `Processamento em andamento ha ${elapsed}s` },
+      ])
+    }, 10000)
     try {
-      const result = await prepareHistoricalLinks([...selected])
+      const result = await prepareHistoricalLinks(selectedIds)
+      window.clearInterval(waitingLog)
+      const serverLogs = result.logs || []
+      setLinkBatchLogs([
+        { time: localTime(), message: `Operacao ${result.operation_id || 'concluida'} recebida do servidor` },
+        ...serverLogs,
+      ])
       if (!result.matched) {
         const failure = result.failed ? `; ${result.failed} falharam na confirmacao` : ''
-        addToast(`Nenhum vinculo atende ao lote: descricao >95%, mesma data e valor exato (${result.without_match} sem correspondencia${failure})`, 'err')
+        const skipped = result.skipped ? `; ${result.skipped} ja vinculados, protegidos ou indisponiveis` : ''
+        addToast(`Nenhum vinculo atende ao lote: descricao >95%, mesma data e valor exato (${result.without_match} sem correspondencia${skipped}${failure})`, 'err')
         return
       }
-      addToast(`${result.matched} vinculo(s) confirmado(s) em lote; ${result.affected_ids.length} lancamento(s) atualizado(s)${result.without_match ? `; ${result.without_match} fora da regra` : ''}`)
+      addToast(`${result.matched} vinculo(s) confirmado(s) em lote; ${result.affected_ids.length} lancamento(s) atualizado(s)${result.without_match ? `; ${result.without_match} fora da regra` : ''}${result.skipped ? `; ${result.skipped} ignorado(s)` : ''}`)
       setSelected(new Set())
       await load(page)
       if (result.failed) addToast(`${result.failed} vinculo(s) nao puderam ser confirmados`, 'err')
     } catch (error: unknown) {
       const detail = (error as { detail?: string })?.detail
+      setLinkBatchLogs(current => [
+        ...current,
+        { time: localTime(), message: `Falha: ${detail || 'erro de comunicacao com o servidor'}` },
+      ])
       addToast(detail || 'Nao foi possivel buscar vinculos para os selecionados', 'err')
     } finally {
+      window.clearInterval(waitingLog)
       setLinkingBatch(false)
     }
   }
@@ -542,7 +569,7 @@ export default function TransactionTable({
             {subcategories.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
           </select>
           <button onClick={handleBulkClassify} disabled={!bulkCatId} className="px-3 py-1.5 rounded-md text-xs font-semibold disabled:opacity-40" style={{ background: '#c9a84c', color: '#0d0f14' }}>Aplicar</button>
-          <button onClick={handlePrepareHistoricalLinks} disabled={linkingBatch} className="px-3 py-1.5 rounded-md text-xs font-semibold disabled:opacity-40" style={{ background: 'rgba(96,165,250,0.18)', border: '1px solid rgba(96,165,250,0.35)', color: '#93c5fd' }}>{linkingBatch ? 'Buscando vinculos...' : 'Vincular selecionados'}</button>
+          <button onClick={handlePrepareHistoricalLinks} disabled={linkingBatch} className="px-3 py-1.5 rounded-md text-xs font-semibold disabled:opacity-40" style={{ background: 'rgba(96,165,250,0.18)', border: '1px solid rgba(96,165,250,0.35)', color: '#93c5fd' }}>{linkingBatch ? 'Processando lote...' : 'Vincular selecionados'}</button>
           {moveTargetLedgerId ? (
             <button onClick={handleMoveToLedger} className="px-3 py-1.5 rounded-md text-xs font-semibold" style={{ background: '#3ecf8e', color: '#08111f' }}>
               Vincular em {moveTargetLedgerName || 'conta corrente'}
@@ -557,6 +584,18 @@ export default function TransactionTable({
               <button onClick={handleMoveToLedger} disabled={!bulkLedgerId} className="px-3 py-1.5 rounded-md text-xs font-semibold disabled:opacity-40" style={{ background: '#3ecf8e', color: '#08111f' }}>Mover</button>
             </>
           )}
+        </div>
+      )}
+
+      {linkBatchLogs.length > 0 && (
+        <div className="mb-3 rounded-lg px-4 py-3" style={{ background: '#0d0f14', border: '1px solid rgba(96,165,250,0.22)' }}>
+          <div className="mb-2 flex items-center justify-between">
+            <span className="text-xs font-semibold text-[#93c5fd]">Progresso do vinculo em lote</span>
+            {!linkingBatch && <button type="button" onClick={() => setLinkBatchLogs([])} className="text-[#5a5f73] hover:text-[#e8eaf0]" title="Fechar logs"><X size={14} /></button>}
+          </div>
+          <div className="max-h-32 overflow-auto font-mono text-[11px] text-[#8b90a4]">
+            {linkBatchLogs.map((entry, index) => <div key={`${entry.time}-${index}`}><span className="text-[#5a5f73]">{entry.time}</span> · {entry.message}</div>)}
+          </div>
         </div>
       )}
 

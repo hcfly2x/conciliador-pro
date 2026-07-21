@@ -182,11 +182,11 @@ class WorkflowIntegrationTests(unittest.TestCase):
             (1, "cat-expense", "sub-market", 1),
         )
 
-    def test_batch_confirms_fifty_links_in_one_request(self) -> None:
+    def test_batch_confirms_two_consecutive_groups_of_fifty(self) -> None:
         transactions = []
         history = []
         ids = []
-        for index in range(50):
+        for index in range(100):
             tx_id = f"tx-batch-{index:02d}"
             history_id = f"hist-batch-{index:02d}"
             description = f"LOJA LOTE {index:02d}"
@@ -214,17 +214,37 @@ class WorkflowIntegrationTests(unittest.TestCase):
             "INSERT INTO classification_history VALUES (?,?,?,?,?,?,?,?,?,?)",
             history,
         )
-
-        response = self.client.post(
-            "/api/v1/transactions/history-links/batch", json={"ids": ids}
+        self.conn.executemany(
+            "INSERT INTO classification_history VALUES (?,?,?,?,?,?,?,?,?,?)",
+            [
+                (
+                    f"hist-noise-{index:04d}", "seed:sheet:saidas", "acc", "2025-01-01",
+                    f"HISTORICO SEM VINCULO {index:04d}", f"historico sem vinculo {index:04d}",
+                    10000 + index, "expense", "cat-expense", "sub-market",
+                )
+                for index in range(3900)
+            ],
         )
 
-        self.assertEqual(response.status_code, 200)
-        payload = response.get_json()
-        self.assertEqual(payload["matched"], 50)
-        self.assertEqual(payload["failed"], 0)
-        self.assertEqual(set(payload["matched_ids"]), set(ids))
-        self.assertEqual(set(payload["affected_ids"]), set(ids))
+        first_response = self.client.post(
+            "/api/v1/transactions/history-links/batch", json={"ids": ids[:50]}
+        )
+        second_response = self.client.post(
+            "/api/v1/transactions/history-links/batch", json={"ids": ids[50:]}
+        )
+
+        self.assertEqual(first_response.status_code, 200)
+        self.assertEqual(second_response.status_code, 200)
+        for payload, expected_ids in (
+            (first_response.get_json(), ids[:50]),
+            (second_response.get_json(), ids[50:]),
+        ):
+            self.assertEqual(payload["matched"], 50)
+            self.assertEqual(payload["failed"], 0)
+            self.assertEqual(set(payload["matched_ids"]), set(expected_ids))
+            self.assertEqual(set(payload["affected_ids"]), set(expected_ids))
+            self.assertGreaterEqual(len(payload["logs"]), 3)
+            self.assertGreaterEqual(payload["duration_ms"], 0)
         self.assertEqual(
             self.conn.execute(
                 """
@@ -233,7 +253,7 @@ class WorkflowIntegrationTests(unittest.TestCase):
                   AND category_id='cat-expense' AND subcategory_id='sub-market'
                 """
             ).fetchone()[0],
-            50,
+            100,
         )
 
     def test_confirming_installment_link_classifies_plan_without_changing_values(self) -> None:

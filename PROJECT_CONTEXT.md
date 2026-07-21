@@ -103,6 +103,9 @@ um vínculo histórico está implementada e publicada.
 - A preparação pelo botão `Vincular selecionados` é mais restritiva que os
   demais fluxos: exige similaridade de descrição superior a 95%, diferença de
   data igual a zero e diferença de valor igual a R$ 0,00.
+- O vínculo em lote indexa a base histórica por tipo, data e valor exatos para
+  processar lotes sucessivos sem varredura repetida. A tabela mantém um painel
+  de logs visível com início, espera, progresso, totais, duração e falhas.
 
 ## Tarefas pendentes confirmadas
 
