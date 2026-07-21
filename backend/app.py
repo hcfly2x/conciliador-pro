@@ -416,6 +416,7 @@ def store_document_in_db(
     account_name: str,
     year_month: str,
     filename: str,
+    imported_file_id: str = "",
     conn=None,
 ) -> str:
     """Guarda o conteudo do arquivo no banco (base64) para sobreviver a redeploys."""
@@ -431,11 +432,17 @@ def store_document_in_db(
             (account_name, year_month, filename),
         ).fetchone()
         if dup:
-            active_conn.execute("UPDATE stored_documents SET content_b64=?, size=? WHERE id=?", (content, size, dup[0]))
+            active_conn.execute(
+                "UPDATE stored_documents SET content_b64=?, size=?, imported_file_id=? WHERE id=?",
+                (content, size, imported_file_id or None, dup[0]),
+            )
             return dup[0]
         active_conn.execute(
-            "INSERT INTO stored_documents(id,account_name,year_month,filename,size,content_b64,created_at) VALUES (?,?,?,?,?,?,?)",
-            (doc_id, account_name, year_month, filename, size, content, dt.datetime.now().isoformat(timespec="seconds")),
+            "INSERT INTO stored_documents(id,account_name,year_month,filename,size,content_b64,created_at,imported_file_id) VALUES (?,?,?,?,?,?,?,?)",
+            (
+                doc_id, account_name, year_month, filename, size, content,
+                dt.datetime.now().isoformat(timespec="seconds"), imported_file_id or None,
+            ),
         )
         return doc_id
 
@@ -1798,7 +1805,11 @@ def init_db() -> None:
             )
             """
         )
+        stored_document_cols = [r[1] for r in conn.execute("PRAGMA table_info(stored_documents)").fetchall()]
+        if "imported_file_id" not in stored_document_cols:
+            conn.execute("ALTER TABLE stored_documents ADD COLUMN imported_file_id TEXT")
         create_index_safely(conn, "idx_docs_acc_month", "CREATE INDEX IF NOT EXISTS idx_docs_acc_month ON stored_documents(account_name, year_month)")
+        create_index_safely(conn, "idx_docs_imported_file", "CREATE INDEX IF NOT EXISTS idx_docs_imported_file ON stored_documents(imported_file_id)")
 
 
 def seed() -> None:
@@ -3528,6 +3539,7 @@ def import_document(
             acc[1],
             f"{archived_target.parents[2].name}/{archived_target.parents[1].name}",
             archived_target.name,
+            imported_file_id=imported_file_id,
             conn=conn,
         )
 
@@ -4403,20 +4415,31 @@ def coverage_delete_file():
         doc_id = raw_path[5:]
         with db_connect() as conn:
             row = conn.execute(
-                "SELECT id,filename,account_name,year_month FROM stored_documents WHERE id=?",
+                "SELECT id,filename,account_name,year_month,imported_file_id FROM stored_documents WHERE id=?",
                 (doc_id,),
             ).fetchone()
             if not row:
                 return jsonify({"detail": "Arquivo nao encontrado", "code": "NOT_FOUND"}), 404
             imported_ids = []
             if delete_transactions:
-                imported_ids = [r[0] for r in conn.execute(
-                    """
-                    SELECT id FROM imported_files
-                    WHERE filename=? AND account_name=? AND (year || '/' || month)=?
-                    """,
-                    (row[1], row[2], row[3]),
-                ).fetchall()]
+                if row[4]:
+                    linked = conn.execute("SELECT id FROM imported_files WHERE id=?", (row[4],)).fetchone()
+                    imported_ids = [linked[0]] if linked else []
+                if not imported_ids:
+                    imported_ids = [r[0] for r in conn.execute(
+                        """
+                        SELECT id FROM imported_files
+                        WHERE filename=? AND account_name=? AND (year || '/' || month)=?
+                        """,
+                        (row[1], row[2], row[3]),
+                    ).fetchall()]
+                if not imported_ids:
+                    legacy_candidates = conn.execute(
+                        "SELECT id FROM imported_files WHERE filename=? AND account_name=?",
+                        (row[1], row[2]),
+                    ).fetchall()
+                    if len(legacy_candidates) == 1:
+                        imported_ids = [legacy_candidates[0][0]]
             tx_deleted = 0
             for imported_id in imported_ids:
                 tx_deleted += int(conn.execute(
