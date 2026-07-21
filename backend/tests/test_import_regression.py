@@ -20,9 +20,9 @@ class OfficialImportRegressionTests(unittest.TestCase):
         ("santander_statement.pdf", "CONTA SANTANDER", "checking", 3, "2026/03", [-125.50, -10.00, 500.00]),
         ("xp_statement.csv", "CONTA XP", "checking", 3, "2026/03", [-200.50, -200.50, 1250.00]),
         ("nubank_statement.pdf", "CONTA NUBANK", "checking", 2, "2026/03", [-50.00, 200.00]),
-        ("santander_card.pdf", "CARTAO SANTANDER", "credit_card", 12, "2026/03", [-(i * 10.0) for i in range(1, 13)]),
-        ("xp_card.csv", "CARTAO XP", "credit_card", 3, "2026/03", [-125.90, -80.00, 25.00]),
-        ("nubank_card.csv", "CARTAO NUBANK", "credit_card", 3, "2026/03", [-99.90, -45.67, 10.00]),
+        ("santander_card.pdf", "CARTAO SANTANDER", "credit_card", 12, "2026/04", [-(i * 10.0) for i in range(1, 13)]),
+        ("xp_card.csv", "CARTAO XP", "credit_card", 3, "", [-125.90, -80.00, 25.00]),
+        ("nubank_card.csv", "CARTAO NUBANK", "credit_card", 3, "", [-99.90, -45.67, 10.00]),
     )
 
     def test_six_official_document_types_have_exact_financial_results(self) -> None:

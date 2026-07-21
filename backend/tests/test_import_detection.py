@@ -86,17 +86,60 @@ class EmptyStatementTests(unittest.TestCase):
 
 
 class CompetenceDetectionTests(unittest.TestCase):
-    def test_card_uses_latest_transaction_month(self) -> None:
+    def test_card_uses_payment_date_instead_of_transaction_dates(self) -> None:
         txs = [
             SimpleNamespace(date="2025-12-03"),
             SimpleNamespace(date="2025-12-29"),
             SimpleNamespace(date="2025-11-28"),
         ]
-        result = app.detect_competence(Path("Cartao - 01-26 - XP.csv"), txs, "credit_card")
+        result = app.detect_competence(
+            Path("Cartao - 12-25 - XP.csv"),
+            txs,
+            "credit_card",
+            "Data de pagamento da fatura: 08/01/2026",
+        )
 
-        self.assertEqual(result["month"], "2025/12")
-        self.assertEqual(result["strategy"], "latest_card_transaction")
+        self.assertEqual(result["month"], "2026/01")
+        self.assertEqual(result["strategy"], "card_payment_date")
         self.assertTrue(result["warning"])
+
+    def test_card_uses_due_date_when_payment_date_is_not_present(self) -> None:
+        result = app.detect_competence(
+            Path("fatura.pdf"),
+            [SimpleNamespace(date="2025-12-29")],
+            "credit_card",
+            "Vencimento da fatura 10/01/2026",
+        )
+
+        self.assertEqual(result["month"], "2026/01")
+        self.assertEqual(result["strategy"], "card_payment_date")
+
+    def test_card_without_payment_date_never_uses_transaction_dates(self) -> None:
+        result = app.detect_competence(
+            Path("Cartao - 01-26 - XP.csv"),
+            [SimpleNamespace(date="2025-12-29")],
+            "credit_card",
+            "Data de compra,Nome no extrato,Valor",
+        )
+
+        self.assertEqual(result["month"], "2026/01")
+        self.assertEqual(result["strategy"], "card_filename")
+        self.assertTrue(result["warning"])
+
+    def test_card_reads_payment_date_from_xlsx_cells(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "fatura.xlsx"
+            workbook = app.openpyxl.Workbook()
+            sheet = workbook.active
+            sheet.append(["Data de pagamento da fatura", "2026-04-08"])
+            sheet.append(["Data de compra", "Descricao", "Valor"])
+            sheet.append(["2026-03-20", "LOJA", 10])
+            workbook.save(path)
+
+            result = app.detect_competence(path, [SimpleNamespace(date="2026-03-20")], "credit_card")
+
+        self.assertEqual(result["month"], "2026/04")
+        self.assertEqual(result["strategy"], "card_payment_date")
 
     def test_statement_uses_filename_when_dates_confirm_it(self) -> None:
         txs = [SimpleNamespace(date=f"2026-03-{day:02d}") for day in range(1, 10)]

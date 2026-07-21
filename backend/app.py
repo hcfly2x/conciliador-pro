@@ -1920,9 +1920,34 @@ def read_detection_sample(path: Path) -> str:
                     return raw.decode(encoding)
                 except UnicodeDecodeError:
                     continue
-        if ext in (".xlsx", ".xls"):
-            sample_rows = load_transactions(path)[:60]
-            return "\n".join(f"{row.date} {row.description} {row.amount}" for row in sample_rows)
+        if ext == ".xlsx" and openpyxl is not None:
+            workbook = openpyxl.load_workbook(path, read_only=True, data_only=True)
+            try:
+                sheet = workbook[workbook.sheetnames[0]]
+                return "\n".join(
+                    " ".join(str(value) for value in row if value is not None)
+                    for row in sheet.iter_rows(max_row=60, values_only=True)
+                )[:50000]
+            finally:
+                workbook.close()
+        if ext == ".xls" and xlrd is not None:
+            workbook = xlrd.open_workbook(path, on_demand=True)
+            try:
+                sheet = workbook.sheet_by_index(0)
+                rows: list[str] = []
+                for row_index in range(min(60, sheet.nrows)):
+                    values: list[str] = []
+                    for cell in sheet.row(row_index):
+                        if cell.ctype == xlrd.XL_CELL_DATE:
+                            value = xlrd.xldate_as_datetime(cell.value, workbook.datemode).date().isoformat()
+                        else:
+                            value = str(cell.value)
+                        if value:
+                            values.append(value)
+                    rows.append(" ".join(values))
+                return "\n".join(rows)[:50000]
+            finally:
+                workbook.release_resources()
     except Exception:
         return ""
     return ""
@@ -2200,9 +2225,39 @@ def declared_statement_competence(path: Path, sample_text: str | None = None) ->
     return ""
 
 
+def declared_card_payment_competence(path: Path, sample_text: str | None = None) -> tuple[str, str]:
+    """Retorna a competencia da fatura pela data declarada de pagamento/vencimento."""
+    sample = sample_text if sample_text is not None else read_detection_sample(path)
+    text = re.sub(r"\s+", " ", strip_accents(sample).lower())
+    labels = (
+        ("data de pagamento", "Data de pagamento da fatura"),
+        ("data de vencimento", "Vencimento da fatura"),
+        ("vencimento da fatura", "Vencimento da fatura"),
+        ("vencimento", "Vencimento da fatura"),
+    )
+    for label, evidence_label in labels:
+        match = re.search(
+            rf"\b{re.escape(label)}\b\D{{0,30}}(\d{{2}}/\d{{2}}/20\d{{2}}|20\d{{2}}-\d{{2}}-\d{{2}})",
+            text,
+        )
+        if not match:
+            continue
+        raw_date = match.group(1)
+        for date_format in ("%d/%m/%Y", "%Y-%m-%d"):
+            try:
+                payment_date = dt.datetime.strptime(raw_date, date_format).date()
+                return payment_date.strftime("%Y/%m"), f"{evidence_label}: {payment_date.strftime('%d/%m/%Y')}"
+            except ValueError:
+                continue
+    return "", ""
+
+
 def detect_competence(path: Path, txs: list[Any] | None, account_type: str, sample_text: str | None = None) -> dict[str, Any]:
     filename_month = competence_from_filename(path.name)
     declared_month = declared_statement_competence(path, sample_text) if account_type != "credit_card" else ""
+    card_payment_month, card_payment_evidence = (
+        declared_card_payment_competence(path, sample_text) if account_type == "credit_card" else ("", "")
+    )
     evidence: list[str] = []
     warning = ""
     valid_dates: list[str] = []
@@ -2216,14 +2271,27 @@ def detect_competence(path: Path, txs: list[Any] | None, account_type: str, samp
     if declared_month:
         evidence.append(f"Periodo declarado no documento indica {declared_month}")
 
-    if account_type == "credit_card" and valid_dates:
-        latest_date = max(valid_dates)
-        selected = latest_date[:7].replace("-", "/")
-        evidence.append(f"Ultimo lancamento valido da fatura: {latest_date}")
-        confidence = 96.0 if len(valid_dates) >= 3 else 88.0
-        if filename_month and filename_month != selected:
-            warning = f"Competencia pelo ultimo lancamento ({selected}) difere do nome do arquivo ({filename_month})."
-        return {"month": selected, "confidence": confidence, "strategy": "latest_card_transaction", "evidence": evidence, "warning": warning}
+    if account_type == "credit_card":
+        if card_payment_month:
+            evidence.append(card_payment_evidence)
+            if filename_month and filename_month != card_payment_month:
+                warning = f"Data de pagamento/vencimento ({card_payment_month}) difere do nome do arquivo ({filename_month})."
+            return {"month": card_payment_month, "confidence": 98.0, "strategy": "card_payment_date", "evidence": evidence, "warning": warning}
+        if filename_month:
+            return {
+                "month": filename_month,
+                "confidence": 70.0,
+                "strategy": "card_filename",
+                "evidence": evidence,
+                "warning": "Data de pagamento/vencimento da fatura nao encontrada; confirme a competencia sugerida pelo nome do arquivo.",
+            }
+        return {
+            "month": "",
+            "confidence": 0.0,
+            "strategy": "unknown",
+            "evidence": evidence,
+            "warning": "Data de pagamento/vencimento da fatura nao encontrada. Informe a competencia manualmente.",
+        }
 
     month_counts: dict[str, int] = {}
     for value in valid_dates:
