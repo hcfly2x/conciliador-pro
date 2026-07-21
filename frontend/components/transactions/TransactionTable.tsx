@@ -4,7 +4,7 @@ import { Search, RefreshCw, ChevronUp, ChevronDown, Link2, X } from 'lucide-reac
 import { useStore } from '@/store/app'
 import { getTransactions, bulkClassify, classifyTransaction, getTransactionSuggestionsBatch, getLedgers, includeTransactionsInLedger, excludeTransactionsFromLedger, unlockTransaction, isAdmin, reviewHistoricalMatch, prepareHistoricalLinks, type TransactionSuggestion } from '@/lib/api'
 import { Lock, LockOpen } from 'lucide-react'
-import { formatCurrencyAbs, formatDate } from '@/lib/utils'
+import { formatCurrencyAbs, formatDate, formatInstallmentLinkExplanation } from '@/lib/utils'
 import type { Ledger, Transaction, TransactionFilters } from '@/types'
 
 const STATUS_STYLES: Record<string, { label: string; bg: string; color: string }> = {
@@ -984,7 +984,7 @@ export default function TransactionTable({
               </div>
               {tx.match_basis === 'installment_total' && (
                 <p className="mt-4 rounded-lg p-3 text-xs text-amber-200" style={{ background: 'rgba(245,158,11,0.07)', border: '1px solid rgba(245,158,11,0.22)' }}>
-                  Vinculo por parcelamento: esta parcela de {formatCurrencyAbs(tx.amount)} foi comparada ao total estimado de {formatCurrencyAbs(tx.match_comparison_amount || 0)}, na data reconstruida da primeira parcela ({formatDate(tx.match_comparison_date || '')}). Confirmar replica apenas a classificacao; os valores dos arquivos permanecem intactos.
+                  {formatInstallmentLinkExplanation(tx)}
                 </p>
               )}
               <div className="mt-4 grid gap-3 sm:grid-cols-3">
