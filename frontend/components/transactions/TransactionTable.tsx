@@ -665,7 +665,7 @@ export default function TransactionTable({
                           title="Categoria e subcategoria serao reaproveitadas nas demais parcelas deste plano"
                         >
                           {tx.installment_current && tx.installment_total
-                            ? `${tx.installment_current}/${tx.installment_total} · plano com ${tx.installment_plan_members || 1}`
+                            ? `${tx.installment_current}/${tx.installment_total}`
                             : (tx.installment_label || 'Parcelado')}
                         </span>
                       )}
