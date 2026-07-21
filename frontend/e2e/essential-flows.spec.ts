@@ -29,15 +29,27 @@ async function login(page: Page) {
   await expect(page.getByText('Lançamentos', { exact: true }).first()).toBeVisible()
 }
 
-async function importThroughUi(page: Page, fixture: string, accountName?: string) {
+async function importThroughUi(page: Page, fixture: string, accountName?: string, competenceMonth?: string) {
   await page.goto('/importar')
   await page.locator('input[type=file]').setInputFiles(fixture)
   if (accountName) await page.getByText('Conta / Cartão (opcional)').locator('..').getByRole('combobox').selectOption({ label: accountName })
   await page.getByRole('button', { name: 'Analisar arquivo' }).click()
   await expect(page.getByText('Pré-validação concluída')).toBeVisible()
   await expect(page.getByText('Novos para inserir')).toBeVisible()
-  await page.getByRole('button', { name: 'Confirmar importação' }).click()
-  await expect(page.getByText(/lançamentos importados com sucesso/i)).toBeVisible()
+  if (competenceMonth) {
+    const [year, month] = competenceMonth.split('-')
+    await page.getByLabel('Mês da competência').selectOption(month)
+    await page.getByLabel('Ano da competência').selectOption(year)
+  }
+  const confirmButton = page.getByRole('button', { name: 'Confirmar importação' })
+  await expect(confirmButton).toBeEnabled()
+  const commitResponse = page.waitForResponse(response =>
+    response.request().method() === 'POST' && response.url().includes('/api/v1/import/commit'),
+  )
+  await confirmButton.click()
+  expect((await commitResponse).status()).toBe(202)
+  await expect(page.getByText('Importação em processamento')).toBeVisible()
+  await expect(page.getByText('Importação concluída')).toBeVisible({ timeout: 30_000 })
 }
 
 test.beforeEach(async ({ request }) => {
@@ -62,7 +74,7 @@ test('protege paginas privadas e autentica o administrador', async ({ page }) =>
 test('importa com preview e classifica um lancamento com bloqueio', async ({ page, request }) => {
   await login(page)
   const fixture = path.resolve(__dirname, '../../backend/tests/fixtures/imports/xp_card.csv')
-  await importThroughUi(page, fixture)
+  await importThroughUi(page, fixture, undefined, '2026-03')
 
   const token = await apiLogin(request)
   const categoryResponse = await request.post(`${backend}/categories`, {

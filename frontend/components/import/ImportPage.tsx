@@ -243,6 +243,7 @@ export default function ImportPage() {
               <label className="mt-3 flex items-center gap-2 text-sm text-[#8b90a4]">
                 Competência
                 <select
+                  aria-label="Mês da competência"
                   value={competenceMonth.split('-')[1] || ''}
                   onChange={e => {
                     const y = competenceMonth.split('-')[0] || String(new Date().getFullYear())
@@ -257,6 +258,7 @@ export default function ImportPage() {
                   ))}
                 </select>
                 <select
+                  aria-label="Ano da competência"
                   value={competenceMonth.split('-')[0] || ''}
                   onChange={e => {
                     const m = competenceMonth.split('-')[1] || '01'
@@ -406,7 +408,7 @@ export default function ImportPage() {
           </div>
 
           <div className="mt-4 flex justify-end">
-            <button onClick={handleCommit} disabled={loading || (preview.new_records <= 0 && !preview.import_meta?.empty_statement_confirmed) || preview.quality_gate?.can_commit === false} className="h-10 px-5 rounded-md font-semibold text-sm disabled:opacity-40 flex items-center gap-2" style={{ background: '#3ecf8e', color: '#0b1218' }}>
+            <button onClick={handleCommit} disabled={loading || !/^\d{4}-\d{2}$/.test(competenceMonth) || (preview.new_records <= 0 && !preview.import_meta?.empty_statement_confirmed) || preview.quality_gate?.can_commit === false} className="h-10 px-5 rounded-md font-semibold text-sm disabled:opacity-40 flex items-center gap-2" style={{ background: '#3ecf8e', color: '#0b1218' }}>
               <Database size={16} />
               {loading ? 'Salvando...' : preview.import_meta?.empty_statement_confirmed ? 'Registrar extrato vazio' : 'Confirmar importação'}
             </button>
