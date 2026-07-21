@@ -152,6 +152,7 @@ class WorkflowIntegrationTests(unittest.TestCase):
                 ("tx-date-near", "acc", "2026-03-11", "MERCADO", "mercado", -50, "expense", 0, "pending", 0, 0),
                 ("tx-amount-near", "acc", "2026-03-10", "MERCADO", "mercado", -50.50, "expense", 0, "pending", 0, 0),
                 ("tx-desc-near", "acc", "2026-03-10", "MERCADO CENTRAL LOJA", "mercado central loja", -50, "expense", 0, "pending", 0, 0),
+                ("tx-no-candidate", "acc", "2026-08-25", "ASSINATURA DISTINTA", "assinatura distinta", -987.65, "expense", 0, "pending", 0, 0),
             ],
         )
         # As tolerancias gerais continuam encontrando estes candidatos; a regra
@@ -164,7 +165,7 @@ class WorkflowIntegrationTests(unittest.TestCase):
 
         response = self.client.post(
             "/api/v1/transactions/history-links/batch",
-            json={"ids": ["tx-link", "tx-date-near", "tx-amount-near", "tx-desc-near"]},
+            json={"ids": ["tx-link", "tx-date-near", "tx-amount-near", "tx-desc-near", "tx-no-candidate"]},
         )
 
         self.assertEqual(response.status_code, 200)
@@ -172,14 +173,27 @@ class WorkflowIntegrationTests(unittest.TestCase):
         self.assertEqual(payload["matched_ids"], ["tx-link"])
         self.assertEqual(payload["failed"], 0)
         self.assertEqual(
-            set(payload["without_match_ids"]),
+            set(payload["manual_review_ids"]),
             {"tx-date-near", "tx-amount-near", "tx-desc-near"},
         )
+        self.assertEqual(payload["without_match_ids"], ["tx-no-candidate"])
         self.assertEqual(
             self.conn.execute(
                 "SELECT history_match_confirmed,category_id,subcategory_id,locked FROM transactions WHERE id='tx-link'"
             ).fetchone(),
             (1, "cat-expense", "sub-market", 1),
+        )
+        manual_rows = self.conn.execute(
+            "SELECT id,history_match_id,history_match_confirmed,locked FROM transactions "
+            "WHERE id IN ('tx-date-near','tx-amount-near','tx-desc-near') ORDER BY id"
+        ).fetchall()
+        self.assertEqual(
+            manual_rows,
+            [
+                ("tx-amount-near", "hist-1", 0, 0),
+                ("tx-date-near", "hist-1", 0, 0),
+                ("tx-desc-near", "hist-1", 0, 0),
+            ],
         )
 
     def test_batch_confirms_two_consecutive_groups_of_fifty(self) -> None:
@@ -240,6 +254,7 @@ class WorkflowIntegrationTests(unittest.TestCase):
             (second_response.get_json(), ids[50:]),
         ):
             self.assertEqual(payload["matched"], 50)
+            self.assertEqual(payload["manual_review"], 0)
             self.assertEqual(payload["failed"], 0)
             self.assertEqual(set(payload["matched_ids"]), set(expected_ids))
             self.assertEqual(set(payload["affected_ids"]), set(expected_ids))

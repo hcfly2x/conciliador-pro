@@ -90,7 +90,9 @@ um vínculo histórico está implementada e publicada.
 
 ## Decisões confirmadas
 
-- O vínculo histórico é revisável, nunca automático.
+- O vínculo histórico individual é revisável. A única confirmação automática é
+  a operação em lote explicitamente iniciada pelo usuário e sujeita à regra
+  estrita de descrição, data e valor abaixo.
 - O cálculo de sugestões é separado da importação e iniciado manualmente.
 - Categoria e subcategoria do histórico são replicadas somente após confirmação.
 - A conta do documento importado prevalece sobre a conta da base histórica.
@@ -106,6 +108,9 @@ um vínculo histórico está implementada e publicada.
 - O vínculo em lote indexa a base histórica por tipo, data e valor exatos para
   processar lotes sucessivos sem varredura repetida. A tabela mantém um painel
   de logs visível com início, espera, progresso, totais, duração e falhas.
+- Candidatos plausíveis que não atendem à regra estrita do lote não são
+  confirmados automaticamente: eles abrem em uma fila de revisão manual, um a
+  um. Selecionados sem candidato plausível aparecem somente no resumo e logs.
 - Na base histórica, `Antigo`, `Planilha Passada` e `Primeira Planilha` são
   marcadores de uma época sem identificação de conta: os registros preservam
   data, descrição, valor e classificação, mas ficam sem `account_id`.

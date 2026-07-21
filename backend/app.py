@@ -5971,6 +5971,7 @@ def prepare_history_links_batch():
         return jsonify({"detail": "Selecione no maximo 500 lancamentos por lote", "code": "BATCH_TOO_LARGE"}), 400
     placeholders = ",".join("?" for _ in ids)
     matched_ids: list[str] = []
+    manual_review_ids: list[str] = []
     without_match_ids: list[str] = []
     skipped_ids: list[str] = []
     failed_ids: list[str] = []
@@ -5986,7 +5987,8 @@ def prepare_history_links_batch():
         if position % 10 == 0 or position == len(ids):
             log_progress(
                 f"Progresso: {position}/{len(ids)} analisados; "
-                f"{len(matched_ids)} confirmados; {len(without_match_ids)} sem vinculo"
+                f"{len(matched_ids)} confirmados; {len(manual_review_ids)} para revisao manual; "
+                f"{len(without_match_ids)} sem vinculo"
             )
 
     log_progress(f"Lote iniciado: {len(ids)} lancamento(s) selecionado(s)")
@@ -6003,6 +6005,9 @@ def prepare_history_links_batch():
                 (str(history[7] or ""), str(history[1] or ""), int(round(float(history[3] or 0) * 100))),
                 [],
             ).append(history)
+        history_cache: dict[str, list[tuple[Any, ...]]] = {"expense": [], "income": []}
+        for history in history_rows:
+            history_cache.setdefault(str(history[7] or ""), []).append(tuple(history[:7]))
         log_progress(f"Base historica indexada: {len(history_rows)} registro(s)")
         rows = conn.execute(
             f"""
@@ -6025,7 +6030,35 @@ def prepare_history_links_batch():
                 continue
             identity = strict_history_match_for_batch(row, history_index)
             if not identity:
-                without_match_ids.append(tx_id)
+                manual_identity = find_identity_match(conn, {
+                    "date": row[1], "description": row[2], "description_norm": row[3],
+                    "amount": row[4], "type": row[5], "account_id": row[6],
+                    "installment_current": row[7], "installment_total": row[8],
+                }, history_cache)
+                if (
+                    manual_identity
+                    and float(manual_identity.get("identity_score") or 0) >= HISTORY_LINK_CANDIDATE_THRESHOLD
+                    and str(manual_identity.get("history_match_id") or "") != str(row[10] or "")
+                ):
+                    conn.execute(
+                        """
+                        UPDATE transactions
+                        SET history_match_id=?,history_match_confirmed=0,identity_score=?,match_probability=?,
+                            match_notes=?,suggested_category_id=?,suggested_subcategory_id=?
+                        WHERE id=?
+                        """,
+                        (
+                            manual_identity.get("history_match_id"), manual_identity.get("identity_score"),
+                            manual_identity.get("identity_score"),
+                            "Revisao manual apos lote: candidato fora da regra estrita",
+                            manual_identity.get("category_id"), manual_identity.get("subcategory_id"), tx_id,
+                        ),
+                    )
+                    conn.execute("DELETE FROM transaction_suggestions WHERE transaction_id=?", (tx_id,))
+                    conn.execute("DELETE FROM transaction_suggestion_state WHERE transaction_id=?", (tx_id,))
+                    manual_review_ids.append(tx_id)
+                else:
+                    without_match_ids.append(tx_id)
                 log_position(position)
                 continue
             note = (
@@ -6059,11 +6092,14 @@ def prepare_history_links_batch():
     duration_ms = round((time.perf_counter() - started_at) * 1000)
     log_progress(
         f"Lote concluido em {duration_ms} ms: {len(matched_ids)} confirmado(s), "
-        f"{len(without_match_ids)} sem vinculo, {len(skipped_ids)} ignorado(s), {len(failed_ids)} falha(s)"
+        f"{len(manual_review_ids)} para revisao manual, {len(without_match_ids)} sem vinculo, "
+        f"{len(skipped_ids)} ignorado(s), {len(failed_ids)} falha(s)"
     )
     return jsonify({
         "selected": len(ids), "matched": len(matched_ids), "without_match": len(without_match_ids),
-        "skipped": len(skipped_ids), "failed": len(failed_ids), "matched_ids": matched_ids,
+        "manual_review": len(manual_review_ids), "skipped": len(skipped_ids),
+        "failed": len(failed_ids), "matched_ids": matched_ids,
+        "manual_review_ids": manual_review_ids,
         "without_match_ids": without_match_ids, "skipped_ids": skipped_ids,
         "failed_ids": failed_ids, "affected_ids": sorted(affected_ids),
         "operation_id": operation_id, "duration_ms": duration_ms, "logs": progress_logs,

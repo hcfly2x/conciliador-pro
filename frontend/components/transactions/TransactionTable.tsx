@@ -78,6 +78,7 @@ export default function TransactionTable({
   const [summary, setSummary] = useState({ total_income: 0, total_expense: 0, balance: 0, pending_count: 0, reconciled_count: 0 })
   const [loading, setLoading] = useState(false)
   const [linkReviewId, setLinkReviewId] = useState<string | null>(null)
+  const [batchReviewIds, setBatchReviewIds] = useState<string[]>([])
   const [reviewingLink, setReviewingLink] = useState(false)
 
   const [search, setSearch] = useState('')
@@ -193,6 +194,7 @@ export default function TransactionTable({
   }
 
   async function handleHistoryLink(tx: Transaction, action: 'confirm' | 'reject') {
+    const isBatchReview = batchReviewIds.includes(tx.id)
     setReviewingLink(true)
     try {
       const result = await reviewHistoricalMatch(tx.id, action)
@@ -218,7 +220,20 @@ export default function TransactionTable({
           } : {}),
         }
       }))
-      setLinkReviewId(null)
+      if (isBatchReview) {
+        const remainingBatchIds = batchReviewIds.filter(id => !affected.has(id))
+        setBatchReviewIds(remainingBatchIds)
+        setLinkReviewId(remainingBatchIds[0] || null)
+        setLinkBatchLogs(current => [
+          ...current,
+          {
+            time: new Date().toLocaleTimeString('pt-BR', { hour12: false }),
+            message: `${action === 'confirm' ? 'Vinculo aprovado' : 'Vinculo rejeitado'} manualmente; ${remainingBatchIds.length} restante(s)`,
+          },
+        ])
+      } else {
+        setLinkReviewId(null)
+      }
       setRowSuggestions(current => {
         const next = { ...current }
         affected.forEach(id => delete next[id])
@@ -231,6 +246,12 @@ export default function TransactionTable({
       })
       addToast(action === 'confirm' ? 'Vinculo confirmado e classificacao historica aplicada' : 'Sugestao de vinculo rejeitada')
     } catch {
+      if (isBatchReview) {
+        setLinkBatchLogs(current => [
+          ...current,
+          { time: new Date().toLocaleTimeString('pt-BR', { hour12: false }), message: 'Falha ao salvar a revisao manual; o item permanece na fila' },
+        ])
+      }
       addToast('Nao foi possivel revisar o vinculo', 'err')
     } finally {
       setReviewingLink(false)
@@ -387,15 +408,17 @@ export default function TransactionTable({
         { time: localTime(), message: `Operacao ${result.operation_id || 'concluida'} recebida do servidor` },
         ...serverLogs,
       ])
-      if (!result.matched) {
+      if (!result.matched && !result.manual_review) {
         const failure = result.failed ? `; ${result.failed} falharam na confirmacao` : ''
         const skipped = result.skipped ? `; ${result.skipped} ja vinculados, protegidos ou indisponiveis` : ''
         addToast(`Nenhum vinculo atende ao lote: descricao >95%, mesma data e valor exato (${result.without_match} sem correspondencia${skipped}${failure})`, 'err')
         return
       }
-      addToast(`${result.matched} vinculo(s) confirmado(s) em lote; ${result.affected_ids.length} lancamento(s) atualizado(s)${result.without_match ? `; ${result.without_match} fora da regra` : ''}${result.skipped ? `; ${result.skipped} ignorado(s)` : ''}`)
+      addToast(`${result.matched} vinculo(s) confirmado(s) em lote${result.manual_review ? `; ${result.manual_review} aguardando revisao manual` : ''}${result.without_match ? `; ${result.without_match} sem candidato` : ''}${result.skipped ? `; ${result.skipped} ignorado(s)` : ''}`)
       setSelected(new Set())
       await load(page)
+      setBatchReviewIds(result.manual_review_ids)
+      setLinkReviewId(result.manual_review_ids[0] || null)
       if (result.failed) addToast(`${result.failed} vinculo(s) nao puderam ser confirmados`, 'err')
     } catch (error: unknown) {
       const detail = (error as { detail?: string })?.detail
@@ -596,6 +619,11 @@ export default function TransactionTable({
           <div className="max-h-32 overflow-auto font-mono text-[11px] text-[#8b90a4]">
             {linkBatchLogs.map((entry, index) => <div key={`${entry.time}-${index}`}><span className="text-[#5a5f73]">{entry.time}</span> · {entry.message}</div>)}
           </div>
+          {batchReviewIds.length > 0 && !linkReviewId && (
+            <button type="button" onClick={() => setLinkReviewId(batchReviewIds[0])} className="mt-3 h-8 rounded-md px-3 text-xs font-semibold" style={{ background: 'rgba(96,165,250,0.18)', border: '1px solid rgba(96,165,250,0.35)', color: '#93c5fd' }}>
+              Continuar revisao manual ({batchReviewIds.length})
+            </button>
+          )}
         </div>
       )}
 
@@ -922,7 +950,9 @@ export default function TransactionTable({
             <div className="w-full max-w-4xl rounded-xl p-5 shadow-2xl" style={{ background: '#13161d', border: '1px solid rgba(96,165,250,0.3)' }}>
               <div className="flex items-start justify-between gap-4 mb-5">
                 <div>
-                  <p className="text-xs font-semibold uppercase tracking-widest text-[#93c5fd]">Possivel vinculo historico</p>
+                  <p className="text-xs font-semibold uppercase tracking-widest text-[#93c5fd]">
+                    {batchReviewIds.includes(tx.id) ? `Revisao manual do lote · ${batchReviewIds.length} restante(s)` : 'Possivel vinculo historico'}
+                  </p>
                   <h3 className="mt-1 text-lg font-semibold text-[#e8eaf0]">Confira se os dois registros representam o mesmo lancamento</h3>
                   <p className="mt-1 text-sm text-[#8b90a4]">Compatibilidade calculada: <span className="font-semibold text-[#e8c96e]">{Number(tx.identity_score || 0).toFixed(1)}%</span></p>
                 </div>
