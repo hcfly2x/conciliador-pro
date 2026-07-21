@@ -111,6 +111,10 @@ um vínculo histórico está implementada e publicada.
 - Candidatos plausíveis que não atendem à regra estrita do lote não são
   confirmados automaticamente: eles abrem em uma fila de revisão manual, um a
   um. Selecionados sem candidato plausível aparecem somente no resumo e logs.
+- A similaridade de descrição combina palavras repetidas, ordem das palavras,
+  frase completa e assinatura do estabelecimento. Notações equivalentes de
+  parcelas, como `Parcela 1 de 3`, `1/3` e `01/03`, são normalizadas apenas para
+  a comparação; as descrições originais permanecem intactas.
 - Na base histórica, `Antigo`, `Planilha Passada` e `Primeira Planilha` são
   marcadores de uma época sem identificação de conta: os registros preservam
   data, descrição, valor e classificação, mas ficam sem `account_id`.

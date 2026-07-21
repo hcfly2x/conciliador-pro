@@ -314,6 +314,27 @@ class HistoricalLinkCandidateTests(unittest.TestCase):
         self.assertEqual(factors["match_amount_difference"], 0.50)
         self.assertGreater(factors["match_description_similarity"], 50)
 
+    def test_description_similarity_normalizes_equivalent_installment_formats(self) -> None:
+        similarity = app.description_similarity(
+            "PB*UBIQUITI (Parcela 1 de 3)",
+            "PB*Ubiquiti (01/03)",
+        )
+
+        self.assertEqual(similarity, 1.0)
+        self.assertEqual(
+            app.description_similarity(
+                "PB*UBIQUITI (Parcela 1 de 3)",
+                "pb ubiquiti 01 03",
+            ),
+            1.0,
+        )
+
+    def test_description_similarity_considers_word_order(self) -> None:
+        same_order = app.description_similarity("LOJA CENTRAL PAGAMENTO", "LOJA CENTRAL")
+        changed_order = app.description_similarity("LOJA CENTRAL PAGAMENTO", "CENTRAL LOJA")
+
+        self.assertGreater(same_order, changed_order)
+
 
 class ClassificationValidationTests(unittest.TestCase):
     def make_db(self) -> sqlite3.Connection:

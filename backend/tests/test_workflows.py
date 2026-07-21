@@ -196,6 +196,37 @@ class WorkflowIntegrationTests(unittest.TestCase):
             ],
         )
 
+    def test_batch_treats_equivalent_installment_descriptions_as_exact(self) -> None:
+        self.conn.execute(
+            """
+            INSERT INTO transactions(
+              id,account_id,date,description,description_norm,amount,type,locked,status,
+              history_match_confirmed,identity_score
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                "tx-installment-format", "acc", "2024-12-12",
+                "PB*UBIQUITI (Parcela 1 de 3)", "pb ubiquiti parcela 1 de 3",
+                -1578.02, "expense", 0, "pending", 0, 0,
+            ),
+        )
+        self.conn.execute(
+            "INSERT INTO classification_history VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (
+                "hist-installment-format", "seed:sheet:saidas", None, "2024-12-12",
+                "PB*Ubiquiti (01/03)", "pb ubiquiti 01 03", 1578.02,
+                "expense", "cat-expense", "sub-market",
+            ),
+        )
+
+        response = self.client.post(
+            "/api/v1/transactions/history-links/batch",
+            json={"ids": ["tx-installment-format"]},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["matched_ids"], ["tx-installment-format"])
+
     def test_batch_confirms_two_consecutive_groups_of_fifty(self) -> None:
         transactions = []
         history = []

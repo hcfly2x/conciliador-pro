@@ -13,6 +13,7 @@ import sqlite3
 import time
 import unicodedata
 import uuid
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -537,20 +538,72 @@ def descriptions_have_common_parts(a: str, b: str) -> bool:
 
 
 def description_similarity(a: str, b: str) -> float:
-    na = norm_text(a)
-    nb = norm_text(b)
-    sa = set(na.split())
-    sb = set(nb.split())
-    if not sa or not sb:
+    def canonicalize(text: str) -> str:
+        source = str(text or "").lower()
+
+        def installment_replacement(match: re.Match[str]) -> str:
+            current = int(match.group(1))
+            total = int(match.group(2))
+            if 1 <= current <= total:
+                return f" parcela {current} {total} "
+            return match.group(0)
+
+        source = re.sub(
+            r"\bparcela\s*0*(\d{1,2})\s*(?:de|/)\s*0*(\d{1,2})\b",
+            installment_replacement,
+            source,
+        )
+        source = re.sub(
+            r"\b0*(\d{1,2})\s*/\s*0*(\d{1,2})\b",
+            installment_replacement,
+            source,
+        )
+        normalized = norm_text(source)
+        normalized = re.sub(r"\s+", " ", normalized).strip()
+        return normalized
+
+    na = canonicalize(a)
+    nb = canonicalize(b)
+    installments_a = re.findall(r"\bparcela\s+(\d{1,2})\s+(\d{1,2})\b", na)
+    installments_b = re.findall(r"\bparcela\s+(\d{1,2})\s+(\d{1,2})\b", nb)
+    for current, total in installments_a:
+        marker = f"parcela {int(current)} {int(total)}"
+        if marker not in nb:
+            nb = re.sub(rf"\b0*{int(current)}\s+0*{int(total)}\b", marker, nb)
+    for current, total in installments_b:
+        marker = f"parcela {int(current)} {int(total)}"
+        if marker not in na:
+            na = re.sub(rf"\b0*{int(current)}\s+0*{int(total)}\b", marker, na)
+    tokens_a = na.split()
+    tokens_b = nb.split()
+    if not tokens_a or not tokens_b:
         return 0.0
-    inter = len(sa & sb)
-    jaccard = inter / (len(sa | sb) or 1)
-    containment = inter / min(len(sa), len(sb))
-    text_ratio = difflib.SequenceMatcher(None, na, nb).ratio()
-    prefix_bonus = 0.0
-    if first_tokens(na, 2) and first_tokens(na, 2) == first_tokens(nb, 2):
-        prefix_bonus = 0.08
-    score = (0.35 * jaccard) + (0.40 * containment) + (0.25 * text_ratio) + prefix_bonus
+    if na == nb:
+        return 1.0
+
+    counts_a = Counter(tokens_a)
+    counts_b = Counter(tokens_b)
+    common_count = sum((counts_a & counts_b).values())
+    word_overlap = (2 * common_count) / (len(tokens_a) + len(tokens_b))
+    word_order = difflib.SequenceMatcher(None, tokens_a, tokens_b).ratio()
+    phrase_ratio = difflib.SequenceMatcher(None, na, nb).ratio()
+
+    merchant_a = " ".join(
+        token for token in merchant_signature(na).split() if token != "parcela" and not token.isdigit()
+    )
+    merchant_b = " ".join(
+        token for token in merchant_signature(nb).split() if token != "parcela" and not token.isdigit()
+    )
+    merchant_ratio = (
+        difflib.SequenceMatcher(None, merchant_a, merchant_b).ratio()
+        if merchant_a and merchant_b else 0.0
+    )
+    score = (
+        (0.45 * word_overlap)
+        + (0.25 * word_order)
+        + (0.20 * phrase_ratio)
+        + (0.10 * merchant_ratio)
+    )
     return round(max(0.0, min(1.0, score)), 4)
 
 
@@ -654,7 +707,7 @@ def find_identity_match(
 ) -> dict[str, Any] | None:
     tx_type = tx.get("type") or ""
     tx_date = tx.get("date") or ""
-    tx_desc = tx.get("description_norm") or norm_text(tx.get("description") or "")
+    tx_desc = tx.get("description") or tx.get("description_norm") or ""
     tx_amount = abs(float(tx.get("amount") or 0))
     tx_account_id = tx.get("account_id")
     if tx_amount < 2.0:
@@ -5917,7 +5970,7 @@ def strict_history_match_for_batch(
     """Encontra somente candidatos exatos exigidos pelo botao de vinculo em lote."""
     tx_type = str(row[5] or "")
     tx_date = str(row[1] or "")
-    tx_description = str(row[3] or row[2] or "")
+    tx_description = str(row[2] or row[3] or "")
     tx_amount = abs(float(row[4] or 0))
     rejected_id = row[10]
     comparisons: list[tuple[str, str, float]] = [("standard", tx_date, tx_amount)]
@@ -5995,7 +6048,7 @@ def prepare_history_links_batch():
     with db_connect() as conn:
         history_rows = conn.execute(
             """
-            SELECT id,date,description_norm,ABS(amount),account_id,category_id,subcategory_id,type
+            SELECT id,date,description,ABS(amount),account_id,category_id,subcategory_id,type
             FROM classification_history
             """
         ).fetchall()
@@ -6031,7 +6084,7 @@ def prepare_history_links_batch():
             identity = strict_history_match_for_batch(row, history_index)
             if not identity:
                 manual_identity = find_identity_match(conn, {
-                    "date": row[1], "description": row[2], "description_norm": row[3],
+                    "date": row[1], "description": row[2], "description_norm": row[2],
                     "amount": row[4], "type": row[5], "account_id": row[6],
                     "installment_current": row[7], "installment_total": row[8],
                 }, history_cache)
