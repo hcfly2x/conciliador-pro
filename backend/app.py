@@ -30,6 +30,7 @@ import auth as auth_mod
 from auth import record_audit, ROLE_ADMIN
 
 HISTORY_LINK_CANDIDATE_THRESHOLD = 96.0
+UNKNOWN_HISTORICAL_ACCOUNT_LABELS = {"antigo", "planilha passada", "primeira planilha"}
 
 try:
     import openpyxl
@@ -2013,6 +2014,14 @@ def seed() -> None:
                     "INSERT INTO accounts(id,name,type,color,is_active,created_at) VALUES (?,?,?,?,?,?)",
                     (str(uuid.uuid4()), name, acc_type, color, 1, now),
                 )
+        normalization = normalize_legacy_account_aliases(conn)
+        if normalization["history_without_account"] or normalization["sulivan_migrated"]:
+            app.logger.info(
+                "[account-normalization] historico_sem_conta=%s sulivan_para_santander=%s contas_removidas=%s",
+                normalization["history_without_account"],
+                normalization["sulivan_migrated"],
+                normalization["accounts_removed"],
+            )
         if conn.execute("SELECT COUNT(1) FROM categories").fetchone()[0] == 0:
             base = [
                 ("GASTO PESSOAL", "#dc2626", "#ffffff", "expense"),
@@ -2983,9 +2992,57 @@ def find_or_create_subcategory(conn: sqlite3.Connection, name: str):
     return row[0] if row else sid
 
 
+def is_unknown_historical_account_label(value: Any) -> bool:
+    return norm_text(str(value or "")) in UNKNOWN_HISTORICAL_ACCOUNT_LABELS
+
+
+def is_legacy_sulivan_account_label(value: Any) -> bool:
+    return "sulivan" in norm_text(str(value or ""))
+
+
+def normalize_legacy_account_aliases(conn: sqlite3.Connection) -> dict[str, int]:
+    """Corrige contas criadas indevidamente a partir da planilha historica."""
+    result = {"history_without_account": 0, "sulivan_migrated": 0, "accounts_removed": 0}
+    accounts = conn.execute("SELECT id,name FROM accounts").fetchall()
+    santander = next((row for row in accounts if norm_text(row[1]) == "cartao santander"), None)
+    unknown = [row for row in accounts if is_unknown_historical_account_label(row[1])]
+    sulivan = [row for row in accounts if is_legacy_sulivan_account_label(row[1])]
+
+    for account_id, _account_name in unknown:
+        history_count = conn.execute(
+            "SELECT COUNT(1) FROM classification_history WHERE account_id=?", (account_id,)
+        ).fetchone()[0]
+        conn.execute("UPDATE classification_history SET account_id=NULL WHERE account_id=?", (account_id,))
+        conn.execute("UPDATE accounts SET is_active=0 WHERE id=?", (account_id,))
+        result["history_without_account"] += int(history_count or 0)
+
+    if santander:
+        santander_id = santander[0]
+        for account_id, _account_name in sulivan:
+            history_count = conn.execute(
+                "SELECT COUNT(1) FROM classification_history WHERE account_id=?", (account_id,)
+            ).fetchone()[0]
+            conn.execute("UPDATE classification_history SET account_id=? WHERE account_id=?", (santander_id, account_id))
+            result["sulivan_migrated"] += int(history_count or 0)
+
+    referenced_tables = ("transactions", "installment_plans", "imported_files", "import_previews", "account_file_coverage")
+    for account_id, _account_name in unknown + sulivan:
+        if all(
+            int(conn.execute(f"SELECT COUNT(1) FROM {table} WHERE account_id=?", (account_id,)).fetchone()[0] or 0) == 0
+            for table in referenced_tables
+        ):
+            conn.execute("DELETE FROM accounts WHERE id=?", (account_id,))
+            result["accounts_removed"] += 1
+    return result
+
+
 def resolve_account_from_text(conn: sqlite3.Connection, raw: str):
     n = norm_text(raw or "")
-    if "smartek" in n or "smtk" in n:
+    if n in UNKNOWN_HISTORICAL_ACCOUNT_LABELS:
+        return None
+    if "sulivan" in n:
+        name = "CARTAO SANTANDER"
+    elif "smartek" in n or "smtk" in n:
         name = "CONTA SMARTEK"
     elif "nubank" in n:
         name = "CARTAO NUBANK" if "cart" in n or "fatura" in n else "CONTA NUBANK"
@@ -3753,6 +3810,10 @@ def accounts():
     if request.method == "GET":
         with db_connect() as conn:
             rows = conn.execute("SELECT id,name,type,color,is_active,created_at FROM accounts ORDER BY name").fetchall()
+        rows = [
+            row for row in rows
+            if not is_unknown_historical_account_label(row[1])
+        ]
         return jsonify([
             {
                 "id": r[0],
@@ -4487,8 +4548,7 @@ def coverage_account_rows(conn: sqlite3.Connection) -> list[sqlite3.Row]:
         ORDER BY type,name
         """
     ).fetchall()
-    ignored = {"PRIMEIRA PLANILHA", "PLANILHA PASSADA", "ANTIGO"}
-    return [r for r in rows if (r["name"] or "").upper() not in ignored]
+    return [r for r in rows if not is_unknown_historical_account_label(r["name"])]
 
 
 def coverage_files_for(account_name: str, year_month: str) -> list[dict[str, Any]]:

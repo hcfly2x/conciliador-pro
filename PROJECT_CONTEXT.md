@@ -106,6 +106,12 @@ um vínculo histórico está implementada e publicada.
 - O vínculo em lote indexa a base histórica por tipo, data e valor exatos para
   processar lotes sucessivos sem varredura repetida. A tabela mantém um painel
   de logs visível com início, espera, progresso, totais, duração e falhas.
+- Na base histórica, `Antigo`, `Planilha Passada` e `Primeira Planilha` são
+  marcadores de uma época sem identificação de conta: os registros preservam
+  data, descrição, valor e classificação, mas ficam sem `account_id`.
+- Na base histórica, `Cartão Sulivan` é um nome legado de `CARTAO SANTANDER`;
+  novas linhas históricas e referências históricas existentes são consolidadas
+  na conta oficial. Essa regra não se aplica à importação de extratos/faturas.
 
 ## Tarefas pendentes confirmadas
 

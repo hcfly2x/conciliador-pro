@@ -63,6 +63,74 @@ class HistoricalWorkbookNormalizationTests(unittest.TestCase):
         self.assertEqual(headers["observacao"], 3)
         self.assertNotIn("", headers)
 
+    def test_legacy_account_labels_preserve_history_without_creating_accounts(self) -> None:
+        conn = sqlite3.connect(":memory:")
+        self.addCleanup(conn.close)
+        conn.execute("CREATE TABLE accounts(id TEXT PRIMARY KEY,name TEXT,type TEXT,color TEXT,is_active INTEGER)")
+        conn.execute("INSERT INTO accounts VALUES ('santander','CARTAO SANTANDER','credit_card','#000',1)")
+
+        for label in ("Antigo", "Planilha Passada", "Primeira Planilha"):
+            self.assertIsNone(app.resolve_account_from_text(conn, label))
+        sulivan = app.resolve_account_from_text(conn, "Cartão Sulivan")
+
+        self.assertEqual(sulivan[0], "santander")
+        self.assertEqual(sulivan[1], "CARTAO SANTANDER")
+        self.assertEqual(conn.execute("SELECT COUNT(*) FROM accounts").fetchone()[0], 1)
+
+    def test_existing_alias_accounts_are_repaired_without_losing_history(self) -> None:
+        conn = sqlite3.connect(":memory:")
+        self.addCleanup(conn.close)
+        conn.executescript(
+            """
+            CREATE TABLE accounts(id TEXT PRIMARY KEY,name TEXT,type TEXT,color TEXT,is_active INTEGER);
+            CREATE TABLE classification_history(
+              id TEXT PRIMARY KEY,account_id TEXT,date TEXT,description TEXT,amount REAL
+            );
+            CREATE TABLE transactions(id TEXT PRIMARY KEY,account_id TEXT);
+            CREATE TABLE installment_plans(id TEXT PRIMARY KEY,account_id TEXT);
+            CREATE TABLE imported_files(id TEXT PRIMARY KEY,account_id TEXT,account_name TEXT);
+            CREATE TABLE import_previews(id TEXT PRIMARY KEY,account_id TEXT);
+            CREATE TABLE account_file_coverage(id TEXT PRIMARY KEY,account_id TEXT,year_month TEXT);
+            CREATE TABLE stored_documents(id TEXT PRIMARY KEY,account_name TEXT);
+            INSERT INTO accounts VALUES
+              ('santander','CARTAO SANTANDER','credit_card','#000',1),
+              ('old','Antigo','checking','#111',1),
+              ('past','Planilha Passada','checking','#222',1),
+              ('first','Primeira Planilha','checking','#333',1),
+              ('sulivan','Cartão Sulivan','credit_card','#444',1);
+            INSERT INTO classification_history VALUES
+              ('h-old','old','2024-01-02','DADO ANTIGO',10),
+              ('h-past','past','2024-02-03','DADO PASSADO',20),
+              ('h-first','first','2024-03-04','PRIMEIRO DADO',30),
+              ('h-sulivan','sulivan','2024-04-05','COMPRA CARTAO',40);
+            INSERT INTO transactions VALUES ('tx-sulivan','sulivan');
+            """
+        )
+
+        result = app.normalize_legacy_account_aliases(conn)
+
+        self.assertEqual(result["history_without_account"], 3)
+        self.assertEqual(result["sulivan_migrated"], 1)
+        self.assertEqual(
+            conn.execute(
+                "SELECT id,account_id,date,description,amount FROM classification_history ORDER BY id"
+            ).fetchall(),
+            [
+                ("h-first", None, "2024-03-04", "PRIMEIRO DADO", 30.0),
+                ("h-old", None, "2024-01-02", "DADO ANTIGO", 10.0),
+                ("h-past", None, "2024-02-03", "DADO PASSADO", 20.0),
+                ("h-sulivan", "santander", "2024-04-05", "COMPRA CARTAO", 40.0),
+            ],
+        )
+        self.assertEqual(
+            conn.execute("SELECT account_id FROM transactions WHERE id='tx-sulivan'").fetchone()[0],
+            "sulivan",
+        )
+        self.assertEqual(
+            conn.execute("SELECT name FROM accounts ORDER BY name").fetchall(),
+            [("CARTAO SANTANDER",), ("Cartão Sulivan",)],
+        )
+
 
 class EmptyStatementTests(unittest.TestCase):
     def test_xp_header_only_csv_is_a_confirmed_empty_statement(self) -> None:
