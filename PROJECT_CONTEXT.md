@@ -97,8 +97,9 @@ um vínculo histórico está implementada e publicada.
 - Existe uma única base histórica importada ativa. Uma nova importação exige
   confirmação administrativa explícita e só substitui a base anterior depois
   que o novo arquivo produzir registros válidos.
-- Lançamentos selecionados podem ter vínculos históricos preparados em lote,
-  mas cada vínculo continua exigindo confirmação humana individual.
+- Lançamentos selecionados podem ter vínculos históricos confirmados em lote;
+  essa ação permanece na tabela e aplica categoria e subcategoria sem navegar
+  para a Central de Classificação.
 - A preparação pelo botão `Vincular selecionados` é mais restritiva que os
   demais fluxos: exige similaridade de descrição superior a 95%, diferença de
   data igual a zero e diferença de valor igual a R$ 0,00.
