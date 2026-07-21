@@ -140,6 +140,151 @@ class WorkflowIntegrationTests(unittest.TestCase):
             ("hist-plan", 1, -100.0, "cat-expense", "sub-market", 1),
         )
 
+    def test_batch_confirms_installment_total_with_one_real_tolerance_and_half_description(self) -> None:
+        self.conn.execute(
+            """
+            INSERT INTO transactions(
+              id,account_id,date,description,description_norm,amount,type,locked,status,
+              history_match_confirmed,identity_score,installment_current,installment_total
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                "tx-installment-tolerance", "acc", "2026-03-10",
+                "COMERCIO ALFA (Parcela 3 de 3)", "comercio alfa parcela 3 de 3",
+                -370.0, "expense", 0, "pending", 0, 0, 3, 3,
+            ),
+        )
+        self.conn.execute(
+            "INSERT INTO classification_history VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (
+                "hist-installment-tolerance", "seed:sheet:saidas", None, "2026-01-10",
+                "COMERCIO ALFA SERVICO", "comercio alfa servico", 1111.0,
+                "expense", "cat-expense", "sub-market",
+            ),
+        )
+        similarity = app.description_similarity(
+            "COMERCIO ALFA (Parcela 3 de 3)", "COMERCIO ALFA SERVICO",
+        ) * 100
+        self.assertGreaterEqual(similarity, 50.0)
+        self.assertLess(similarity, 95.0)
+
+        response = self.client.post(
+            "/api/v1/transactions/history-links/batch",
+            json={"ids": ["tx-installment-tolerance"]},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["matched_ids"], ["tx-installment-tolerance"])
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT history_match_confirmed,amount,category_id,subcategory_id,locked "
+                "FROM transactions WHERE id='tx-installment-tolerance'"
+            ).fetchone(),
+            (1, -370.0, "cat-expense", "sub-market", 1),
+        )
+
+    def test_batch_does_not_auto_confirm_installment_above_one_real_difference(self) -> None:
+        self.conn.execute(
+            """
+            INSERT INTO transactions(
+              id,account_id,date,description,description_norm,amount,type,locked,status,
+              history_match_confirmed,identity_score,installment_current,installment_total
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                "tx-installment-over-limit", "acc", "2026-03-10",
+                "COMERCIO ALFA (Parcela 3 de 3)", "comercio alfa parcela 3 de 3",
+                -370.0, "expense", 0, "pending", 0, 0, 3, 3,
+            ),
+        )
+        self.conn.execute(
+            "INSERT INTO classification_history VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (
+                "hist-installment-over-limit", "seed:sheet:saidas", None, "2026-01-10",
+                "COMERCIO ALFA SERVICO", "comercio alfa servico", 1111.01,
+                "expense", "cat-expense", "sub-market",
+            ),
+        )
+
+        response = self.client.post(
+            "/api/v1/transactions/history-links/batch",
+            json={"ids": ["tx-installment-over-limit"]},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["matched_ids"], [])
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT history_match_confirmed,locked FROM transactions "
+                "WHERE id='tx-installment-over-limit'"
+            ).fetchone(),
+            (0, 0),
+        )
+
+    def test_batch_sends_ambiguous_installment_candidates_to_manual_review(self) -> None:
+        self.conn.execute(
+            """
+            INSERT INTO transactions(
+              id,account_id,date,description,description_norm,amount,type,locked,status,
+              history_match_confirmed,identity_score,installment_current,installment_total
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                "tx-installment-ambiguous", "acc", "2026-03-10",
+                "COMERCIO ALFA (Parcela 3 de 3)", "comercio alfa parcela 3 de 3",
+                -370.0, "expense", 0, "pending", 0, 0, 3, 3,
+            ),
+        )
+        self.conn.executemany(
+            "INSERT INTO classification_history VALUES (?,?,?,?,?,?,?,?,?,?)",
+            [
+                (
+                    "hist-installment-secondary", "seed:sheet:saidas", None, "2026-01-10",
+                    "COMERCIO ALFA SERVICO", "comercio alfa servico", 1111.0,
+                    "expense", "cat-expense", "sub-market",
+                ),
+                (
+                    "hist-installment-best", "seed:sheet:saidas", None, "2026-01-10",
+                    "COMERCIO ALFA (01/03)", "comercio alfa 01 03", 1110.5,
+                    "expense", "cat-expense", "sub-market",
+                ),
+            ],
+        )
+
+        response = self.client.post(
+            "/api/v1/transactions/history-links/batch",
+            json={"ids": ["tx-installment-ambiguous"]},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload["matched_ids"], [])
+        self.assertEqual(payload["manual_review_ids"], ["tx-installment-ambiguous"])
+        self.assertTrue(any("2 candidatos parcelados" in entry["message"] for entry in payload["logs"]))
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT history_match_id,history_match_confirmed,locked,match_notes "
+                "FROM transactions WHERE id='tx-installment-ambiguous'"
+            ).fetchone(),
+            (
+                "hist-installment-best", 0, 0,
+                "Revisao manual: 2 candidatos parcelados validos",
+            ),
+        )
+
+        confirmation = self.client.post(
+            "/api/v1/transactions/tx-installment-ambiguous/history-link",
+            json={"action": "confirm"},
+        )
+        self.assertEqual(confirmation.status_code, 200)
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT history_match_confirmed,locked FROM transactions "
+                "WHERE id='tx-installment-ambiguous'"
+            ).fetchone(),
+            (1, 1),
+        )
+
     def test_batch_only_prepares_exact_date_amount_and_description_above_95(self) -> None:
         self.conn.executemany(
             """

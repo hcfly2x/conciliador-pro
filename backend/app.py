@@ -5966,49 +5966,87 @@ def confirm_history_link_in_batch(conn, tx_id: str) -> tuple[dict[str, Any], str
 def strict_history_match_for_batch(
     row: Any,
     history_index: dict[tuple[str, str, int], list[Any]],
+    installment_amount_index: dict[tuple[str, int], list[Any]],
 ) -> dict[str, Any] | None:
-    """Encontra somente candidatos exatos exigidos pelo botao de vinculo em lote."""
+    """Aplica a regra estrita comum e a excecao confirmada para totais parcelados."""
     tx_type = str(row[5] or "")
     tx_date = str(row[1] or "")
     tx_description = str(row[2] or row[3] or "")
     tx_amount = abs(float(row[4] or 0))
     rejected_id = row[10]
-    comparisons: list[tuple[str, str, float]] = [("standard", tx_date, tx_amount)]
     try:
         installment_current = int(row[7] or 0)
         installment_total = int(row[8] or 0)
     except (TypeError, ValueError):
         installment_current = installment_total = 0
+    best: dict[str, Any] | None = None
+    standard_key = (tx_type, tx_date, int(round(tx_amount * 100)))
+    for history in history_index.get(standard_key, []):
+        history_id = str(history[0])
+        if history_id == rejected_id:
+            continue
+        similarity = round(description_similarity(tx_description, history[2] or "") * 100, 1)
+        if similarity <= 95.0:
+            continue
+        candidate = {
+            "history_match_id": history_id, "identity_score": 100.0,
+            "category_id": history[5], "subcategory_id": history[6],
+            "match_basis": "standard", "comparison_date": tx_date,
+            "comparison_amount": tx_amount, "description_similarity": similarity,
+            "date_difference_days": 0, "amount_difference": 0.0,
+        }
+        if best is None or similarity > float(best["description_similarity"]):
+            best = candidate
+
+    if best is not None:
+        return best
+
     if 0 < installment_current <= installment_total and installment_total > 1:
         first_date = shift_months(tx_date, -(installment_current - 1))
-        comparisons.append(("installment_total", first_date, round(tx_amount * installment_total, 2)))
-
-    best: dict[str, Any] | None = None
-    seen: set[str] = set()
-    for match_basis, comparison_date, comparison_amount in comparisons:
-        key = (tx_type, comparison_date, int(round(comparison_amount * 100)))
-        for history in history_index.get(key, []):
-            history_id = str(history[0])
-            if history_id in seen or history_id == rejected_id:
-                continue
-            seen.add(history_id)
-            similarity = round(description_similarity(tx_description, history[2] or "") * 100, 1)
-            if similarity <= 95.0:
-                continue
-            candidate = {
-                "history_match_id": history_id,
-                "identity_score": 100.0,
-                "category_id": history[5],
-                "subcategory_id": history[6],
-                "match_basis": match_basis,
-                "comparison_date": comparison_date,
-                "comparison_amount": comparison_amount,
-                "description_similarity": similarity,
-                "date_difference_days": 0,
-                "amount_difference": 0.0,
-            }
-            if best is None or similarity > float(best["description_similarity"]):
-                best = candidate
+        comparison_amount = round(tx_amount * installment_total, 2)
+        comparison_cents = int(round(comparison_amount * 100))
+        installment_best: dict[str, Any] | None = None
+        installment_best_rank: tuple[float, float, float] | None = None
+        valid_installment_candidates = 0
+        seen: set[str] = set()
+        for amount_cents in range(comparison_cents - 100, comparison_cents + 101):
+            for history in installment_amount_index.get((tx_type, amount_cents), []):
+                history_id = str(history[0])
+                if history_id in seen or history_id == rejected_id:
+                    continue
+                seen.add(history_id)
+                similarity = round(description_similarity(tx_description, history[2] or "") * 100, 1)
+                amount_difference = round(abs(comparison_amount - float(history[3] or 0)), 2)
+                if similarity < 50.0 or amount_difference > 1.0:
+                    continue
+                valid_installment_candidates += 1
+                try:
+                    history_date = dt.date.fromisoformat(str(history[1] or ""))
+                    date_options = [value for value in (tx_date, first_date) if value]
+                    comparison_date = min(
+                        date_options,
+                        key=lambda value: abs((dt.date.fromisoformat(value) - history_date).days),
+                    )
+                    date_difference = abs((dt.date.fromisoformat(comparison_date) - history_date).days)
+                except (TypeError, ValueError):
+                    comparison_date = first_date
+                    date_difference = 999999
+                rank = (similarity, -amount_difference, -float(date_difference))
+                if installment_best_rank is None or rank > installment_best_rank:
+                    installment_best_rank = rank
+                    installment_best = {
+                        "history_match_id": history_id, "identity_score": 100.0,
+                        "category_id": history[5], "subcategory_id": history[6],
+                        "match_basis": "installment_total", "comparison_date": comparison_date,
+                        "comparison_amount": comparison_amount,
+                        "description_similarity": similarity,
+                        "date_difference_days": date_difference,
+                        "amount_difference": amount_difference,
+                    }
+        if installment_best is not None:
+            installment_best["candidate_count"] = valid_installment_candidates
+            installment_best["requires_manual_review"] = valid_installment_candidates > 1
+            best = installment_best
     return best
 
 
@@ -6053,11 +6091,15 @@ def prepare_history_links_batch():
             """
         ).fetchall()
         history_index: dict[tuple[str, str, int], list[Any]] = {}
+        installment_amount_index: dict[tuple[str, int], list[Any]] = {}
         for history in history_rows:
+            amount_cents = int(round(float(history[3] or 0) * 100))
+            history_type = str(history[7] or "")
             history_index.setdefault(
-                (str(history[7] or ""), str(history[1] or ""), int(round(float(history[3] or 0) * 100))),
+                (history_type, str(history[1] or ""), amount_cents),
                 [],
             ).append(history)
+            installment_amount_index.setdefault((history_type, amount_cents), []).append(history)
         history_cache: dict[str, list[tuple[Any, ...]]] = {"expense": [], "income": []}
         for history in history_rows:
             history_cache.setdefault(str(history[7] or ""), []).append(tuple(history[:7]))
@@ -6081,7 +6123,7 @@ def prepare_history_links_batch():
                 skipped_ids.append(tx_id)
                 log_position(position)
                 continue
-            identity = strict_history_match_for_batch(row, history_index)
+            identity = strict_history_match_for_batch(row, history_index, installment_amount_index)
             if not identity:
                 manual_identity = find_identity_match(conn, {
                     "date": row[1], "description": row[2], "description_norm": row[2],
@@ -6112,6 +6154,31 @@ def prepare_history_links_batch():
                     manual_review_ids.append(tx_id)
                 else:
                     without_match_ids.append(tx_id)
+                log_position(position)
+                continue
+            if identity.get("requires_manual_review"):
+                candidate_count = int(identity.get("candidate_count") or 2)
+                conn.execute(
+                    """
+                    UPDATE transactions
+                    SET history_match_id=?,history_match_confirmed=0,identity_score=?,match_probability=?,
+                        match_notes=?,suggested_category_id=?,suggested_subcategory_id=?
+                    WHERE id=?
+                    """,
+                    (
+                        identity.get("history_match_id"), identity.get("identity_score"),
+                        identity.get("identity_score"),
+                        f"Revisao manual: {candidate_count} candidatos parcelados validos",
+                        identity.get("category_id"), identity.get("subcategory_id"), tx_id,
+                    ),
+                )
+                conn.execute("DELETE FROM transaction_suggestions WHERE transaction_id=?", (tx_id,))
+                conn.execute("DELETE FROM transaction_suggestion_state WHERE transaction_id=?", (tx_id,))
+                manual_review_ids.append(tx_id)
+                log_progress(
+                    f"Revisao manual: lancamento {position}/{len(ids)} possui "
+                    f"{candidate_count} candidatos parcelados validos"
+                )
                 log_position(position)
                 continue
             note = (

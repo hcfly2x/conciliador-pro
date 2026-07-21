@@ -105,6 +105,12 @@ um vínculo histórico está implementada e publicada.
 - A preparação pelo botão `Vincular selecionados` é mais restritiva que os
   demais fluxos: exige similaridade de descrição superior a 95%, diferença de
   data igual a zero e diferença de valor igual a R$ 0,00.
+- Para lançamentos parcelados, há uma exceção explícita nessa operação: o total
+  calculado (`valor da parcela × total de parcelas`) pode ser confirmado com
+  diferença de até R$ 1,00 para a base histórica e similaridade de descrição
+  igual ou superior a 50%. Um único candidato válido é confirmado; quando há
+  dois ou mais, o lançamento abre na fila de revisão manual com o melhor
+  candidato visível, priorizado por similaridade, diferença de valor e data.
 - O vínculo em lote indexa a base histórica por tipo, data e valor exatos para
   processar lotes sucessivos sem varredura repetida. A tabela mantém um painel
   de logs visível com início, espera, progresso, totais, duração e falhas.
