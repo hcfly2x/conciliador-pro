@@ -5763,6 +5763,92 @@ def review_history_link(tx_id: str):
     return jsonify({"id": tx_id, "history_match_id": None, "history_match_confirmed": False, "ok": True})
 
 
+def confirm_history_link_in_batch(conn, tx_id: str) -> tuple[dict[str, Any], str]:
+    """Confirma um candidato ja validado pelo lote usando a mesma regra de classificacao individual."""
+    row = conn.execute(
+        """
+        SELECT history_match_id,identity_score,history_match_confirmed,locked,type,
+               category_id,subcategory_id,status,installment_plan_id
+        FROM transactions WHERE id=?
+        """,
+        (tx_id,),
+    ).fetchone()
+    if not row or not row[0]:
+        return {}, "Candidato de vinculo nao encontrado"
+    if float(row[1] or 0) < HISTORY_LINK_CANDIDATE_THRESHOLD:
+        return {}, "Candidato abaixo do limiar de seguranca"
+    history = conn.execute(
+        "SELECT category_id,subcategory_id,type FROM classification_history WHERE id=?", (row[0],)
+    ).fetchone()
+    if not history:
+        return {}, "Registro historico nao encontrado"
+    validation_error, _validation_status = validate_classification_selection(conn, history[0], history[1], row[4])
+    if validation_error:
+        return {}, str(validation_error.get("detail") or "Classificacao historica invalida")
+    if history[2] != row[4]:
+        return {}, "Classificacao historica incompativel com o tipo do lancamento"
+    classification_changes = (row[5], row[6]) != (history[0], history[1])
+    if int(row[3] or 0) == 1 and classification_changes:
+        return {}, "Lancamento protegido"
+
+    user = current_user()
+    username = user.get("username") or ""
+    now = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
+    match_id = row[0]
+    conn.execute(
+        """
+        UPDATE transactions
+        SET history_match_confirmed=1,history_match_rejected_id=NULL,
+            match_notes='Vinculo historico confirmado em lote; classificacao replicada da base historica',
+            category_id=?,subcategory_id=?,status='reconciled',locked=1,
+            classified_by=?,classified_at=?
+        WHERE id=?
+        """,
+        (history[0], history[1], username, now, tx_id),
+    )
+    record_audit(user, "confirm_history_link_batch", "transaction", tx_id, "history_match_id", "", match_id, conn=conn)
+    affected = [tx_id]
+    if row[8]:
+        siblings = [item[0] for item in conn.execute(
+            "SELECT id FROM transactions WHERE installment_plan_id=? AND id<>? AND locked=0",
+            (row[8], tx_id),
+        ).fetchall()]
+        if siblings:
+            sibling_placeholders = ",".join("?" for _ in siblings)
+            conn.execute(
+                f"""
+                UPDATE transactions
+                SET category_id=?,subcategory_id=?,status='reconciled',locked=1,
+                    classified_by=?,classified_at=?,history_match_id=NULL,
+                    history_match_confirmed=0,identity_score=0,match_probability=0,match_notes=''
+                WHERE id IN ({sibling_placeholders})
+                """,
+                [history[0], history[1], username, now] + siblings,
+            )
+            affected.extend(siblings)
+        conn.execute(
+            """
+            UPDATE installment_plans
+            SET category_id=?,subcategory_id=?,classified_by=?,classified_at=?,updated_at=?
+            WHERE id=?
+            """,
+            (history[0], history[1], username, now, now, row[8]),
+        )
+    for affected_id in affected:
+        conn.execute("DELETE FROM transaction_suggestions WHERE transaction_id=?", (affected_id,))
+        conn.execute("DELETE FROM transaction_suggestion_state WHERE transaction_id=?", (affected_id,))
+    if row[5] != history[0]:
+        record_audit(user, "classify_from_history_link_batch", "transaction", tx_id, "category_id", row[5] or "", history[0], conn=conn)
+    if row[6] != history[1]:
+        record_audit(user, "classify_from_history_link_batch", "transaction", tx_id, "subcategory_id", row[6] or "", history[1] or "", conn=conn)
+    if row[7] != "reconciled":
+        record_audit(user, "classify_from_history_link_batch", "transaction", tx_id, "status", row[7] or "", "reconciled", conn=conn)
+    return {
+        "id": tx_id, "history_match_id": match_id, "history_match_confirmed": True,
+        "category_id": history[0], "subcategory_id": history[1], "affected_ids": affected,
+    }, ""
+
+
 @app.route("/api/v1/transactions/history-links/batch", methods=["POST"])
 def prepare_history_links_batch():
     data = request.get_json(silent=True) or {}
@@ -5775,6 +5861,8 @@ def prepare_history_links_batch():
     matched_ids: list[str] = []
     without_match_ids: list[str] = []
     skipped_ids: list[str] = []
+    failed_ids: list[str] = []
+    affected_ids: set[str] = set()
     with db_connect() as conn:
         hist_cache = {
             tx_type: conn.execute(
@@ -5798,7 +5886,10 @@ def prepare_history_links_batch():
         by_id = {row[0]: row for row in rows}
         for tx_id in ids:
             row = by_id.get(tx_id)
-            if not row or bool(row[9]) or bool(row[11]):
+            current_state = conn.execute(
+                "SELECT history_match_confirmed,locked FROM transactions WHERE id=?", (tx_id,)
+            ).fetchone() if row else None
+            if not row or not current_state or bool(current_state[0]) or bool(current_state[1]):
                 skipped_ids.append(tx_id)
                 continue
             identity = find_identity_match(conn, {
@@ -5836,11 +5927,17 @@ def prepare_history_links_batch():
             )
             conn.execute("DELETE FROM transaction_suggestions WHERE transaction_id=?", (tx_id,))
             conn.execute("DELETE FROM transaction_suggestion_state WHERE transaction_id=?", (tx_id,))
+            confirmation, confirmation_error = confirm_history_link_in_batch(conn, tx_id)
+            if confirmation_error:
+                failed_ids.append(tx_id)
+                continue
             matched_ids.append(tx_id)
+            affected_ids.update(confirmation.get("affected_ids") or [tx_id])
     return jsonify({
         "selected": len(ids), "matched": len(matched_ids), "without_match": len(without_match_ids),
-        "skipped": len(skipped_ids), "matched_ids": matched_ids,
+        "skipped": len(skipped_ids), "failed": len(failed_ids), "matched_ids": matched_ids,
         "without_match_ids": without_match_ids, "skipped_ids": skipped_ids,
+        "failed_ids": failed_ids, "affected_ids": sorted(affected_ids),
     })
 
 

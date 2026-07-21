@@ -367,35 +367,14 @@ export default function TransactionTable({
     try {
       const result = await prepareHistoricalLinks([...selected])
       if (!result.matched) {
-        addToast(`Nenhum vinculo atende ao lote: descricao >95%, mesma data e valor exato (${result.without_match} sem correspondencia)`, 'err')
+        const failure = result.failed ? `; ${result.failed} falharam na confirmacao` : ''
+        addToast(`Nenhum vinculo atende ao lote: descricao >95%, mesma data e valor exato (${result.without_match} sem correspondencia${failure})`, 'err')
         return
       }
-      const pending = new Set(result.matched_ids)
-      const affectedSelected = new Set<string>()
-      let confirmed = 0
-      let failed = 0
-      let firstError = ''
-      for (const txId of result.matched_ids) {
-        if (!pending.has(txId)) continue
-        try {
-          const review = await reviewHistoricalMatch(txId, 'confirm')
-          confirmed += 1
-          for (const affectedId of review.affected_ids || [txId]) {
-            pending.delete(affectedId)
-            if (selected.has(affectedId)) affectedSelected.add(affectedId)
-          }
-        } catch (error: unknown) {
-          failed += 1
-          pending.delete(txId)
-          firstError ||= (error as { detail?: string })?.detail || ''
-        }
-      }
-      if (confirmed) {
-        addToast(`${confirmed} vinculo(s) confirmado(s) em lote; ${affectedSelected.size} lancamento(s) atualizado(s)${result.without_match ? `; ${result.without_match} fora da regra` : ''}`)
-        setSelected(new Set())
-        await load(page)
-      }
-      if (failed) addToast(firstError || `${failed} vinculo(s) nao puderam ser confirmados`, 'err')
+      addToast(`${result.matched} vinculo(s) confirmado(s) em lote; ${result.affected_ids.length} lancamento(s) atualizado(s)${result.without_match ? `; ${result.without_match} fora da regra` : ''}`)
+      setSelected(new Set())
+      await load(page)
+      if (result.failed) addToast(`${result.failed} vinculo(s) nao puderam ser confirmados`, 'err')
     } catch (error: unknown) {
       const detail = (error as { detail?: string })?.detail
       addToast(detail || 'Nao foi possivel buscar vinculos para os selecionados', 'err')

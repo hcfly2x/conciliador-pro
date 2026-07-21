@@ -98,8 +98,8 @@ um vínculo histórico está implementada e publicada.
   confirmação administrativa explícita e só substitui a base anterior depois
   que o novo arquivo produzir registros válidos.
 - Lançamentos selecionados podem ter vínculos históricos confirmados em lote;
-  essa ação permanece na tabela e aplica categoria e subcategoria sem navegar
-  para a Central de Classificação.
+  essa ação permanece na tabela e aplica categoria e subcategoria em uma única
+  operação no servidor, sem navegar para a Central de Classificação.
 - A preparação pelo botão `Vincular selecionados` é mais restritiva que os
   demais fluxos: exige similaridade de descrição superior a 95%, diferença de
   data igual a zero e diferença de valor igual a R$ 0,00.

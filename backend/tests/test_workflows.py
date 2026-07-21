@@ -134,9 +134,10 @@ class WorkflowIntegrationTests(unittest.TestCase):
         self.assertEqual(response.get_json()["matched_ids"], ["tx-1"])
         self.assertEqual(
             self.conn.execute(
-                "SELECT history_match_id,amount,match_notes FROM transactions WHERE id='tx-1'"
+                "SELECT history_match_id,history_match_confirmed,amount,category_id,subcategory_id,locked "
+                "FROM transactions WHERE id='tx-1'"
             ).fetchone(),
-            ("hist-plan", -100.0, "Match pelo valor total parcelado na base historica"),
+            ("hist-plan", 1, -100.0, "cat-expense", "sub-market", 1),
         )
 
     def test_batch_only_prepares_exact_date_amount_and_description_above_95(self) -> None:
@@ -169,9 +170,70 @@ class WorkflowIntegrationTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         payload = response.get_json()
         self.assertEqual(payload["matched_ids"], ["tx-link"])
+        self.assertEqual(payload["failed"], 0)
         self.assertEqual(
             set(payload["without_match_ids"]),
             {"tx-date-near", "tx-amount-near", "tx-desc-near"},
+        )
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT history_match_confirmed,category_id,subcategory_id,locked FROM transactions WHERE id='tx-link'"
+            ).fetchone(),
+            (1, "cat-expense", "sub-market", 1),
+        )
+
+    def test_batch_confirms_fifty_links_in_one_request(self) -> None:
+        transactions = []
+        history = []
+        ids = []
+        for index in range(50):
+            tx_id = f"tx-batch-{index:02d}"
+            history_id = f"hist-batch-{index:02d}"
+            description = f"LOJA LOTE {index:02d}"
+            normalized = description.lower()
+            amount = 100 + index
+            ids.append(tx_id)
+            transactions.append((
+                tx_id, "acc", "2026-04-10", description, normalized, -amount,
+                "expense", 0, "pending", 0, 0,
+            ))
+            history.append((
+                history_id, "seed:sheet:saidas", "acc", "2026-04-10",
+                description, normalized, amount, "expense", "cat-expense", "sub-market",
+            ))
+        self.conn.executemany(
+            """
+            INSERT INTO transactions(
+              id,account_id,date,description,description_norm,amount,type,locked,status,
+              history_match_confirmed,identity_score
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            transactions,
+        )
+        self.conn.executemany(
+            "INSERT INTO classification_history VALUES (?,?,?,?,?,?,?,?,?,?)",
+            history,
+        )
+
+        response = self.client.post(
+            "/api/v1/transactions/history-links/batch", json={"ids": ids}
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload["matched"], 50)
+        self.assertEqual(payload["failed"], 0)
+        self.assertEqual(set(payload["matched_ids"]), set(ids))
+        self.assertEqual(set(payload["affected_ids"]), set(ids))
+        self.assertEqual(
+            self.conn.execute(
+                """
+                SELECT COUNT(*) FROM transactions
+                WHERE id LIKE 'tx-batch-%' AND history_match_confirmed=1 AND locked=1
+                  AND category_id='cat-expense' AND subcategory_id='sub-market'
+                """
+            ).fetchone()[0],
+            50,
         )
 
     def test_confirming_installment_link_classifies_plan_without_changing_values(self) -> None:

@@ -697,11 +697,14 @@ export async function prepareHistoricalLinks(ids: string[]): Promise<{
   matched: number
   without_match: number
   skipped: number
+  failed: number
   matched_ids: string[]
   without_match_ids: string[]
   skipped_ids: string[]
+  failed_ids: string[]
+  affected_ids: string[]
 }> {
-  if (USE_MOCK) { await delay(); return { selected: ids.length, matched: ids.length, without_match: 0, skipped: 0, matched_ids: ids, without_match_ids: [], skipped_ids: [] } }
+  if (USE_MOCK) { await delay(); return { selected: ids.length, matched: ids.length, without_match: 0, skipped: 0, failed: 0, matched_ids: ids, without_match_ids: [], skipped_ids: [], failed_ids: [], affected_ids: ids } }
   return http('POST', '/transactions/history-links/batch', { ids })
 }
 
