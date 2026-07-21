@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import sqlite3
+import tempfile
+import time
 import unittest
+from contextlib import contextmanager
+from pathlib import Path
 
 import app
 
@@ -99,9 +103,9 @@ class WorkflowIntegrationTests(unittest.TestCase):
         self.assertEqual(confirmed.status_code, 200)
         self.assertEqual(
             self.conn.execute(
-                "SELECT history_match_confirmed,category_id,subcategory_id,status,locked FROM transactions WHERE id='tx-link'"
+                "SELECT history_match_confirmed,category_id,subcategory_id,status,locked,account_id FROM transactions WHERE id='tx-link'"
             ).fetchone(),
-            (1, "cat-expense", "sub-market", "reconciled", 1),
+            (1, "cat-expense", "sub-market", "reconciled", 1, "acc"),
         )
         self.assertEqual(confirmed.get_json()["category_id"], "cat-expense")
         self.assertEqual(confirmed.get_json()["subcategory_id"], "sub-market")
@@ -113,6 +117,54 @@ class WorkflowIntegrationTests(unittest.TestCase):
             "FROM transactions WHERE id='tx-link'"
         ).fetchone()
         self.assertEqual(row, (None, "hist-1", None, None))
+
+    def test_batch_prepares_installment_total_link_without_changing_amount(self) -> None:
+        self.conn.execute(
+            """
+            INSERT INTO classification_history VALUES
+              ('hist-plan','seed:sheet:saidas','acc','2026-01-10','LOJA','loja',300,'expense','cat-expense','sub-market')
+            """
+        )
+
+        response = self.client.post(
+            "/api/v1/transactions/history-links/batch", json={"ids": ["tx-1"]}
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["matched_ids"], ["tx-1"])
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT history_match_id,amount,match_notes FROM transactions WHERE id='tx-1'"
+            ).fetchone(),
+            ("hist-plan", -100.0, "Match pelo valor total parcelado na base historica"),
+        )
+
+    def test_confirming_installment_link_classifies_plan_without_changing_values(self) -> None:
+        self.conn.execute(
+            """
+            INSERT INTO classification_history VALUES
+              ('hist-plan','seed:sheet:saidas','acc','2026-01-10','LOJA','loja',300,'expense','cat-expense','sub-market')
+            """
+        )
+        self.conn.execute(
+            "UPDATE transactions SET history_match_id='hist-plan',identity_score=99,match_probability=99 WHERE id='tx-1'"
+        )
+
+        response = self.client.post(
+            "/api/v1/transactions/tx-1/history-link", json={"action": "confirm"}
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(set(response.get_json()["affected_ids"]), {"tx-1", "tx-2"})
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT id,amount,category_id,subcategory_id,locked FROM transactions WHERE installment_plan_id='plan-1' ORDER BY id"
+            ).fetchall(),
+            [
+                ("tx-1", -100.0, "cat-expense", "sub-market", 1),
+                ("tx-2", -100.0, "cat-expense", "sub-market", 1),
+            ],
+        )
 
     def test_direct_link_must_be_reviewed_before_manual_classification(self) -> None:
         blocked = self.client.patch(
@@ -177,6 +229,150 @@ class WorkflowIntegrationTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.get_json()["states"]["tx-1"], "pending")
+
+
+class AsyncDocumentImportIntegrationTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.db_path = Path(self.tmp.name) / "async-import.db"
+        self.original_db_connect = app.db_connect
+        self.original_import_document = app.import_document
+        self.original_import_seed_workbook = app.import_seed_workbook
+        self.original_auth_disabled = app.auth_mod.AUTH_DISABLED
+        @contextmanager
+        def test_db_connect(*_args, **_kwargs):
+            conn = sqlite3.connect(self.db_path)
+            try:
+                yield conn
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+            finally:
+                conn.close()
+        app.db_connect = test_db_connect
+        app.auth_mod.AUTH_DISABLED = True
+        app.init_db()
+        self.client = app.app.test_client()
+
+    def tearDown(self) -> None:
+        app.db_connect = self.original_db_connect
+        app.import_document = self.original_import_document
+        app.import_seed_workbook = self.original_import_seed_workbook
+        app.auth_mod.AUTH_DISABLED = self.original_auth_disabled
+        self.tmp.cleanup()
+
+    def test_commit_returns_job_and_status_recovers_after_page_timeout(self) -> None:
+        source = Path(self.tmp.name) / "preview.csv"
+        source.write_text("data,descricao,valor\n", encoding="utf-8")
+        with app.db_connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO import_previews(
+                  id,filename,temp_path,account_id,detected_type,detection_confidence,created_at
+                ) VALUES ('preview-1','arquivo.csv',?,'account-1','EXTRATO TESTE',1,'2026-07-21')
+                """,
+                (str(source),),
+            )
+
+        def successful_import(*_args, **_kwargs):
+            time.sleep(0.05)
+            return ({
+                "imported_file_id": "file-1", "filename": "arquivo.csv", "account_name": "CONTA TESTE",
+                "total_parsed": 2, "total_inserted": 2, "total_duplicates": 0, "total_errors": 0,
+                "transactions_preview": [],
+            }, 201)
+
+        app.import_document = successful_import
+        queued = self.client.post("/api/v1/import/commit", json={
+            "preview_id": "preview-1", "confirm_duplicates": True, "competence_month": "2026/07",
+        })
+        self.assertEqual(queued.status_code, 202)
+        job_id = queued.get_json()["job_id"]
+
+        status = None
+        for _ in range(50):
+            status = self.client.get(f"/api/v1/import/jobs/{job_id}")
+            if status.get_json()["status"] == "completed":
+                break
+            time.sleep(0.02)
+
+        payload = status.get_json()
+        self.assertEqual(payload["status"], "completed")
+        self.assertEqual(payload["result"]["total_inserted"], 2)
+        self.assertFalse(source.exists())
+        with app.db_connect() as conn:
+            self.assertIsNone(conn.execute("SELECT id FROM import_previews WHERE id='preview-1'").fetchone())
+        repeated = self.client.post("/api/v1/import/commit", json={"preview_id": "preview-1"})
+        self.assertEqual(repeated.status_code, 200)
+        self.assertEqual(repeated.get_json(), {"job_id": job_id, "status": "completed"})
+
+    def test_failed_job_preserves_preview_and_can_be_retried(self) -> None:
+        source = Path(self.tmp.name) / "retry.csv"
+        source.write_text("data,descricao,valor\n", encoding="utf-8")
+        with app.db_connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO import_previews(
+                  id,filename,temp_path,account_id,detected_type,detection_confidence,created_at
+                ) VALUES ('preview-retry','retry.csv',?,'account-1','EXTRATO TESTE',1,'2026-07-21')
+                """,
+                (str(source),),
+            )
+
+        app.import_document = lambda *_args, **_kwargs: ({"detail": "falha controlada", "code": "TEST"}, 422)
+        first = self.client.post("/api/v1/import/commit", json={"preview_id": "preview-retry"})
+        job_id = first.get_json()["job_id"]
+        for _ in range(50):
+            failed = self.client.get(f"/api/v1/import/jobs/{job_id}").get_json()
+            if failed["status"] == "failed":
+                break
+            time.sleep(0.02)
+        self.assertEqual(failed["status"], "failed")
+        self.assertTrue(source.exists())
+
+        app.import_document = lambda *_args, **_kwargs: ({
+            "imported_file_id": "file-retry", "filename": "retry.csv", "account_name": "CONTA TESTE",
+            "total_parsed": 1, "total_inserted": 1, "total_duplicates": 0, "total_errors": 0,
+            "transactions_preview": [],
+        }, 201)
+        retried = self.client.post("/api/v1/import/commit", json={"preview_id": "preview-retry"})
+        self.assertEqual(retried.status_code, 202)
+        self.assertEqual(retried.get_json()["job_id"], job_id)
+        for _ in range(50):
+            completed = self.client.get(f"/api/v1/import/jobs/{job_id}").get_json()
+            if completed["status"] == "completed":
+                break
+            time.sleep(0.02)
+        self.assertEqual(completed["status"], "completed")
+        self.assertFalse(source.exists())
+
+    def test_invalid_historical_replacement_preserves_active_base(self) -> None:
+        source = Path(self.tmp.name) / "historico.xlsx"
+        source.write_bytes(b"placeholder")
+        with app.db_connect() as conn:
+            conn.execute(
+                "INSERT INTO categories(id,name,type,color,text_color) VALUES ('cat','CAT','expense','#000','#fff')"
+            )
+            conn.execute(
+                """
+                INSERT INTO classification_history(
+                  id,source_file_id,date,description,description_norm,amount,type,category_id
+                ) VALUES ('old','old-seed:sheet:saidas','2026-01-01','ANTIGO','antigo',10,'expense','cat')
+                """
+            )
+            conn.execute(
+                "INSERT INTO seed_import_jobs(id,status,filename,created_at) VALUES ('seed-job','queued','historico.xlsx','2026-07-21')"
+            )
+        app.import_seed_workbook = lambda *_args, **_kwargs: ({"total_inserted": 0}, 201)
+
+        app._run_seed_import_job("seed-job", source, True)
+
+        with app.db_connect() as conn:
+            self.assertEqual(conn.execute("SELECT source_file_id FROM classification_history").fetchall(), [("old-seed:sheet:saidas",)])
+            job = conn.execute("SELECT status,result_json FROM seed_import_jobs WHERE id='seed-job'").fetchone()
+        self.assertEqual(job[0], "failed")
+        self.assertEqual(app.json.loads(job[1])["code"], "EMPTY_SEED_IMPORT")
 
 
 class ClassificationQueueIntegrationTests(unittest.TestCase):

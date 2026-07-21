@@ -56,7 +56,21 @@ export default function HistoricoPage() {
       const r = await importSeedFile(file)
       setImportJob({ id: r.job_id, status: 'queued', filename: r.filename, result: null, error: '', phase: 'queued', processed: 0, total: 0, message: 'Arquivo recebido', logs: [] })
     } catch (e: any) {
-      if (e?.code === 'SEED_IMPORT_IN_PROGRESS' && e?.job_id) {
+      if (e?.code === 'SEED_REPLACE_CONFIRMATION_REQUIRED') {
+        const confirmed = window.confirm(
+          `Ja existe uma base historica ativa com ${e.existing_records || 'alguns'} registros. ` +
+          'A nova base sera validada primeiro e, somente se estiver correta, substituira a atual. Deseja continuar?'
+        )
+        if (confirmed) {
+          try {
+            const r = await importSeedFile(file, true)
+            setImportJob({ id: r.job_id, status: 'queued', filename: r.filename, result: null, error: '', phase: 'queued', processed: 0, total: 0, message: 'Arquivo recebido para substituir a base atual', logs: [] })
+          } catch (retryError: any) {
+            setError(retryError?.detail || 'Erro ao substituir a base historica')
+            addToast('Falha ao substituir a base', 'err')
+          }
+        }
+      } else if (e?.code === 'SEED_IMPORT_IN_PROGRESS' && e?.job_id) {
         try {
           const active = await getSeedImportJob(e.job_id)
           setImportJob(active)
@@ -77,7 +91,7 @@ export default function HistoricoPage() {
   return (
     <div className="max-w-2xl">
       <h2 className="font-display text-xl text-[#e8eaf0] mb-2">Importar planilha historica</h2>
-      <p className="text-sm text-[#8b90a4] mb-5">Use esta tela para subir sua planilha ja conciliada (abas ENTRADAS/SAIDAS) ou PDF. Ela alimenta apenas as sugestoes de categoria/subcategoria.</p>
+      <p className="text-sm text-[#8b90a4] mb-5">Use esta tela para subir sua planilha ja conciliada (abas ENTRADAS/SAIDAS) ou PDF. Ela alimenta apenas as sugestoes de categoria/subcategoria. Se ja houver uma base ativa, a substituicao exigira confirmacao.</p>
 
       <div className="rounded-xl p-5 mb-4" style={{ background: '#13161d', border: '1px solid rgba(255,255,255,0.07)' }}>
         <input ref={inputRef} type="file" accept=".xlsx,.pdf" className="hidden" onChange={e => setFile(e.target.files?.[0] || null)} />

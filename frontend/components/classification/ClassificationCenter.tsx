@@ -160,15 +160,14 @@ export default function ClassificationCenter() {
     if (!draft?.category_id) { addToast('Escolha uma categoria', 'err'); return }
     setBusyId(tx.id)
     try {
-      await classifyTransaction(tx.id, {
+      const result = await classifyTransaction(tx.id, {
         category_id: draft.category_id,
         subcategory_id: draft.subcategory_id || null,
         notes: draft.notes,
         apply_to_installments: true,
       })
-      removeLocally([tx.id])
+      removeLocally(result.affected_ids || [tx.id])
       addToast('Classificado. Proximo lancamento pronto.')
-      bumpRefresh()
       loadSummary()
     } catch {
       addToast('Erro ao classificar o lancamento', 'err')
@@ -187,7 +186,7 @@ export default function ClassificationCenter() {
       const result = await bulkClassify(ids, draft.category_id, draft.subcategory_id || undefined)
       removeLocally(ids)
       addToast(`${result.updated} lancamentos classificados`)
-      bumpRefresh(); loadSummary()
+      loadSummary()
     } catch { addToast('Erro na classificacao de semelhantes', 'err') }
     finally { setBusyId('') }
   }
@@ -203,7 +202,7 @@ export default function ClassificationCenter() {
       const result = await bulkClassify(ids, bulkCategory, bulkSubcategory || undefined)
       removeLocally(ids)
       addToast(`${result.updated} lancamentos classificados`)
-      bumpRefresh(); loadSummary()
+      loadSummary()
     } catch { addToast('Erro na classificacao em lote', 'err') }
     finally { setBusyId('') }
   }
@@ -220,10 +219,10 @@ export default function ClassificationCenter() {
   async function reviewLink(tx: Transaction, action: 'confirm' | 'reject') {
     setBusyId(tx.id)
     try {
-      await reviewHistoricalMatch(tx.id, action)
-      removeLocally([tx.id])
+      const result = await reviewHistoricalMatch(tx.id, action)
+      removeLocally(result.affected_ids || [tx.id])
       addToast(action === 'confirm' ? 'Vinculo confirmado e classificacao aplicada' : 'Vinculo rejeitado; o lancamento seguira para sugestoes')
-      bumpRefresh(); loadSummary()
+      loadSummary()
     } catch { addToast('Nao foi possivel revisar o vinculo', 'err') }
     finally { setBusyId('') }
   }
@@ -356,6 +355,7 @@ export default function ClassificationCenter() {
                 <div className="mt-4 grid gap-3 md:grid-cols-2">
                   <div className="rounded-lg bg-white/[.025] p-3"><p className="text-[10px] font-semibold uppercase tracking-wider text-[#5a5f73]">Lancamento real</p><p className="mt-2 text-sm text-[#e8eaf0]">{tx.description}</p><p className="mt-1 text-xs text-[#8b90a4]">{formatDate(tx.date)} · {formatCurrencyAbs(tx.amount)}</p></div>
                   <div className="rounded-lg bg-blue-500/[.05] p-3"><p className="text-[10px] font-semibold uppercase tracking-wider text-blue-300">Base historica</p><p className="mt-2 text-sm text-[#e8eaf0]">{tx.match_history_description}</p><p className="mt-1 text-xs text-[#8b90a4]">{formatDate(tx.match_history_date || '')} · {formatCurrencyAbs(tx.match_history_amount || 0)} · {tx.match_history_category_name}{tx.match_history_subcategory_name ? ` / ${tx.match_history_subcategory_name}` : ''}</p></div>
+                  {tx.match_basis === 'installment_total' && <p className="md:col-span-2 rounded-lg bg-amber-500/[.07] p-3 text-xs text-amber-200">Vinculo por parcelamento: a parcela real de {formatCurrencyAbs(tx.amount)} foi comparada ao total estimado de {formatCurrencyAbs(tx.match_comparison_amount || 0)}, na data reconstruida da primeira parcela ({formatDate(tx.match_comparison_date || '')}). Os valores reais nao serao alterados.</p>}
                   <div className="md:col-span-2 flex flex-wrap items-center gap-2 text-xs text-[#8b90a4]"><span>Compatibilidade {tx.identity_score?.toFixed(0)}%</span><span>Data: {tx.match_date_difference_days ?? '?'} dia(s)</span><span>Valor: {formatCurrencyAbs(tx.match_amount_difference || 0)}</span><span>Descricao: {tx.match_description_similarity?.toFixed(0)}%</span><button onClick={() => reviewLink(tx, 'confirm')} disabled={busyId === tx.id} className="ml-auto rounded-md bg-emerald-500/15 px-3 py-2 font-semibold text-emerald-300">Confirmar mesmo lancamento</button><button onClick={() => reviewLink(tx, 'reject')} disabled={busyId === tx.id} className="rounded-md bg-red-500/10 px-3 py-2 font-semibold text-red-300">Nao e o mesmo</button></div>
                 </div>
               ) : queue === 'classified' ? (

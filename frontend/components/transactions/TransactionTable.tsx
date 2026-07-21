@@ -2,7 +2,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Search, RefreshCw, ChevronUp, ChevronDown, Link2, X } from 'lucide-react'
 import { useStore } from '@/store/app'
-import { getTransactions, bulkClassify, classifyTransaction, getTransactionSuggestionsBatch, getLedgers, includeTransactionsInLedger, excludeTransactionsFromLedger, unlockTransaction, isAdmin, reviewHistoricalMatch, type TransactionSuggestion } from '@/lib/api'
+import { getTransactions, bulkClassify, classifyTransaction, getTransactionSuggestionsBatch, getLedgers, includeTransactionsInLedger, excludeTransactionsFromLedger, unlockTransaction, isAdmin, reviewHistoricalMatch, prepareHistoricalLinks, type TransactionSuggestion } from '@/lib/api'
 import { Lock, LockOpen } from 'lucide-react'
 import { formatCurrencyAbs, formatDate } from '@/lib/utils'
 import type { Ledger, Transaction, TransactionFilters } from '@/types'
@@ -70,7 +70,7 @@ export default function TransactionTable({
   moveTargetLedgerName = '',
   defaultReconciliationStatus,
 }: Props) {
-  const { months, accounts, categories, subcategories, addToast, refreshKey, bumpRefresh } = useStore()
+  const { months, accounts, categories, subcategories, addToast, refreshKey } = useStore()
   const [txs, setTxs] = useState<Transaction[]>([])
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
@@ -109,15 +109,17 @@ export default function TransactionTable({
   const [suggestionErrors, setSuggestionErrors] = useState<Set<string>>(new Set())
 
   useEffect(() => {
-    const next: Record<string, { category_id: string; subcategory_id: string; notes: string }> = {}
-    for (const tx of txs) {
-      next[tx.id] = {
-        category_id: tx.category_id || '',
-        subcategory_id: tx.subcategory_id || '',
-        notes: tx.notes || '',
+    setRowDraft(current => {
+      const next: Record<string, { category_id: string; subcategory_id: string; notes: string }> = {}
+      for (const tx of txs) {
+        next[tx.id] = current[tx.id] || {
+          category_id: tx.category_id || '',
+          subcategory_id: tx.subcategory_id || '',
+          notes: tx.notes || '',
+        }
       }
-    }
-    setRowDraft(next)
+      return next
+    })
   }, [txs])
 
   async function saveRow(tx: Transaction) {
@@ -151,7 +153,6 @@ export default function TransactionTable({
           locked: true,
         }
       }))
-      bumpRefresh()
     } catch (err: unknown) {
       if ((err as { code?: string })?.code === 'TX_LOCKED') {
         addToast('Lancamento protegido. Use Desbloquear para alterar.', 'err')
@@ -193,13 +194,17 @@ export default function TransactionTable({
     setReviewingLink(true)
     try {
       const result = await reviewHistoricalMatch(tx.id, action)
-      setTxs(prev => prev.map(item => item.id !== tx.id ? item : {
-        ...item,
-        history_match_id: action === 'confirm' ? item.history_match_id : null,
-        history_match_confirmed: action === 'confirm',
-        identity_score: action === 'confirm' ? item.identity_score : 0,
-        match_probability: action === 'confirm' ? item.match_probability : 0,
-        ...(action === 'confirm' ? {
+      const affected = new Set(result.affected_ids || [tx.id])
+      setTxs(prev => prev.map(item => {
+        if (!affected.has(item.id)) return item
+        const isConfirmedLink = action === 'confirm' && item.id === tx.id
+        return {
+          ...item,
+          history_match_id: isConfirmedLink ? item.history_match_id : null,
+          history_match_confirmed: isConfirmedLink,
+          identity_score: isConfirmedLink ? item.identity_score : 0,
+          match_probability: isConfirmedLink ? item.match_probability : 0,
+          ...(action === 'confirm' ? {
           category_id: result.category_id || null,
           category_name: categories.find(category => category.id === result.category_id)?.name || item.match_history_category_name || null,
           subcategory_id: result.subcategory_id || null,
@@ -208,21 +213,21 @@ export default function TransactionTable({
           locked: result.locked ?? true,
           classified_by: result.classified_by || '',
           classified_at: result.classified_at || '',
-        } : {}),
+          } : {}),
+        }
       }))
       setLinkReviewId(null)
       setRowSuggestions(current => {
         const next = { ...current }
-        delete next[tx.id]
+        affected.forEach(id => delete next[id])
         return next
       })
       setRowSuggestionStates(current => {
         const next = { ...current }
-        delete next[tx.id]
+        affected.forEach(id => delete next[id])
         return next
       })
       addToast(action === 'confirm' ? 'Vinculo confirmado e classificacao historica aplicada' : 'Sugestao de vinculo rejeitada')
-      bumpRefresh()
     } catch {
       addToast('Nao foi possivel revisar o vinculo', 'err')
     } finally {
@@ -353,6 +358,21 @@ export default function TransactionTable({
       setSelected(new Set()); setBulkCatId(''); setBulkSubId('')
       load(page)
     } catch { addToast('Erro na classificacao em lote', 'err') }
+  }
+
+  async function handlePrepareHistoricalLinks() {
+    if (!selected.size) return
+    try {
+      const result = await prepareHistoricalLinks([...selected])
+      if (!result.matched) {
+        addToast(`Nenhum vinculo direto encontrado (${result.without_match} sem correspondencia)`, 'err')
+        return
+      }
+      addToast(`${result.matched} vinculo(s) preparado(s) para revisao`)
+      window.location.assign('/classificacao')
+    } catch {
+      addToast('Nao foi possivel buscar vinculos para os selecionados', 'err')
+    }
   }
 
   async function handleMoveToLedger() {
@@ -514,6 +534,7 @@ export default function TransactionTable({
             {subcategories.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
           </select>
           <button onClick={handleBulkClassify} disabled={!bulkCatId} className="px-3 py-1.5 rounded-md text-xs font-semibold disabled:opacity-40" style={{ background: '#c9a84c', color: '#0d0f14' }}>Aplicar</button>
+          <button onClick={handlePrepareHistoricalLinks} className="px-3 py-1.5 rounded-md text-xs font-semibold" style={{ background: 'rgba(96,165,250,0.18)', border: '1px solid rgba(96,165,250,0.35)', color: '#93c5fd' }}>Vincular selecionados</button>
           {moveTargetLedgerId ? (
             <button onClick={handleMoveToLedger} className="px-3 py-1.5 rounded-md text-xs font-semibold" style={{ background: '#3ecf8e', color: '#08111f' }}>
               Vincular em {moveTargetLedgerName || 'conta corrente'}
@@ -884,6 +905,11 @@ export default function TransactionTable({
                   </div>
                 </section>
               </div>
+              {tx.match_basis === 'installment_total' && (
+                <p className="mt-4 rounded-lg p-3 text-xs text-amber-200" style={{ background: 'rgba(245,158,11,0.07)', border: '1px solid rgba(245,158,11,0.22)' }}>
+                  Vinculo por parcelamento: esta parcela de {formatCurrencyAbs(tx.amount)} foi comparada ao total estimado de {formatCurrencyAbs(tx.match_comparison_amount || 0)}, na data reconstruida da primeira parcela ({formatDate(tx.match_comparison_date || '')}). Confirmar replica apenas a classificacao; os valores dos arquivos permanecem intactos.
+                </p>
+              )}
               <div className="mt-4 grid gap-3 sm:grid-cols-3">
                 <div className="rounded-lg p-3" style={{ background: '#0f1320', border: '1px solid rgba(255,255,255,0.08)' }}>
                   <p className="text-[10px] uppercase tracking-wider text-[#5a5f73]">Diferenca de data</p>

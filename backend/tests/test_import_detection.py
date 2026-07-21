@@ -200,6 +200,42 @@ class HistoricalLinkCandidateTests(unittest.TestCase):
 
         self.assertIsNone(candidate)
 
+    def test_installment_matches_historical_total_on_first_purchase_date(self) -> None:
+        conn = self.make_history_db()
+        conn.execute(
+            "UPDATE classification_history SET date=?,description_norm=?,amount=? WHERE id='hist-1'",
+            ("2026-01-10", "loja exemplo", 300.0),
+        )
+
+        candidate = app.find_identity_match(conn, {
+            "date": "2026-02-10", "description": "LOJA EXEMPLO 02/03",
+            "description_norm": "loja exemplo", "amount": -100.0,
+            "account_id": "card-1", "type": "expense",
+            "installment_current": 2, "installment_total": 3,
+        })
+
+        self.assertIsNotNone(candidate)
+        self.assertEqual(candidate["match_basis"], "installment_total")
+        self.assertEqual(candidate["comparison_date"], "2026-01-10")
+        self.assertEqual(candidate["comparison_amount"], 300.0)
+        self.assertGreaterEqual(candidate["identity_score"], app.HISTORY_LINK_CANDIDATE_THRESHOLD)
+
+    def test_installment_total_is_only_evidence_and_wrong_total_does_not_match(self) -> None:
+        conn = self.make_history_db()
+        conn.execute(
+            "UPDATE classification_history SET date=?,description_norm=?,amount=? WHERE id='hist-1'",
+            ("2026-01-10", "loja exemplo", 350.0),
+        )
+
+        candidate = app.find_identity_match(conn, {
+            "date": "2026-02-10", "description": "LOJA EXEMPLO 02/03",
+            "description_norm": "loja exemplo", "amount": -100.0,
+            "account_id": "card-1", "type": "expense",
+            "installment_current": 2, "installment_total": 3,
+        })
+
+        self.assertIsNone(candidate)
+
     def test_match_factors_explain_date_amount_and_description(self) -> None:
         factors = app.historical_match_factors(
             "2026-03-10", -150.50, "PIX MERCADO CENTRAL",

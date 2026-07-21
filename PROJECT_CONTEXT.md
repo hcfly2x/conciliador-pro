@@ -1,185 +1,124 @@
-# Contexto do Projeto - Conciliador Pro
-
-Este arquivo e a fonte de verdade para novas conversas e trabalhos no projeto. O codigo atual tem prioridade em caso de divergencia tecnica, mas nenhuma regra de negocio deve ser alterada sem confirmar as decisoes registradas aqui.
+# PROJECT_CONTEXT.md — Conciliador Pro
 
 ## Objetivo do produto
 
-O Conciliador Pro e uma aplicacao web de gestao financeira pessoal para o proprietario e colaboradores autorizados. Ele importa extratos bancarios e faturas de cartao, transforma os documentos em lancamentos, evita duplicacoes, permite classificacao financeira e gera relatorios.
+Aplicativo web de controle financeiro pessoal que importa extratos e faturas,
+organiza lançamentos reais por conta, permite classificação manual e usa uma
+base histórica como evidência para acelerar a classificação.
 
-A base historica e auxiliar: ela sugere categorias e subcategorias e pode ser vinculada a lancamentos reais, mas nunca cria nem substitui lancamentos reais.
+Fluxo principal:
+
+1. Importar a base histórica.
+2. Importar extratos e faturas.
+3. Revisar vínculos diretos com a base histórica.
+4. Calcular sugestões.
+5. Classificar manualmente o restante.
+6. Conciliar transferências internas quando aplicável.
 
 ## Estado atual
 
-- Frontend publicado na Vercel.
-- Backend publicado no Render.
-- Banco de producao informado: Supabase/PostgreSQL.
-- Banco local alternativo: SQLite.
-- Build do frontend aprovado na auditoria de 15/07/2026.
-- Cinquenta testes automatizados do backend aprovados, incluindo regressao de importacoes e matematica financeira dos relatorios.
-- Tres jornadas Playwright cobrem autenticacao, importacao/classificacao e conciliacao reversivel em ambiente SQLite isolado.
-- Os seis tipos oficiais de documento possuem fixtures anonimizadas com resultados financeiros exatos.
-- A producao nao foi validada de ponta a ponta com autenticacao durante a auditoria.
+O produto possui fluxo funcional de autenticação, importação com preview,
+deduplicação, base histórica, vínculos revisáveis, sugestões assíncronas,
+classificação, parcelas, conciliação, relatórios, cofre de documentos e reset.
+
+A branch principal é `main`. Há alterações locais não publicadas que reforçam
+em teste e documentação a preservação da conta do lançamento ao confirmar um
+vínculo histórico.
 
 ## Arquitetura e stack
 
-- Backend: Python, Flask 3 e Gunicorn.
-- Frontend: Next.js 15, React 19 e TypeScript.
-- Interface: Tailwind CSS 4.
-- Estado do frontend: Zustand.
-- Banco: PostgreSQL por `DATABASE_URL`, com fallback SQLite.
-- Persistencia: SQL direto, sem ORM.
-- Schema inicializado e atualizado por `init_db()`; ainda nao existe ferramenta formal de migrations.
-- PDFs: pypdf.
-- XLSX: openpyxl.
-- XLS: xlrd.
-- Autenticacao: token Bearer e sessoes persistidas no banco.
-- Perfis existentes: administrador e colaborador.
-- Deploy: GitHub, Vercel, Render e Supabase.
-- Commit e push exigem autorizacao explicita do usuario.
+- Frontend: Next.js 15, React 19, TypeScript, Tailwind CSS, Zustand e Playwright.
+- Backend: Flask, Python e Gunicorn.
+- Banco: PostgreSQL em ambiente configurado com `DATABASE_URL`; SQLite como
+  fallback local e para testes.
+- Persistência: SQL direto com adaptador de compatibilidade SQLite/PostgreSQL.
+- Arquivos: documentos originais armazenados em Base64 no banco, com fallback
+  local.
+- CI: GitHub Actions executa testes Python, typecheck/build do frontend e
+  testes Playwright.
 
 ## Funcionalidades existentes
 
-- Login, logout, sessoes e perfis de acesso.
-- Auditoria de operacoes relevantes no backend.
-- Importacao de CSV, XLS, XLSX e PDF.
-- Parsers para Santander, XP e Nubank.
-- Deteccao de conta, banco e tipo de documento.
-- Correcao manual da conta antes da confirmacao.
-- Preview antes da importacao.
-- Validacao de receitas, despesas, duplicados e saldo quando suportado pelo documento.
-- Preservacao de duplicados legitimos dentro do mesmo arquivo.
-- Bloqueio de duplicados ja existentes no banco pelo fluxo normal.
-- Armazenamento e download do documento original.
-- Cofre e cobertura de arquivos.
+- Login, sessões, perfis `admin` e `colaborador`, auditoria e rate limit.
+- Importação de CSV, XLS/XLSX e PDF com preview, validações, totais, avisos e
+  deduplicação.
+- Confirmação da importação executada em job assíncrono, com retomada do
+  acompanhamento após atualização da página e proteção contra confirmação
+  duplicada.
+- Detecção automática de conta com possibilidade de seleção manual.
+- Parsers para Santander, Nubank e XP.
 - Cadastro de contas, categorias e subcategorias.
-- Classificacao por categoria, subcategoria e observacao.
-- Bloqueio apos classificacao e desbloqueio administrativo.
-- Classificacao em lote.
-- Base historica separada dos lancamentos reais.
-- Sugestoes Top 3 de categoria e subcategoria baseadas na base historica e nos lancamentos classificados, persistidas para consulta rapida.
-- O upload da base historica responde imediatamente e a importacao e o recalculo de vinculos rodam como jobs persistentes, sem manter a requisicao HTTP bloqueada.
-- A importacao historica exibe progresso por linhas e eventos. O recalculo de vinculos historicos permanece separado, e o calculo de sugestoes de categoria e iniciado na Central de Classificacao, em modo incremental ou completo, com progresso e logs proprios.
-- A Central de Classificacao organiza filas de vinculos, sugestoes fortes ou fracas, sem evidencia, aguardando calculo, ignoradas e concluidas; permite salvar e avancar, atalhos, classificacao em lote e aplicacao confirmada a similares.
-- Vinculo entre registros da base historica e lancamentos reais.
-- Comparacao de vinculo com diferenca de data, diferenca de valor e similaridade de descricao explicitas.
-- Metadados de descricao em modo sombra preservam o texto original e extraem estabelecimento, metodo, contraparte e referencia sem alterar deduplicacao ou ranking oficial.
-- Agrupamento e propagacao de classificacao entre parcelas reconhecidas.
-- Relatorios de resumo, categoria e evolucao mensal.
-- Conciliacao manual e reversivel entre uma entrada e uma saida de mesmo valor, com comparacao lado a lado, auditoria e exclusao dos dois lancamentos dos totais e relatorios.
-- Contas correntes internas (`ledgers`) implementadas no codigo, mas ainda nao utilizadas pelo usuario.
-- Reset administrativo.
+- Importação assíncrona da base histórica com progresso e logs.
+- Vínculos históricos revisáveis a partir de score de 96%.
+- Sugestões persistidas de categoria e subcategoria, calculadas manualmente em
+  job separado.
+- Central de classificação, classificação em lote e tratamento de parcelas.
+- Conciliação manual e reversível de entrada e saída de mesmo valor.
+- Relatórios de resumo, categorias e evolução mensal.
+- Cofre de documentos, cobertura de arquivos e reset administrativo.
+- Contas correntes (`ledgers`) acessíveis no menu.
 
-## Regras de negocio vigentes
+## Regras de negócio vigentes
 
-- Lancamentos reais so podem ser criados a partir de extratos e faturas.
-- A base historica serve para sugestoes e vinculos; ela nao cria lancamentos reais.
-- A autoclassificacao e proibida. O sistema apenas apresenta sugestoes e o usuario decide se deseja aplica-las.
-- As sugestoes devem considerar a base historica e os lancamentos ja classificados.
-- Quando um lancamento estiver vinculado a base historica, a coluna de status deve exibir `Vinculado`, e nao `Manual`.
-- Um candidato a vinculo historico so deve ser apresentado a partir de 96% de compatibilidade.
-- Enquanto um candidato a vinculo direto aguarda revisao, categoria e subcategoria
-  nao recebem sugestoes nem classificacao manual; ao rejeitar o vinculo, o
-  lancamento volta ao fluxo probabilistico calculado separadamente.
-- O candidato deve mostrar lado a lado os dados do lancamento real e do registro historico.
-- O vinculo so e confirmado depois de acao humana explicita; uma rejeicao deve impedir que o mesmo candidato reapareca para o lancamento.
-- Confirmar um vinculo replica a categoria e a subcategoria do registro historico, marca o lancamento como classificado e o protege contra alteracoes acidentais.
-- Despesas tem valor negativo.
-- Receitas tem valor positivo.
-- Lancamentos de cartao sao despesas por padrao.
-- Estornos, cashback, abatimentos e creditos podem ser receitas.
-- Duplicados internos de um arquivo podem ser legitimos e sao preservados.
-- Lancamentos ja existentes no banco nao devem ser importados novamente.
-- Toda importacao passa por preview e confirmacao.
-- A conta detectada pode ser corrigida antes da confirmacao.
-- Cada parcela permanece como um lancamento mensal real.
-- Parcelas futuras nao sao criadas artificialmente.
-- Categoria e subcategoria podem ser propagadas entre parcelas reconhecidas.
-- Observacoes sao individuais.
-- Categoria e obrigatoria para concluir a classificacao.
-- Subcategoria e observacao sao opcionais.
-- Depois da classificacao, o lancamento fica bloqueado contra alteracoes acidentais.
-- Apenas administradores podem desbloquear um lancamento.
-- Relatorios devem considerar somente lancamentos reais.
-- Relatorios incluem todos os lancamentos reais, classificados ou pendentes, e excluem duplicados, ignorados e os dois lados de conciliacoes manuais ativas.
-- Uma conciliacao exige confirmacao humana, uma entrada e uma saida de mesmo valor absoluto; nenhum lancamento pode pertencer a mais de uma conciliacao.
-- Conciliar nao apaga nem altera a classificacao dos lancamentos. Desfazer a conciliacao devolve imediatamente os dois valores aos totais e relatorios.
-- Excluir um documento do cofre nao exclui lancamentos sem uma segunda operacao e confirmacao explicitas.
-- Duplicados ja existentes no banco nunca podem ser reinseridos, nem por parametro interno da API.
-- Documentos originais devem permanecer disponiveis para uma eventual auditoria futura, mesmo que sejam consultados raramente.
+- Extratos e faturas são a fonte de verdade dos lançamentos reais.
+- A base histórica não cria lançamentos reais; serve como evidência de
+  classificação.
+- Não existe autoclassificação: toda classificação exige ação humana.
+- Duplicados já existentes no banco não são reinseridos.
+- Duplicados internos são sinalizados, pois podem ser legítimos.
+- Despesas possuem valor negativo; receitas possuem valor positivo.
+- Um vínculo histórico é apresentado para revisão com score mínimo de 96%.
+- Em compras parceladas, o valor da parcela e a data reconstruída da primeira
+  parcela podem ser comparados ao valor total parcelado e à data da compra na
+  base histórica. Essa comparação serve apenas como evidência: os valores e as
+  datas dos lançamentos reais continuam exatamente como vieram dos arquivos.
+- Confirmar vínculo replica categoria e subcategoria do histórico e bloqueia o
+  lançamento.
+- Confirmar vínculo nunca substitui a conta do lançamento real; a conta vinda
+  do arquivo bancário é a fonte mais confiável.
+- Rejeitar vínculo impede que o mesmo candidato reapareça para aquele
+  lançamento.
+- Lançamentos com vínculo direto pendente não recebem sugestões nem podem ser
+  classificados antes da revisão.
+- Conciliação exige uma entrada e uma saída com o mesmo valor absoluto e pode
+  ser desfeita.
+- Lançamentos conciliados não entram nos totais dos relatórios.
+- Durante a homologação, o reset completo do sistema é permitido; backup
+  persistente não é requisito imediato.
 
-## Tratamento das contas da base historica
+## Decisões confirmadas
 
-- `CARTAO SULIVAN` representa uma fatura do cartao Santander.
-- `PLANILHA PASSADA`, `PRIMEIRA PLANILHA` e `ANTIGO` nao representam contas financeiras reais.
-- Registros historicos com essas tres origens podem pertencer a qualquer conta ou fatura do Nubank, XP ou Santander.
-- Essas origens desconhecidas nao devem reduzir a probabilidade de uma sugestao apenas por nao coincidirem com a conta do lancamento real.
-- Para registros historicos com uma conta real conhecida, a conta pode ser considerada como evidencia no calculo da sugestao.
-
-## Decisoes confirmadas
-
-- A aplicacao e web e multiusuario.
-- PostgreSQL e o banco de producao; SQLite e apenas uma alternativa local.
-- A planilha antiga nao e fonte oficial de lancamentos.
-- A base historica continua sendo usada para sugestoes e vinculos com lancamentos reais.
-- A interface deve distinguir claramente um vinculo historico de uma classificacao manual.
-- Vinculos historicos usam limiar inicial de 96% e exigem confirmacao humana depois da comparacao visual dos dois registros.
-- A confirmacao humana do vinculo aplica a categoria e a subcategoria do registro historico ao lancamento real; isso e classificacao explicita por identidade, nao autoclassificacao por probabilidade.
-- Administradores e colaboradores podem confirmar ou rejeitar candidatos de vinculo historico.
-- Autoclassificacao nao deve existir, independentemente da probabilidade calculada.
-- Compras parceladas nao sao consolidadas em um unico lancamento.
-- Cada parcela e registrada no mes em que aparece na fatura.
-- A interface administrativa completa de usuarios e auditoria nao e necessaria por enquanto.
-- Contas correntes internas ficam estacionadas. Antes de evolui-las, deve-se avaliar se os relatorios atendem a necessidade.
-- Os documentos originais sao mantidos para auditoria eventual.
-- Alteracoes Git so sao publicadas com autorizacao explicita.
-- Transferencias entre contas podem ser conciliadas manualmente e de forma reversivel para nao distorcer receitas, despesas ou saldo.
+- O vínculo histórico é revisável, nunca automático.
+- O cálculo de sugestões é separado da importação e iniciado manualmente.
+- Categoria e subcategoria do histórico são replicadas somente após confirmação.
+- A conta do documento importado prevalece sobre a conta da base histórica.
+- Existe uma única base histórica importada ativa. Uma nova importação exige
+  confirmação administrativa explícita e só substitui a base anterior depois
+  que o novo arquivo produzir registros válidos.
+- Lançamentos selecionados podem ter vínculos históricos preparados em lote,
+  mas cada vínculo continua exigindo confirmação humana individual.
 
 ## Tarefas pendentes confirmadas
 
-- A amostra privada local possui 139 documentos dos seis tipos oficiais entre
-  2023 e 2026; resultados agregados estao em `docs/AMOSTRAS-HOMOLOGACAO.md` e os
-  arquivos financeiros originais nao podem ser adicionados ao repositorio.
-- Os extratos Nubank de janeiro de 2024 e XP de fevereiro de 2026 foram
-  confirmados pelo proprietario como periodos validos sem movimentacao.
-- O importador historico aceita as variantes degradadas de abas e cabecalhos
-  observadas na planilha real, sem alterar os dados financeiros de origem.
-- Manter a regressao automatizada dos parsers de extrato e cartao de Santander, XP e Nubank.
-- Revalidar as fixtures sempre que quantidade, data, valor, sinal, competencia ou deduplicacao forem alterados.
-- Melhorar a normalizacao de descricoes e estabelecimentos.
-- Separar similaridade tecnica de probabilidade apresentada ao usuario.
-- Considerar descricao, conta quando conhecida, valor e data nas sugestoes.
-- Tratar origens historicas desconhecidas sem penalizar a sugestao por conta.
-- Calcular categoria antes da subcategoria.
-- Condicionar as sugestoes de subcategoria a categoria.
-- Exibir as tres melhores sugestoes e suas justificativas.
-- Validar a nova Central de Classificacao em producao com os dados reais.
-- Acompanhar a avaliacao retrospectiva leave-one-out de Top 1, Top 3, cobertura
-  e faixas de calibracao na Central de Classificacao antes de ajustar pesos.
-- Manter toda aplicacao de sugestao dependente de acao humana.
-- Ampliar Playwright para vinculos historicos, sugestoes, cofre e relatorios.
-- Revisar seguranca, banco e deploy de producao.
-- Avaliar se a aba de relatorios elimina a necessidade de evoluir contas correntes internas.
-- Limpar codigo e documentacao legados depois de verificar o impacto.
+Nenhuma nova funcionalidade de produto está confirmada para implementação
+imediata. As próximas mudanças devem respeitar este contexto e depender de
+confirmação explícita quando alterarem escopo ou arquitetura.
 
 ## Itens explicitamente abandonados
 
-- Aplicativo desktop ou Tkinter como arquitetura principal.
-- Executavel local como produto final.
-- SQLite local como banco de producao.
-- Importacao automatica de uma pasta fixa do Desktop.
-- Planilha antiga como fonte de lancamentos reais.
-- Criacao de lancamentos reais pela base historica.
-- Autoclassificacao por probabilidade ou match historico.
-- Consolidacao do valor total de compras parceladas.
-- Descarte das parcelas futuras.
-- Estrutura baseada nas abas `SAIDAS`, `ENTRADAS` e `HELCIO`.
-- Relatorio exclusivo da Smartek.
-- Organizacao de arquivos em pastas como banco principal.
-- Interface administrativa completa de usuarios e auditoria no escopo atual.
-- Evolucao imediata das contas correntes internas.
+- Autoclassificação por histórico ou correspondência exata.
+- Vínculo automático sem confirmação humana.
+- Importação direta sem preview e confirmação.
+- Importação automática por pasta.
+- Reinserção forçada de duplicados já existentes no banco.
+- Arquitetura planejada com FastAPI, SQLAlchemy e Alembic.
 
-## Pontos que ainda precisam de confirmacao
+## Pontos que precisam de confirmação
 
-- Remocao segura dos tratamentos legados da Smartek no importador historico, depois de verificar se existem dados atuais dependentes deles.
-- Local definitivo dos documentos originais. Eles devem permanecer acessiveis para auditoria, mas e necessario avaliar se Base64 no PostgreSQL e a melhor opcao ou se deve ser usado armazenamento de objetos.
-- Confirmacao de que a producao utiliza o mesmo schema e commit do repositorio auditado.
+- `Ledgers`/Contas Correntes permanece no escopo do produto?
+- Documentos devem continuar no PostgreSQL em Base64 quando os dados se
+  tornarem persistentes?
+- O score de confiança deve evoluir para probabilidade estatisticamente
+  calibrada?
+- Qual é o ambiente e a versão efetivamente em produção?
+- Quando backups verificáveis passarão a ser obrigatórios?

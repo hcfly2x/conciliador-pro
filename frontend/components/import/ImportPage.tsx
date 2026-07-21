@@ -1,8 +1,8 @@
 'use client'
-import { useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Upload, CheckCircle, AlertCircle, FileText, ShieldCheck, Database } from 'lucide-react'
 import { useStore } from '@/store/app'
-import { commitImportPreview, previewImportFile } from '@/lib/api'
+import { commitImportPreview, getDocumentImportJob, previewImportFile, type DocumentImportJob } from '@/lib/api'
 import type { ImportPreviewResult, ImportResult } from '@/types'
 
 function fmtCurrency(v: number) {
@@ -24,6 +24,8 @@ function visibleFlags(flags?: string) {
     .join(', ')
 }
 
+const ACTIVE_IMPORT_JOB_KEY = 'conciliador_active_import_job'
+
 export default function ImportPage() {
   const { accounts, addToast, bumpRefresh } = useStore()
   const [drag, setDrag] = useState(false)
@@ -35,7 +37,58 @@ export default function ImportPage() {
   const [competenceMonth, setCompetenceMonth] = useState('')
   const [result, setResult] = useState<ImportResult | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [importJob, setImportJob] = useState<DocumentImportJob | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
+  const handledJobRef = useRef('')
+
+  useEffect(() => {
+    const jobId = window.sessionStorage.getItem(ACTIVE_IMPORT_JOB_KEY)
+    if (!jobId) return
+    setLoading(true)
+    getDocumentImportJob(jobId)
+      .then(setImportJob)
+      .catch((error: any) => {
+        if (error?.status === 404) {
+          window.sessionStorage.removeItem(ACTIVE_IMPORT_JOB_KEY)
+          setLoading(false)
+          return
+        }
+        setImportJob({
+          id: jobId, preview_id: '', filename: '', status: 'queued', result: null, error: '',
+          created_at: '', started_at: '', finished_at: '',
+        })
+      })
+  }, [])
+
+  useEffect(() => {
+    if (!importJob?.id || !['queued', 'running'].includes(importJob.status)) return
+    const timer = window.setTimeout(() => {
+      getDocumentImportJob(importJob.id)
+        .then(setImportJob)
+        .catch(() => setImportJob(current => current ? { ...current } : current))
+    }, 1500)
+    return () => window.clearTimeout(timer)
+  }, [importJob])
+
+  useEffect(() => {
+    if (!importJob?.id || !['completed', 'failed'].includes(importJob.status)) return
+    if (handledJobRef.current === `${importJob.id}:${importJob.status}`) return
+    handledJobRef.current = `${importJob.id}:${importJob.status}`
+    window.sessionStorage.removeItem(ACTIVE_IMPORT_JOB_KEY)
+    setLoading(false)
+    if (importJob.status === 'completed' && importJob.result) {
+      setResult(importJob.result)
+      setPreview(null)
+      setError(null)
+      addToast(importJob.result.import_meta?.empty_statement_confirmed
+        ? 'Extrato sem movimentações registrado no cofre'
+        : `${importJob.result.total_inserted} lançamentos importados com sucesso`)
+      bumpRefresh()
+    } else {
+      setError(importJob.error || 'Falha ao confirmar importação.')
+      addToast('Erro ao confirmar importação', 'err')
+    }
+  }, [addToast, bumpRefresh, importJob])
 
   function resetAll() {
     setFile(null)
@@ -46,6 +99,8 @@ export default function ImportPage() {
     setError(null)
     setPreviewLoading(false)
     setLoading(false)
+    setImportJob(null)
+    window.sessionStorage.removeItem(ACTIVE_IMPORT_JOB_KEY)
   }
 
   function pickFile(f: File | undefined) {
@@ -89,16 +144,17 @@ export default function ImportPage() {
     setLoading(true)
     setError(null)
     try {
-      const data = await commitImportPreview(preview.preview_id, true, competenceMonth.replace('-', '/'))
-      setResult(data)
-      addToast(data.import_meta?.empty_statement_confirmed
-        ? 'Extrato sem movimentações registrado no cofre'
-        : `${data.total_inserted} lançamentos importados com sucesso`)
-      bumpRefresh()
+      const queued = await commitImportPreview(preview.preview_id, true, competenceMonth.replace('-', '/'))
+      window.sessionStorage.setItem(ACTIVE_IMPORT_JOB_KEY, queued.job_id)
+      setImportJob({
+        id: queued.job_id, preview_id: preview.preview_id, filename: preview.filename,
+        status: 'queued', result: null, error: '',
+        created_at: '', started_at: '', finished_at: '',
+      })
+      addToast('Importação iniciada. Você pode aguardar nesta tela.')
     } catch (e: any) {
       setError(e?.detail || 'Falha ao confirmar importação.')
       addToast('Erro ao confirmar importação', 'err')
-    } finally {
       setLoading(false)
     }
   }
@@ -127,7 +183,7 @@ export default function ImportPage() {
           className="hidden"
           onChange={e => pickFile(e.target.files?.[0])}
         />
-        <button type="button" onClick={() => inputRef.current?.click()} className="mb-4 h-10 px-4 rounded-md text-sm font-semibold" style={{ background: '#1a1e28', color: '#e8eaf0', border: '1px solid rgba(255,255,255,0.12)' }}>
+        <button type="button" disabled={loading} onClick={() => inputRef.current?.click()} className="mb-4 h-10 px-4 rounded-md text-sm font-semibold disabled:opacity-40" style={{ background: '#1a1e28', color: '#e8eaf0', border: '1px solid rgba(255,255,255,0.12)' }}>
           Selecionar arquivo
         </button>
         <div className="flex justify-center mb-3">{file ? <FileText size={38} style={{ color: '#c9a84c' }} /> : <Upload size={38} style={{ color: drag ? '#c9a84c' : '#5a5f73' }} />}</div>
@@ -145,7 +201,7 @@ export default function ImportPage() {
           <button onClick={handlePreview} disabled={!file || previewLoading} className="h-10 px-4 rounded-md text-sm font-semibold disabled:opacity-40" style={{ background: '#c9a84c', color: '#0d0f14' }}>
             {previewLoading ? 'Analisando...' : 'Analisar arquivo'}
           </button>
-          <button onClick={resetAll} className="h-10 px-4 rounded-md text-sm" style={{ background: '#1a1e28', border: '1px solid rgba(255,255,255,0.12)', color: '#8b90a4' }}>
+          <button onClick={resetAll} disabled={loading || previewLoading} className="h-10 px-4 rounded-md text-sm disabled:opacity-40" style={{ background: '#1a1e28', border: '1px solid rgba(255,255,255,0.12)', color: '#8b90a4' }}>
             Limpar
           </button>
         </div>
@@ -155,6 +211,13 @@ export default function ImportPage() {
         <div className="flex items-start gap-3 p-4 rounded-xl" style={{ background: 'rgba(248,113,113,0.08)', border: '1px solid rgba(248,113,113,0.25)' }}>
           <AlertCircle size={16} className="text-[#f87171] flex-shrink-0 mt-0.5" />
           <p className="text-sm text-[#f87171]">{error}</p>
+        </div>
+      )}
+
+      {importJob && ['queued', 'running'].includes(importJob.status) && (
+        <div className="flex items-center gap-3 p-4 rounded-xl" style={{ background: 'rgba(96,165,250,0.08)', border: '1px solid rgba(96,165,250,0.25)' }}>
+          <div className="h-4 w-4 animate-spin rounded-full border-2 border-[#1e3a5f] border-t-[#93c5fd]" />
+          <div><p className="text-sm font-semibold text-[#93c5fd]">Importação em processamento</p><p className="text-xs text-[#8b90a4]">O servidor está salvando o arquivo e os lançamentos. O acompanhamento será retomado mesmo se esta página for atualizada.</p></div>
         </div>
       )}
 

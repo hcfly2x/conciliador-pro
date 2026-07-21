@@ -10,6 +10,7 @@ import {
   getCoverage,
   getCoverageFiles,
   previewImportFile,
+  waitForDocumentImportJob,
   undoDispenseCoverage,
   type CoverageAccount,
   type CoverageFile,
@@ -41,6 +42,7 @@ function visibleFlags(flags?: string) {
 export default function ArquivosPage() {
   const { addToast, bumpRefresh } = useStore()
   const inputRef = useRef<HTMLInputElement | null>(null)
+  const recoveryStartedRef = useRef(false)
   const [coverage, setCoverage] = useState<CoverageResponse | null>(null)
   const [selected, setSelected] = useState<SelectedCell | null>(null)
   const [files, setFiles] = useState<CoverageFile[]>([])
@@ -62,6 +64,27 @@ export default function ArquivosPage() {
   }, [year])
 
   useEffect(() => { load() }, [load])
+  useEffect(() => {
+    if (recoveryStartedRef.current) return
+    const jobId = window.sessionStorage.getItem('conciliador_active_import_job')
+    if (!jobId) return
+    recoveryStartedRef.current = true
+    setBusy(true)
+    waitForDocumentImportJob(jobId)
+      .then(job => {
+        if (job.status === 'completed' && job.result) {
+          addToast(`${job.result.total_inserted} lancamentos importados`)
+          bumpRefresh()
+          return load()
+        }
+        addToast(job.error || 'Erro ao importar arquivo', 'err')
+      })
+      .catch((error: any) => addToast(error?.detail || 'Erro ao acompanhar importacao', 'err'))
+      .finally(() => {
+        window.sessionStorage.removeItem('conciliador_active_import_job')
+        setBusy(false)
+      })
+  }, [addToast, bumpRefresh, load])
 
   const years = useMemo(() => {
     return (coverage?.available_years ?? [2023, 2024, 2025, 2026])
@@ -136,8 +159,12 @@ export default function ArquivosPage() {
     if (!preview) return
     setBusy(true)
     try {
-      const result = await commitImportPreview(preview.preview_id, true, competenceMonth.replace('-', '/'))
-      addToast(`${result.total_inserted} lancamentos importados`)
+      const queued = await commitImportPreview(preview.preview_id, true, competenceMonth.replace('-', '/'))
+      window.sessionStorage.setItem('conciliador_active_import_job', queued.job_id)
+      const job = await waitForDocumentImportJob(queued.job_id)
+      window.sessionStorage.removeItem('conciliador_active_import_job')
+      if (job.status === 'failed' || !job.result) throw { detail: job.error || 'Erro ao importar arquivo' }
+      addToast(`${job.result.total_inserted} lancamentos importados`)
       setPreview(null)
       bumpRefresh()
       await load()

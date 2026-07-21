@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 import base64
+import calendar
 import csv
 import datetime as dt
 import difflib
@@ -71,7 +72,7 @@ PUBLIC_PATHS = {"/api/v1/health", "/api/v1/auth/login"}
 
 # Rotas de escrita liberadas para o perfil colaborador (classificacao do dia a dia).
 _COLLAB_WRITE_SUFFIXES = (
-    "/classify", "/bulk-classify", "/flags", "/history-link", "/auth/logout",
+    "/classify", "/bulk-classify", "/flags", "/history-link", "/history-links/batch", "/auth/logout",
     "/suggestions/jobs", "/suggestions/dismiss", "/suggestions/batch",
     "/reconciliations", "/undo",
 )
@@ -668,34 +669,65 @@ def find_identity_match(
             (tx_type,),
         ).fetchall()
     best: dict[str, Any] | None = None
+    try:
+        installment_current = int(tx.get("installment_current") or 0)
+        installment_total = int(tx.get("installment_total") or 0)
+    except (TypeError, ValueError):
+        installment_current = installment_total = 0
+    installment_match = installment_current > 0 and installment_total > 1 and installment_current <= installment_total
+    installment_total_amount = round(tx_amount * installment_total, 2) if installment_match else 0.0
+    installment_first_date = shift_months(tx_date, -(installment_current - 1)) if installment_match else ""
     for row in rows:
         try:
             date_normal = bool(tx_date and row[1] and abs((dt.date.fromisoformat(tx_date) - dt.date.fromisoformat(row[1])).days) <= 2)
         except Exception:
             date_normal = False
-        amount_normal = abs(tx_amount - float(row[3] or 0)) <= 1.0
+        history_amount = float(row[3] or 0)
+        amount_normal = abs(tx_amount - history_amount) <= 1.0
         description_normal = descriptions_have_common_parts(tx_desc, row[2] or "")
+        installment_date_normal = False
+        installment_comparison_date = installment_first_date
+        if installment_match:
+            try:
+                history_date_value = dt.date.fromisoformat(row[1])
+                date_options = [value for value in (tx_date, installment_first_date) if value]
+                installment_comparison_date = min(
+                    date_options,
+                    key=lambda value: abs((dt.date.fromisoformat(value) - history_date_value).days),
+                )
+                installment_date_normal = abs(
+                    (dt.date.fromisoformat(installment_comparison_date) - history_date_value).days
+                ) <= 7
+            except Exception:
+                installment_date_normal = False
+        installment_amount_normal = bool(
+            installment_match
+            and abs(installment_total_amount - history_amount) <= max(1.0, installment_total * 0.02)
+        )
+        aggregate_installment = installment_date_normal and installment_amount_normal and description_normal
         # Vinculo historico representa a mesma transacao da base antiga.
         # Data, valor e descricao precisam estar dentro da normalidade; quando
         # apenas dois batem, o resultado costuma virar sugestao de categoria,
         # nao identidade.
-        if not (date_normal and amount_normal and description_normal):
+        if not ((date_normal and amount_normal and description_normal) or aggregate_installment):
             continue
         desc_score = token_similarity(tx_desc, row[2] or "")
         if description_normal and desc_score < 0.50:
             desc_score = 0.50
+        comparison_date = installment_comparison_date if aggregate_installment else tx_date
+        comparison_amount = installment_total_amount if aggregate_installment else tx_amount
         base = weighted_match_score(
-            tx_date,
+            comparison_date,
             tx_desc,
-            tx_amount,
+            comparison_amount,
             tx_account_id,
             row[1] or "",
             row[2] or "",
             float(row[3] or 0),
             row[4],
         )
-        amount_exact = abs(tx_amount - float(row[3] or 0)) < 0.01
-        date_exact = bool(tx_date and row[1] and tx_date == row[1])
+        amount_exact = abs(comparison_amount - history_amount) < 0.01
+        date_exact = bool(comparison_date and row[1] and comparison_date == row[1])
         score = base
         if amount_exact:
             score += 0.14
@@ -708,24 +740,68 @@ def find_identity_match(
                 "identity_score": score,
                 "category_id": row[5],
                 "subcategory_id": row[6],
+                "match_basis": "installment_total" if aggregate_installment else "standard",
+                "comparison_date": comparison_date,
+                "comparison_amount": comparison_amount,
             }
     return best
+
+
+def shift_months(value: str, months: int) -> str:
+    try:
+        source = dt.date.fromisoformat(value)
+    except (TypeError, ValueError):
+        return ""
+    month_index = source.year * 12 + source.month - 1 + months
+    year, zero_based_month = divmod(month_index, 12)
+    month = zero_based_month + 1
+    day = min(source.day, calendar.monthrange(year, month)[1])
+    return dt.date(year, month, day).isoformat()
 
 
 def historical_match_factors(
     tx_date: str, tx_amount: float, tx_description: str,
     history_date: str | None, history_amount: float | None, history_description: str | None,
+    installment_current: int | None = None, installment_total: int | None = None,
 ) -> dict[str, Any]:
+    current = int(installment_current or 0)
+    total = int(installment_total or 0)
+    can_be_aggregate = current > 0 and total > 1 and current <= total
+    installment_first_date = shift_months(tx_date, -(current - 1)) if can_be_aggregate else ""
+    standard_amount = abs(float(tx_amount or 0))
+    aggregate_amount = standard_amount * total if can_be_aggregate else standard_amount
+    history_amount_abs = abs(float(history_amount or 0))
     try:
-        date_difference = abs((dt.date.fromisoformat(tx_date) - dt.date.fromisoformat(history_date or "")).days)
+        history_date_value = dt.date.fromisoformat(history_date or "")
+        date_options = [value for value in (tx_date, installment_first_date) if value]
+        aggregate_date = min(
+            date_options,
+            key=lambda value: abs((dt.date.fromisoformat(value) - history_date_value).days),
+        )
+        aggregate_date_difference = abs((dt.date.fromisoformat(aggregate_date) - history_date_value).days)
+    except (TypeError, ValueError):
+        aggregate_date = installment_first_date
+        aggregate_date_difference = 999999
+    aggregate_installment = bool(
+        can_be_aggregate
+        and abs(aggregate_amount - history_amount_abs) < abs(standard_amount - history_amount_abs)
+        and aggregate_date_difference <= 7
+    )
+    comparison_date = aggregate_date if aggregate_installment else tx_date
+    comparison_amount = aggregate_amount if aggregate_installment else standard_amount
+    try:
+        date_difference = abs((dt.date.fromisoformat(comparison_date) - dt.date.fromisoformat(history_date or "")).days)
     except (TypeError, ValueError):
         date_difference = None
-    amount_difference = round(abs(abs(float(tx_amount or 0)) - abs(float(history_amount or 0))), 2)
+    amount_difference = round(abs(comparison_amount - abs(float(history_amount or 0))), 2)
     description_similarity = round(token_similarity(norm_text(tx_description), norm_text(history_description or "")) * 100, 1)
     return {
         "match_date_difference_days": date_difference,
         "match_amount_difference": amount_difference,
         "match_description_similarity": description_similarity,
+        "match_basis": "installment_total" if aggregate_installment else "standard",
+        "match_comparison_date": comparison_date,
+        "match_comparison_amount": round(comparison_amount, 2),
     }
 
 
@@ -1583,6 +1659,21 @@ def init_db() -> None:
         )
         conn.execute(
             """
+            CREATE TABLE IF NOT EXISTS import_jobs(
+              id TEXT PRIMARY KEY,
+              preview_id TEXT NOT NULL UNIQUE,
+              filename TEXT NOT NULL,
+              status TEXT NOT NULL DEFAULT 'queued',
+              result_json TEXT NOT NULL DEFAULT '',
+              error TEXT NOT NULL DEFAULT '',
+              created_at TEXT NOT NULL,
+              started_at TEXT NOT NULL DEFAULT '',
+              finished_at TEXT NOT NULL DEFAULT ''
+            )
+            """
+        )
+        conn.execute(
+            """
             CREATE TABLE IF NOT EXISTS seed_import_jobs(
               id TEXT PRIMARY KEY,
               status TEXT NOT NULL DEFAULT 'queued',
@@ -1679,6 +1770,14 @@ def init_db() -> None:
             UPDATE suggestion_jobs
             SET status='failed', error='Processamento interrompido por reinicializacao do servidor',
                 message='Processamento interrompido; tente novamente', finished_at=?
+            WHERE status IN ('queued','running')
+            """,
+            (dt.datetime.now().isoformat(timespec="seconds"),),
+        )
+        conn.execute(
+            """
+            UPDATE import_jobs
+            SET status='failed', error='Processamento interrompido por reinicializacao do servidor', finished_at=?
             WHERE status IN ('queued','running')
             """,
             (dt.datetime.now().isoformat(timespec="seconds"),),
@@ -2197,10 +2296,6 @@ def detect_file_type(filename: str, account_name: str) -> tuple[str, float]:
     return detected, min(0.99, confidence)
 
 
-IMPORT_SCAN_DEFAULT_ROOT = Path(r"C:\Users\hcfly\Desktop\aplicvativo financeiro\Financeiro_Organizado")
-IMPORT_SCAN_EXTENSIONS = {".csv", ".xls", ".xlsx", ".pdf"}
-
-
 def scan_source_metadata(path: Path, root: Path) -> dict[str, Any]:
     rel_parts = path.relative_to(root).parts if root in path.parents else path.parts
     text = norm_text(" ".join(rel_parts))
@@ -2397,34 +2492,6 @@ def detect_competence(path: Path, txs: list[Any] | None, account_type: str, samp
     return {"month": "", "confidence": 0.0, "strategy": "unknown", "evidence": evidence, "warning": "Competencia nao detectada."}
 
 
-def detect_account_for_scan(conn: sqlite3.Connection, path: Path):
-    meta = scan_source_metadata(path, IMPORT_SCAN_DEFAULT_ROOT if IMPORT_SCAN_DEFAULT_ROOT.exists() else path.parent)
-    bank = meta["bank"]
-    kind = meta["source_kind"]
-    account_name = ""
-    if bank == "SMARTEK":
-        account_name = "CONTA SMARTEK"
-    elif bank == "SULIVAN":
-        account_name = "CARTAO SULIVAN"
-    elif bank in {"SANTANDER", "XP", "NUBANK"}:
-        prefix = "CARTAO" if kind == "cartao" else "CONTA"
-        account_name = f"{prefix} {bank}"
-    if account_name:
-        row = conn.execute("SELECT id,name,type,color FROM accounts WHERE name=? LIMIT 1", (account_name,)).fetchone()
-        if row:
-            return row
-    return detect_account_by_filename(conn, str(path)) or detect_account_by_content(conn, path)
-
-
-def collect_scan_files(root: Path) -> list[Path]:
-    return [
-        p for p in sorted(root.rglob("*"))
-        if p.is_file()
-        and p.suffix.lower() in IMPORT_SCAN_EXTENSIONS
-        and not p.name.startswith(("~", ".", "_"))
-    ]
-
-
 def existing_db_duplicate_count(conn: sqlite3.Connection, account_id: str, row: dict[str, Any]) -> int:
     installment_current = int(row.get("installment_current") or 0)
     installment_total = int(row.get("installment_total") or 0)
@@ -2553,25 +2620,6 @@ def find_or_create_installment_plan(
         ),
     )
     return plan_id, None
-
-
-def historical_match_count(conn: sqlite3.Connection, account_id: str, parsed_rows: list[dict[str, Any]], threshold: float = 70.0) -> tuple[int, float]:
-    count = 0
-    best = 0.0
-    for r in parsed_rows:
-        match = find_identity_match(conn, {
-            "date": r["date"],
-            "description": r["description"],
-            "description_norm": r["description_norm"],
-            "amount": r["amount_signed"],
-            "type": r["tx_type"],
-            "account_id": account_id,
-        })
-        probability = float((match or {}).get("identity_score") or 0)
-        best = max(best, probability)
-        if probability >= threshold:
-            count += 1
-    return count, round(best, 2)
 
 
 def build_import_preview(path: Path, acc: tuple[Any, ...], detection_sample: str | None = None) -> dict[str, Any]:
@@ -3292,10 +3340,10 @@ def import_seed_pdf(path: Path, progress=None, imported_file_id: str | None = No
             if conn.execute(
                 """
                 SELECT 1 FROM classification_history
-                WHERE description_norm=? AND type=? AND category_id=? AND IFNULL(subcategory_id,'')=IFNULL(?, '')
+                WHERE source_file_id=? AND description_norm=? AND type=? AND category_id=? AND IFNULL(subcategory_id,'')=IFNULL(?, '')
                 LIMIT 1
                 """,
-                (dnorm, tx_type, cat_id, sub_id),
+                (imported_file_id, dnorm, tx_type, cat_id, sub_id),
             ).fetchone():
                 total_duplicates += 1
                 continue
@@ -3488,6 +3536,8 @@ def import_document(
                     "amount": r["amount_signed"],
                     "type": r["tx_type"],
                     "account_id": acc[0],
+                    "installment_current": r["installment_current"],
+                    "installment_total": r["installment_total"],
                 })
                 if identity:
                     s_cat = identity.get("category_id")
@@ -3498,7 +3548,11 @@ def import_document(
             is_link_candidate = bool(identity and match_probability >= HISTORY_LINK_CANDIDATE_THRESHOLD)
             history_match_id = (identity or {}).get("history_match_id") if is_link_candidate else None
             identity_score = match_probability
-            match_notes = "Possivel vinculo com base historica" if is_link_candidate else ""
+            match_notes = (
+                "Possivel vinculo pelo valor total parcelado na base historica"
+                if is_link_candidate and identity.get("match_basis") == "installment_total"
+                else "Possivel vinculo com base historica" if is_link_candidate else ""
+            )
             tx_id = str(uuid.uuid4())
             row_flags = [flag for flag in (r.get("flags", "") or "").split(",") if flag]
             if is_db_duplicate and "DUPLICATE_DB" not in row_flags:
@@ -4093,6 +4147,8 @@ def import_preview():
                     "amount": r["amount_signed"],
                     "type": r["tx_type"],
                     "account_id": acc[0],
+                    "installment_current": r.get("installment_current"),
+                    "installment_total": r.get("installment_total"),
                 }) or {}
                 match_probability = float(match.get("identity_score") or 0)
                 if match_probability >= 70:
@@ -4178,29 +4234,155 @@ def import_commit():
         return jsonify({"detail": "preview_id obrigatorio", "code": "VALIDATION_ERROR"}), 400
 
     with db_connect() as conn:
-        row = conn.execute("SELECT temp_path,account_id FROM import_previews WHERE id=?", (preview_id,)).fetchone()
+        row = conn.execute(
+            "SELECT temp_path,account_id,filename FROM import_previews WHERE id=?", (preview_id,)
+        ).fetchone()
+        existing = conn.execute(
+            "SELECT id,status FROM import_jobs WHERE preview_id=?", (preview_id,)
+        ).fetchone()
     if not row:
+        if existing:
+            return jsonify({"job_id": existing[0], "status": existing[1]}), 200
         return jsonify({"detail": "Preview nao encontrado", "code": "PREVIEW_NOT_FOUND"}), 404
 
     temp_path = Path(row[0])
-    account_id = row[1]
     if not temp_path.exists():
         with db_connect() as conn:
             conn.execute("DELETE FROM import_previews WHERE id=?", (preview_id,))
         return jsonify({"detail": "Arquivo temporario nao encontrado", "code": "PREVIEW_FILE_MISSING"}), 404
 
+    if existing and existing[1] in {"queued", "running", "completed"}:
+        return jsonify({"job_id": existing[0], "status": existing[1]}), 200
+
+    job_id = existing[0] if existing else str(uuid.uuid4())
+    now = dt.datetime.now().isoformat(timespec="seconds")
+    with db_connect() as conn:
+        if existing:
+            conn.execute(
+                """
+                UPDATE import_jobs
+                SET status='queued',result_json='',error='',started_at='',finished_at=?
+                WHERE id=?
+                """,
+                ("", job_id),
+            )
+        else:
+            conn.execute(
+                """
+                INSERT INTO import_jobs(id,preview_id,filename,status,created_at)
+                VALUES (?,?,?,'queued',?)
+                """,
+                (job_id, preview_id, row[2], now),
+            )
+    threading.Thread(
+        target=_run_import_job,
+        args=(job_id, preview_id, confirm_duplicates, competence_month),
+        daemon=True,
+        name=f"document-import-{job_id[:8]}",
+    ).start()
+    return jsonify({"job_id": job_id, "status": "queued"}), 202
+
+
+def _imported_file_result(imported_file_id: str) -> dict[str, Any] | None:
+    with db_connect() as conn:
+        row = conn.execute(
+            """
+            SELECT id,filename,account_name,total_parsed,total_inserted,total_duplicates,total_errors
+            FROM imported_files WHERE id=?
+            """,
+            (imported_file_id,),
+        ).fetchone()
+    if not row:
+        return None
+    return {
+        "imported_file_id": row[0], "filename": row[1], "account_name": row[2],
+        "total_parsed": int(row[3] or 0), "total_inserted": int(row[4] or 0),
+        "total_duplicates": int(row[5] or 0), "total_errors": int(row[6] or 0),
+        "transactions_preview": [], "recovered": True,
+    }
+
+
+def _run_import_job(
+    job_id: str,
+    preview_id: str,
+    confirm_duplicates: bool,
+    competence_month: str,
+) -> None:
+    temp_path: Path | None = None
     try:
+        with db_connect() as conn:
+            preview = conn.execute(
+                "SELECT temp_path,account_id FROM import_previews WHERE id=?", (preview_id,)
+            ).fetchone()
+            conn.execute(
+                "UPDATE import_jobs SET status='running',started_at=? WHERE id=?",
+                (dt.datetime.now().isoformat(timespec="seconds"), job_id),
+            )
+        if not preview:
+            raise RuntimeError("Preview nao encontrado para processar a importacao")
+        temp_path = Path(preview[0])
+        if not temp_path.exists():
+            raise RuntimeError("Arquivo temporario nao encontrado")
         result, status = import_document(
             temp_path,
-            account_id,
+            preview[1],
             confirm_duplicates=confirm_duplicates,
             competence_month_override=competence_month,
         )
+        if status == 409 and result.get("code") == "FILE_ALREADY_IMPORTED":
+            recovered = _imported_file_result(str(result.get("imported_file_id") or ""))
+            if recovered:
+                result, status = recovered, 200
+        completed = status < 400
+        error = "" if completed else str(result.get("detail") or "Falha na importacao")
         with db_connect() as conn:
-            conn.execute("DELETE FROM import_previews WHERE id=?", (preview_id,))
-        return jsonify(result), status
+            conn.execute(
+                """
+                UPDATE import_jobs
+                SET status=?,result_json=?,error=?,finished_at=? WHERE id=?
+                """,
+                (
+                    "completed" if completed else "failed",
+                    json.dumps(result, ensure_ascii=False), error,
+                    dt.datetime.now().isoformat(timespec="seconds"), job_id,
+                ),
+            )
+            if completed:
+                conn.execute("DELETE FROM import_previews WHERE id=?", (preview_id,))
+        if completed and temp_path.exists():
+            try:
+                temp_path.unlink()
+            except OSError:
+                pass
     except Exception as exc:
-        return jsonify({"detail": f"{type(exc).__name__}: {exc}", "code": "COMMIT_FAILED"}), 422
+        with db_connect() as conn:
+            conn.execute(
+                "UPDATE import_jobs SET status='failed',error=?,finished_at=? WHERE id=?",
+                (f"{type(exc).__name__}: {exc}"[:1000], dt.datetime.now().isoformat(timespec="seconds"), job_id),
+            )
+
+
+def _import_job_payload(row: Any) -> dict[str, Any]:
+    return {
+        "id": row[0], "preview_id": row[1], "filename": row[2], "status": row[3],
+        "result": json.loads(row[4]) if row[4] else None, "error": row[5] or "",
+        "created_at": row[6], "started_at": row[7] or "", "finished_at": row[8] or "",
+    }
+
+
+@app.route("/api/v1/import/jobs/<job_id>")
+def import_job_status(job_id: str):
+    with db_connect() as conn:
+        row = conn.execute(
+            """
+            SELECT id,preview_id,filename,status,result_json,error,created_at,started_at,finished_at
+            FROM import_jobs WHERE id=?
+            """,
+            (job_id,),
+        ).fetchone()
+    if not row:
+        return jsonify({"detail": "Importacao nao encontrada", "code": "NOT_FOUND"}), 404
+    return jsonify(_import_job_payload(row))
 
 
 @app.route("/api/v1/import/history")
@@ -4572,6 +4754,7 @@ def system_reset():
         before = {
             "transactions": conn.execute("SELECT COUNT(1) FROM transactions").fetchone()[0],
             "import_previews": conn.execute("SELECT COUNT(1) FROM import_previews").fetchone()[0],
+            "import_jobs": conn.execute("SELECT COUNT(1) FROM import_jobs").fetchone()[0],
             "imported_files": conn.execute("SELECT COUNT(1) FROM imported_files").fetchone()[0],
             "stored_documents": conn.execute("SELECT COUNT(1) FROM stored_documents").fetchone()[0],
             "classification_history": conn.execute("SELECT COUNT(1) FROM classification_history").fetchone()[0],
@@ -4583,6 +4766,7 @@ def system_reset():
         conn.execute("DELETE FROM transaction_reconciliations")
         conn.execute("DELETE FROM transactions")
         conn.execute("DELETE FROM installment_plans")
+        conn.execute("DELETE FROM import_jobs")
         conn.execute("DELETE FROM import_previews")
         conn.execute("DELETE FROM stored_documents")
         conn.execute("DELETE FROM account_file_coverage")
@@ -4612,161 +4796,6 @@ def import_scan_folder():
         "code": "FOLDER_IMPORT_DISABLED",
     }), 410
 
-    # Codigo mantido temporariamente abaixo apenas para facilitar a remocao
-    # mecanica em uma etapa posterior de modularizacao.
-    data = request.get_json(force=True) or {}
-    root = Path(data.get("root") or str(IMPORT_SCAN_DEFAULT_ROOT))
-    threshold = float(data.get("threshold") or 70)
-    if not root.exists() or not root.is_dir():
-        return jsonify({"detail": f"Pasta nao encontrada: {root}", "code": "FOLDER_NOT_FOUND"}), 400
-
-    files = collect_scan_files(root)
-    rows: list[dict[str, Any]] = []
-    coverage: dict[tuple[str, str, str, str], dict[str, Any]] = {}
-    totals = {
-        "files_found": len(files),
-        "files_scanned": 0,
-        "files_with_error": 0,
-        "total_parsed": 0,
-        "duplicates_internal": 0,
-        "duplicates_db": 0,
-        "historical_matches_ge_threshold": 0,
-        "already_imported_files": 0,
-        "unidentified_account_files": 0,
-    }
-
-    with db_connect() as conn:
-        imported_hashes = {
-            r[0]: r for r in conn.execute(
-                """
-                SELECT file_hash,filename,account_name,total_parsed,total_inserted,total_duplicates,imported_at
-                FROM imported_files
-                WHERE file_type NOT IN ('xlsx-seed','pdf-seed')
-                """
-            ).fetchall()
-        }
-
-        for path in files:
-            meta = scan_source_metadata(path, root)
-            rel = str(path.relative_to(root))
-            key = (meta["year"], meta["month"], meta["source_kind"], meta["bank"])
-            coverage.setdefault(key, {
-                "year": meta["year"],
-                "month": meta["month"],
-                "source_kind": meta["source_kind"],
-                "bank": meta["bank"],
-                "files": 0,
-                "parsed": 0,
-                "errors": 0,
-                "accounts": set(),
-            })
-            coverage[key]["files"] += 1
-
-            h = hashlib.sha1(path.read_bytes()).hexdigest()
-            imported = imported_hashes.get(h)
-            if imported:
-                totals["already_imported_files"] += 1
-
-            acc = detect_account_for_scan(conn, path)
-            if not acc:
-                totals["unidentified_account_files"] += 1
-                totals["files_with_error"] += 1
-                coverage[key]["errors"] += 1
-                rows.append({
-                    **meta,
-                    "path": str(path),
-                    "relative_path": rel,
-                    "filename": path.name,
-                    "extension": path.suffix.lower(),
-                    "account_name": "",
-                    "already_imported": bool(imported),
-                    "total_parsed": 0,
-                    "duplicates_internal": 0,
-                    "duplicates_db": 0,
-                    "new_records": 0,
-                    "historical_matches_ge_threshold": 0,
-                    "best_historical_probability": 0,
-                    "rejected_lines": [],
-                    "discarded_lines": [],
-                    "warnings": ["Conta nao identificada"],
-                    "error": "Conta nao identificada",
-                })
-                continue
-
-            coverage[key]["accounts"].add(acc[1])
-            try:
-                preview = build_import_preview(path, acc)
-                parsed_rows = preview["parsed_rows"]
-                internal_duplicates = sum(max(0, c - 1) for c in preview["internal_counter"].values())
-                db_duplicates = existing_db_duplicate_count_for_rows(conn, acc[0], parsed_rows)
-                hist_count, best_prob = historical_match_count(conn, acc[0], parsed_rows, threshold)
-                total_parsed = len(parsed_rows)
-                totals["files_scanned"] += 1
-                totals["total_parsed"] += total_parsed
-                totals["duplicates_internal"] += internal_duplicates
-                totals["duplicates_db"] += db_duplicates
-                totals["historical_matches_ge_threshold"] += hist_count
-                coverage[key]["parsed"] += total_parsed
-                rows.append({
-                    **meta,
-                    "path": str(path),
-                    "relative_path": rel,
-                    "filename": path.name,
-                    "extension": path.suffix.lower(),
-                    "account_id": acc[0],
-                    "account_name": acc[1],
-                    "already_imported": bool(imported),
-                    "imported_at": imported[6] if imported else None,
-                    "total_parsed": total_parsed,
-                    "duplicates_internal": internal_duplicates,
-                    "duplicates_db": db_duplicates,
-                    "new_records": max(0, total_parsed - db_duplicates),
-                    "historical_matches_ge_threshold": hist_count,
-                    "best_historical_probability": best_prob,
-                    "rejected_lines": preview.get("rejected_lines", []),
-                    "discarded_lines": preview.get("discarded_lines", []),
-                    "warnings": preview.get("warnings", []),
-                    "error": "",
-                })
-            except Exception as exc:
-                totals["files_with_error"] += 1
-                coverage[key]["errors"] += 1
-                rows.append({
-                    **meta,
-                    "path": str(path),
-                    "relative_path": rel,
-                    "filename": path.name,
-                    "extension": path.suffix.lower(),
-                    "account_id": acc[0],
-                    "account_name": acc[1],
-                    "already_imported": bool(imported),
-                    "total_parsed": 0,
-                    "duplicates_internal": 0,
-                    "duplicates_db": 0,
-                    "new_records": 0,
-                    "historical_matches_ge_threshold": 0,
-                    "best_historical_probability": 0,
-                    "rejected_lines": [],
-                    "discarded_lines": [],
-                    "warnings": [],
-                    "error": f"{type(exc).__name__}: {exc}",
-                })
-
-    coverage_rows = []
-    for item in coverage.values():
-        item["accounts"] = sorted(item["accounts"])
-        coverage_rows.append(item)
-    coverage_rows.sort(key=lambda x: (x["year"], x["month"], x["source_kind"], x["bank"]))
-    rows.sort(key=lambda x: (x["year"], x["month"], x["source_kind"], x["bank"], x["filename"]))
-
-    return jsonify({
-        "root": str(root),
-        "threshold": threshold,
-        "totals": totals,
-        "coverage": coverage_rows,
-        "files": rows,
-    })
-
 
 @app.route("/api/v1/import/seed", methods=["POST"])
 def import_seed():
@@ -4776,14 +4805,28 @@ def import_seed():
     invalid_file = validate_import_filename(f.filename)
     if invalid_file:
         return invalid_file
+    replace_existing = (request.form.get("replace_existing") or "").strip().lower() in {"1", "true", "yes"}
+    replace_confirmation = (request.form.get("replace_confirmation") or "").strip()
     with db_connect() as conn:
         active = conn.execute(
             "SELECT id,status,filename FROM seed_import_jobs WHERE status IN ('queued','running') ORDER BY created_at DESC LIMIT 1"
         ).fetchone()
+        existing_count = int(conn.execute(
+            "SELECT COUNT(1) FROM classification_history WHERE source_file_id NOT LIKE 'manual:%'"
+        ).fetchone()[0] or 0)
     if active:
         return jsonify({
             "detail": f"Ja existe uma importacao em andamento: {active[2]}",
             "code": "SEED_IMPORT_IN_PROGRESS", "job_id": active[0], "status": active[1],
+        }), 409
+    if existing_count and (not replace_existing or replace_confirmation != "SUBSTITUIR BASE HISTORICA"):
+        return jsonify({
+            "detail": (
+                f"Ja existe uma base historica ativa com {existing_count} registros. "
+                "Confirme a substituicao para continuar."
+            ),
+            "code": "SEED_REPLACE_CONFIRMATION_REQUIRED",
+            "existing_records": existing_count,
         }), 409
     safe_name = secure_filename(f.filename) or "base-historica.xlsx"
     p = UPLOADS / f"{int(dt.datetime.now().timestamp())}-seed-{safe_name}"
@@ -4797,14 +4840,15 @@ def import_seed():
         )
     threading.Thread(
         target=_run_seed_import_job,
-        args=(job_id, p),
+        args=(job_id, p, replace_existing),
         daemon=True,
         name=f"seed-import-{job_id[:8]}",
     ).start()
     return jsonify({"job_id": job_id, "status": "queued", "filename": f.filename}), 202
 
 
-def _run_seed_import_job(job_id: str, path: Path) -> None:
+def _run_seed_import_job(job_id: str, path: Path, replace_existing: bool = False) -> None:
+    replacement_committed = False
     def progress(phase: str, processed: int, total: int, message: str) -> None:
         timestamp = dt.datetime.now().strftime("%H:%M:%S")
         with db_connect() as conn:
@@ -4825,6 +4869,51 @@ def _run_seed_import_job(job_id: str, path: Path) -> None:
             data, code = import_seed_pdf(path, progress=progress, imported_file_id=job_id)
         else:
             data, code = import_seed_workbook(path, progress=progress, imported_file_id=job_id)
+        if code < 400 and int(data.get("total_inserted") or 0) == 0:
+            data = {
+                **data,
+                "detail": "O arquivo nao produziu registros historicos validos; a base atual foi preservada.",
+                "code": "EMPTY_SEED_IMPORT",
+            }
+            code = 422
+        if code >= 400:
+            with db_connect() as conn:
+                conn.execute(
+                    "DELETE FROM classification_history WHERE source_file_id=? OR source_file_id LIKE ?",
+                    (job_id, f"{job_id}:sheet:%"),
+                )
+                conn.execute("DELETE FROM imported_files WHERE id=?", (job_id,))
+        if code < 400 and replace_existing:
+            with db_connect() as conn:
+                old_filter = "source_file_id NOT LIKE 'manual:%' AND source_file_id<>? AND source_file_id NOT LIKE ?"
+                old_params = (job_id, f"{job_id}:sheet:%")
+                old_count = int(conn.execute(
+                    f"SELECT COUNT(1) FROM classification_history WHERE {old_filter}", old_params
+                ).fetchone()[0] or 0)
+                conn.execute(
+                    f"""
+                    UPDATE transactions
+                    SET history_match_id=NULL,history_match_confirmed=0,identity_score=0,
+                        match_probability=0,match_notes='',suggested_category_id=NULL,suggested_subcategory_id=NULL
+                    WHERE history_match_id IN (SELECT id FROM classification_history WHERE {old_filter})
+                    """,
+                    old_params,
+                )
+                conn.execute(
+                    f"UPDATE transactions SET history_match_rejected_id=NULL WHERE history_match_rejected_id IN "
+                    f"(SELECT id FROM classification_history WHERE {old_filter})",
+                    old_params,
+                )
+                conn.execute(f"DELETE FROM classification_history WHERE {old_filter}", old_params)
+                conn.execute(
+                    "DELETE FROM imported_files WHERE file_type IN ('xlsx-seed','pdf-seed') AND id<>?",
+                    (job_id,),
+                )
+                conn.execute("DELETE FROM transaction_suggestions")
+                conn.execute("DELETE FROM transaction_suggestion_state")
+                data["replaced_records"] = old_count
+                data["replacement_mode"] = True
+            replacement_committed = True
         status = "completed" if code < 400 else "failed"
         error = "" if code < 400 else str(data.get("detail") or "Falha na importacao")
         with db_connect() as conn:
@@ -4839,6 +4928,12 @@ def _run_seed_import_job(job_id: str, path: Path) -> None:
             )
     except Exception as exc:
         with db_connect() as conn:
+            if not replacement_committed:
+                conn.execute(
+                    "DELETE FROM classification_history WHERE source_file_id=? OR source_file_id LIKE ?",
+                    (job_id, f"{job_id}:sheet:%"),
+                )
+                conn.execute("DELETE FROM imported_files WHERE id=?", (job_id,))
             conn.execute(
                 "UPDATE seed_import_jobs SET status='failed', phase='failed', error=?, message=?, finished_at=? WHERE id=?",
                 (f"{type(exc).__name__}: {exc}"[:1000], str(exc)[:500], dt.datetime.now().isoformat(timespec="seconds"), job_id),
@@ -5259,7 +5354,7 @@ def transactions():
             "reconciled_by": r[66] or "",
             "reconciled_at": r[67] or "",
         }
-        item.update(historical_match_factors(r[1], r[4], r[3], r[29], r[31], r[30]))
+        item.update(historical_match_factors(r[1], r[4], r[3], r[29], r[31], r[30], r[22], r[23]))
         items.append(item)
     total_pages = (total + page_size - 1) // page_size
     total_income = float(sum_row[0] or 0)
@@ -5484,7 +5579,7 @@ def review_history_link(tx_id: str):
         row = conn.execute(
             """
             SELECT history_match_id,identity_score,history_match_confirmed,locked,type,
-                   category_id,subcategory_id,status
+                   category_id,subcategory_id,status,installment_plan_id
             FROM transactions
             WHERE id=?
             """,
@@ -5548,6 +5643,36 @@ def review_history_link(tx_id: str):
             record_audit(user, "confirm_history_link", "transaction", tx_id, "history_match_id", "", match_id, conn=conn)
             conn.execute("DELETE FROM transaction_suggestions WHERE transaction_id=?", (tx_id,))
             conn.execute("DELETE FROM transaction_suggestion_state WHERE transaction_id=?", (tx_id,))
+            affected_ids = [tx_id]
+            if row[8]:
+                sibling_ids = [item[0] for item in conn.execute(
+                    "SELECT id FROM transactions WHERE installment_plan_id=? AND id<>? AND locked=0",
+                    (row[8], tx_id),
+                ).fetchall()]
+                if sibling_ids:
+                    sibling_placeholders = ",".join("?" for _ in sibling_ids)
+                    conn.execute(
+                        f"""
+                        UPDATE transactions
+                        SET category_id=?,subcategory_id=?,status='reconciled',locked=1,
+                            classified_by=?,classified_at=?,history_match_id=NULL,
+                            history_match_confirmed=0,identity_score=0,match_probability=0,match_notes=''
+                        WHERE id IN ({sibling_placeholders})
+                        """,
+                        [history[0], history[1], user.get("username") or "", now] + sibling_ids,
+                    )
+                    for sibling_id in sibling_ids:
+                        conn.execute("DELETE FROM transaction_suggestions WHERE transaction_id=?", (sibling_id,))
+                        conn.execute("DELETE FROM transaction_suggestion_state WHERE transaction_id=?", (sibling_id,))
+                    affected_ids.extend(sibling_ids)
+                conn.execute(
+                    """
+                    UPDATE installment_plans
+                    SET category_id=?,subcategory_id=?,classified_by=?,classified_at=?,updated_at=?
+                    WHERE id=?
+                    """,
+                    (history[0], history[1], user.get("username") or "", now, now, row[8]),
+                )
             if row[5] != history[0]:
                 record_audit(user, "classify_from_history_link", "transaction", tx_id, "category_id", row[5] or "", history[0], conn=conn)
             if row[6] != history[1]:
@@ -5564,6 +5689,8 @@ def review_history_link(tx_id: str):
                 "locked": True,
                 "classified_by": user.get("username") or "",
                 "classified_at": now,
+                "affected_ids": affected_ids,
+                "affected_count": len(affected_ids),
                 "ok": True,
             })
         conn.execute(
@@ -5580,6 +5707,84 @@ def review_history_link(tx_id: str):
         conn.execute("DELETE FROM transaction_suggestions WHERE transaction_id=?", (tx_id,))
         conn.execute("DELETE FROM transaction_suggestion_state WHERE transaction_id=?", (tx_id,))
     return jsonify({"id": tx_id, "history_match_id": None, "history_match_confirmed": False, "ok": True})
+
+
+@app.route("/api/v1/transactions/history-links/batch", methods=["POST"])
+def prepare_history_links_batch():
+    data = request.get_json(silent=True) or {}
+    ids = list(dict.fromkeys(str(item).strip() for item in (data.get("ids") or []) if str(item).strip()))
+    if not ids:
+        return jsonify({"detail": "Selecione ao menos um lancamento", "code": "VALIDATION_ERROR"}), 400
+    if len(ids) > 500:
+        return jsonify({"detail": "Selecione no maximo 500 lancamentos por lote", "code": "BATCH_TOO_LARGE"}), 400
+    placeholders = ",".join("?" for _ in ids)
+    matched_ids: list[str] = []
+    without_match_ids: list[str] = []
+    skipped_ids: list[str] = []
+    with db_connect() as conn:
+        hist_cache = {
+            tx_type: conn.execute(
+                """
+                SELECT id,date,description_norm,ABS(amount),account_id,category_id,subcategory_id
+                FROM classification_history WHERE type=?
+                """,
+                (tx_type,),
+            ).fetchall()
+            for tx_type in ("expense", "income")
+        }
+        rows = conn.execute(
+            f"""
+            SELECT id,date,description,description_norm,amount,type,account_id,
+                   installment_current,installment_total,history_match_confirmed,
+                   history_match_rejected_id,locked
+            FROM transactions WHERE id IN ({placeholders})
+            """,
+            ids,
+        ).fetchall()
+        by_id = {row[0]: row for row in rows}
+        for tx_id in ids:
+            row = by_id.get(tx_id)
+            if not row or bool(row[9]) or bool(row[11]):
+                skipped_ids.append(tx_id)
+                continue
+            identity = find_identity_match(conn, {
+                "date": row[1], "description": row[2], "description_norm": row[3],
+                "amount": row[4], "type": row[5], "account_id": row[6],
+                "installment_current": row[7], "installment_total": row[8],
+            }, hist_cache=hist_cache)
+            if (
+                not identity
+                or float(identity.get("identity_score") or 0) < HISTORY_LINK_CANDIDATE_THRESHOLD
+                or identity.get("history_match_id") == row[10]
+            ):
+                without_match_ids.append(tx_id)
+                continue
+            note = (
+                "Match pelo valor total parcelado na base historica"
+                if identity.get("match_basis") == "installment_total"
+                else "Match com base historica"
+            )
+            conn.execute(
+                """
+                UPDATE transactions
+                SET history_match_id=?,history_match_confirmed=0,identity_score=?,match_probability=?,
+                    match_notes=?,suggested_category_id=?,suggested_subcategory_id=?
+                WHERE id=?
+                """,
+                (
+                    identity.get("history_match_id"), identity.get("identity_score"),
+                    identity.get("identity_score"), note, identity.get("category_id"),
+                    identity.get("subcategory_id"), tx_id,
+                ),
+            )
+            conn.execute("DELETE FROM transaction_suggestions WHERE transaction_id=?", (tx_id,))
+            conn.execute("DELETE FROM transaction_suggestion_state WHERE transaction_id=?", (tx_id,))
+            matched_ids.append(tx_id)
+    return jsonify({
+        "selected": len(ids), "matched": len(matched_ids), "without_match": len(without_match_ids),
+        "skipped": len(skipped_ids), "matched_ids": matched_ids,
+        "without_match_ids": without_match_ids, "skipped_ids": skipped_ids,
+    })
 
 
 @app.route("/api/v1/transactions/<tx_id>/flags", methods=["PATCH"])
@@ -6077,7 +6282,8 @@ def _recalculate_probabilities_impl(job_id: str | None = None, batch_size: int =
         rows = conn.execute(
             """
             SELECT id,date,description,description_norm,amount,type,account_id,status,
-                   history_match_id,history_match_confirmed,history_match_rejected_id
+                   history_match_id,history_match_confirmed,history_match_rejected_id,
+                   installment_current,installment_total
             FROM transactions
             WHERE status IN ('pending','reconciled','auto_classified')
             """
@@ -6113,6 +6319,8 @@ def _recalculate_probabilities_impl(job_id: str | None = None, batch_size: int =
                 "amount": r[4],
                 "type": r[5],
                 "account_id": r[6],
+                "installment_current": r[11],
+                "installment_total": r[12],
             }
             status = r[7]
             confirmed_match_id = r[8] if bool(r[9]) else None
@@ -6157,7 +6365,11 @@ def _recalculate_probabilities_impl(job_id: str | None = None, batch_size: int =
                         float(identity.get("identity_score") or 0),
                         identity.get("category_id"),
                         identity.get("subcategory_id"),
-                        "Match com base historica",
+                        (
+                            "Match pelo valor total parcelado na base historica"
+                            if identity.get("match_basis") == "installment_total"
+                            else "Match com base historica"
+                        ),
                         identity.get("history_match_id"),
                         float(identity.get("identity_score") or 0),
                         r[0],
@@ -6176,7 +6388,11 @@ def _recalculate_probabilities_impl(job_id: str | None = None, batch_size: int =
                     """,
                     (
                         float(identity.get("identity_score") or 0),
-                        "Match com base historica",
+                        (
+                            "Match pelo valor total parcelado na base historica"
+                            if identity.get("match_basis") == "installment_total"
+                            else "Match com base historica"
+                        ),
                         identity.get("history_match_id"),
                         float(identity.get("identity_score") or 0),
                         r[0],

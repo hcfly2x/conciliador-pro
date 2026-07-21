@@ -93,6 +93,9 @@ export interface Transaction {
   match_date_difference_days?: number | null
   match_amount_difference?: number
   match_description_similarity?: number
+  match_basis?: 'standard' | 'installment_total'
+  match_comparison_date?: string
+  match_comparison_amount?: number
   ledger_id?: string | null
   ledger_name?: string | null
   ledger_color?: string | null

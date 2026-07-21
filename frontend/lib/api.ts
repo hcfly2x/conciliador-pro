@@ -529,21 +529,52 @@ export async function previewImportFile(file: File, account_id?: string): Promis
   return res.json()
 }
 
-export async function commitImportPreview(preview_id: string, confirm_duplicates = true, competence_month = ''): Promise<ImportResult> {
+export interface DocumentImportJob {
+  id: string
+  preview_id: string
+  filename: string
+  status: 'queued' | 'running' | 'completed' | 'failed'
+  result: ImportResult | null
+  error: string
+  created_at: string
+  started_at: string
+  finished_at: string
+}
+
+export async function commitImportPreview(preview_id: string, confirm_duplicates = true, competence_month = ''): Promise<{ job_id: string; status: string }> {
+  if (USE_MOCK) {
+    await delay(700)
+    return { job_id: 'mock-document-import', status: 'queued' }
+  }
+  return http<{ job_id: string; status: string }>('POST', '/import/commit', { preview_id, confirm_duplicates, competence_month })
+}
+
+export async function getDocumentImportJob(id: string): Promise<DocumentImportJob> {
   if (USE_MOCK) {
     await delay(700)
     return {
-      imported_file_id: Date.now().toString(),
-      filename: 'mock.csv',
-      account_name: 'CONTA XP',
-      total_parsed: 45,
-      total_inserted: 43,
-      total_duplicates: 2,
-      total_errors: 0,
-      transactions_preview: mockTransactions.slice(0, 5),
+      id, preview_id: 'mock-preview', filename: 'mock.csv', status: 'completed', error: '',
+      created_at: '', started_at: '', finished_at: '',
+      result: {
+        imported_file_id: Date.now().toString(), filename: 'mock.csv', account_name: 'CONTA XP',
+        total_parsed: 45, total_inserted: 43, total_duplicates: 2, total_errors: 0,
+        transactions_preview: mockTransactions.slice(0, 5),
+      },
     }
   }
-  return http<ImportResult>('POST', '/import/commit', { preview_id, confirm_duplicates, competence_month })
+  return http<DocumentImportJob>('GET', `/import/jobs/${id}`)
+}
+
+export async function waitForDocumentImportJob(id: string): Promise<DocumentImportJob> {
+  for (;;) {
+    try {
+      const job = await getDocumentImportJob(id)
+      if (job.status === 'completed' || job.status === 'failed') return job
+    } catch (error: any) {
+      if (error?.status === 401 || error?.status === 404) throw error
+    }
+    await delay(1500)
+  }
 }
 
 export interface SeedImportJob {
@@ -559,13 +590,17 @@ export interface SeedImportJob {
   logs: Array<{ time: string; message: string }>
 }
 
-export async function importSeedFile(file: File): Promise<{ job_id: string; status: string; filename: string }> {
+export async function importSeedFile(file: File, replaceExisting = false): Promise<{ job_id: string; status: string; filename: string }> {
   if (USE_MOCK) {
     await delay(1200)
     return { job_id: 'mock-seed-job', status: 'queued', filename: file.name }
   }
   const form = new FormData()
   form.append('file', file)
+  if (replaceExisting) {
+    form.append('replace_existing', 'true')
+    form.append('replace_confirmation', 'SUBSTITUIR BASE HISTORICA')
+  }
   const res = await fetch(`${BASE}/import/seed`, { method: 'POST', body: form, headers: authHeaders() })
   if (!res.ok) { const err = await res.json().catch(() => ({})); throw { status: res.status, ...err } }
   return res.json()
@@ -642,10 +677,25 @@ export async function reviewHistoricalMatch(id: string, action: 'confirm' | 'rej
   locked?: boolean
   classified_by?: string
   classified_at?: string
+  affected_ids?: string[]
+  affected_count?: number
   ok: boolean
 }> {
   if (USE_MOCK) { await delay(); return { id, history_match_id: action === 'confirm' ? 'mock-history' : null, history_match_confirmed: action === 'confirm', ok: true } }
   return http('POST', `/transactions/${id}/history-link`, { action })
+}
+
+export async function prepareHistoricalLinks(ids: string[]): Promise<{
+  selected: number
+  matched: number
+  without_match: number
+  skipped: number
+  matched_ids: string[]
+  without_match_ids: string[]
+  skipped_ids: string[]
+}> {
+  if (USE_MOCK) { await delay(); return { selected: ids.length, matched: ids.length, without_match: 0, skipped: 0, matched_ids: ids, without_match_ids: [], skipped_ids: [] } }
+  return http('POST', '/transactions/history-links/batch', { ids })
 }
 
 export async function getCoverage(year = 2026): Promise<CoverageResponse> {
