@@ -101,6 +101,7 @@ export default function TransactionTable({
   const [bulkCatId, setBulkCatId] = useState('')
   const [bulkSubId, setBulkSubId] = useState('')
   const [bulkLedgerId, setBulkLedgerId] = useState('')
+  const [linkingBatch, setLinkingBatch] = useState(false)
   const [rowDraft, setRowDraft] = useState<Record<string, { category_id: string; subcategory_id: string; notes: string }>>({})
   const [savingRow, setSavingRow] = useState<Record<string, boolean>>({})
   const [rowSuggestions, setRowSuggestions] = useState<Record<string, TransactionSuggestion[]>>({})
@@ -361,17 +362,21 @@ export default function TransactionTable({
   }
 
   async function handlePrepareHistoricalLinks() {
-    if (!selected.size) return
+    if (!selected.size || linkingBatch) return
+    setLinkingBatch(true)
     try {
       const result = await prepareHistoricalLinks([...selected])
       if (!result.matched) {
-        addToast(`Nenhum vinculo direto encontrado (${result.without_match} sem correspondencia)`, 'err')
+        addToast(`Nenhum vinculo atende ao lote: descricao >95%, mesma data e valor exato (${result.without_match} sem correspondencia)`, 'err')
         return
       }
-      addToast(`${result.matched} vinculo(s) preparado(s) para revisao`)
+      addToast(`${result.matched} vinculo(s) exato(s) preparado(s) para revisao${result.without_match ? `; ${result.without_match} fora da regra` : ''}`)
       window.location.assign('/classificacao')
-    } catch {
-      addToast('Nao foi possivel buscar vinculos para os selecionados', 'err')
+    } catch (error: unknown) {
+      const detail = (error as { detail?: string })?.detail
+      addToast(detail || 'Nao foi possivel buscar vinculos para os selecionados', 'err')
+    } finally {
+      setLinkingBatch(false)
     }
   }
 
@@ -534,7 +539,7 @@ export default function TransactionTable({
             {subcategories.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
           </select>
           <button onClick={handleBulkClassify} disabled={!bulkCatId} className="px-3 py-1.5 rounded-md text-xs font-semibold disabled:opacity-40" style={{ background: '#c9a84c', color: '#0d0f14' }}>Aplicar</button>
-          <button onClick={handlePrepareHistoricalLinks} className="px-3 py-1.5 rounded-md text-xs font-semibold" style={{ background: 'rgba(96,165,250,0.18)', border: '1px solid rgba(96,165,250,0.35)', color: '#93c5fd' }}>Vincular selecionados</button>
+          <button onClick={handlePrepareHistoricalLinks} disabled={linkingBatch} className="px-3 py-1.5 rounded-md text-xs font-semibold disabled:opacity-40" style={{ background: 'rgba(96,165,250,0.18)', border: '1px solid rgba(96,165,250,0.35)', color: '#93c5fd' }}>{linkingBatch ? 'Buscando vinculos...' : 'Vincular selecionados'}</button>
           {moveTargetLedgerId ? (
             <button onClick={handleMoveToLedger} className="px-3 py-1.5 rounded-md text-xs font-semibold" style={{ background: '#3ecf8e', color: '#08111f' }}>
               Vincular em {moveTargetLedgerName || 'conta corrente'}

@@ -21,9 +21,8 @@ O produto possui fluxo funcional de autenticação, importação com preview,
 deduplicação, base histórica, vínculos revisáveis, sugestões assíncronas,
 classificação, parcelas, conciliação, relatórios, cofre de documentos e reset.
 
-A branch principal é `main`. Há alterações locais não publicadas que reforçam
-em teste e documentação a preservação da conta do lançamento ao confirmar um
-vínculo histórico.
+A branch principal é `main`. A preservação da conta do lançamento ao confirmar
+um vínculo histórico está implementada e publicada.
 
 ## Arquitetura e stack
 
@@ -100,6 +99,9 @@ vínculo histórico.
   que o novo arquivo produzir registros válidos.
 - Lançamentos selecionados podem ter vínculos históricos preparados em lote,
   mas cada vínculo continua exigindo confirmação humana individual.
+- A preparação pelo botão `Vincular selecionados` é mais restritiva que os
+  demais fluxos: exige similaridade de descrição superior a 95%, diferença de
+  data igual a zero e diferença de valor igual a R$ 0,00.
 
 ## Tarefas pendentes confirmadas
 

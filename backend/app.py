@@ -743,6 +743,9 @@ def find_identity_match(
                 "match_basis": "installment_total" if aggregate_installment else "standard",
                 "comparison_date": comparison_date,
                 "comparison_amount": comparison_amount,
+                "description_similarity": round(desc_score * 100, 1),
+                "date_difference_days": abs((dt.date.fromisoformat(comparison_date) - dt.date.fromisoformat(row[1])).days),
+                "amount_difference": round(abs(comparison_amount - history_amount), 2),
             }
     return best
 
@@ -5806,6 +5809,9 @@ def prepare_history_links_batch():
             if (
                 not identity
                 or float(identity.get("identity_score") or 0) < HISTORY_LINK_CANDIDATE_THRESHOLD
+                or float(identity.get("description_similarity") or 0) <= 95.0
+                or int(identity.get("date_difference_days") or 0) != 0
+                or round(float(identity.get("amount_difference") or 0), 2) != 0
                 or identity.get("history_match_id") == row[10]
             ):
                 without_match_ids.append(tx_id)

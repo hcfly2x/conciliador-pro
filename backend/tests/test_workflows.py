@@ -139,6 +139,41 @@ class WorkflowIntegrationTests(unittest.TestCase):
             ("hist-plan", -100.0, "Match pelo valor total parcelado na base historica"),
         )
 
+    def test_batch_only_prepares_exact_date_amount_and_description_above_95(self) -> None:
+        self.conn.executemany(
+            """
+            INSERT INTO transactions(
+              id,account_id,date,description,description_norm,amount,type,locked,status,
+              history_match_confirmed,identity_score
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            [
+                ("tx-date-near", "acc", "2026-03-11", "MERCADO", "mercado", -50, "expense", 0, "pending", 0, 0),
+                ("tx-amount-near", "acc", "2026-03-10", "MERCADO", "mercado", -50.50, "expense", 0, "pending", 0, 0),
+                ("tx-desc-near", "acc", "2026-03-10", "MERCADO CENTRAL LOJA", "mercado central loja", -50, "expense", 0, "pending", 0, 0),
+            ],
+        )
+        # As tolerancias gerais continuam encontrando estes candidatos; a regra
+        # exata deve ser aplicada somente pela operacao em lote.
+        near_candidate = app.find_identity_match(self.conn, {
+            "date": "2026-03-11", "description_norm": "mercado", "amount": -50,
+            "type": "expense", "account_id": "acc",
+        })
+        self.assertIsNotNone(near_candidate)
+
+        response = self.client.post(
+            "/api/v1/transactions/history-links/batch",
+            json={"ids": ["tx-link", "tx-date-near", "tx-amount-near", "tx-desc-near"]},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload["matched_ids"], ["tx-link"])
+        self.assertEqual(
+            set(payload["without_match_ids"]),
+            {"tx-date-near", "tx-amount-near", "tx-desc-near"},
+        )
+
     def test_confirming_installment_link_classifies_plan_without_changing_values(self) -> None:
         self.conn.execute(
             """
