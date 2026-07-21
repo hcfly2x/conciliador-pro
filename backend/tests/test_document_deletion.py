@@ -30,6 +30,9 @@ class DocumentDeletionIntegrationTests(unittest.TestCase):
               expense_transaction_id TEXT, income_transaction_id TEXT
             );
             CREATE TABLE installment_plans(id TEXT PRIMARY KEY);
+            CREATE TABLE transaction_suggestions(transaction_id TEXT);
+            CREATE TABLE transaction_suggestion_state(transaction_id TEXT);
+            CREATE TABLE classification_history(source_file_id TEXT);
             CREATE TABLE audit_log(
               id TEXT, user_id TEXT, username TEXT, action TEXT, entity TEXT,
               entity_id TEXT, field TEXT, old_value TEXT, new_value TEXT,
@@ -65,6 +68,34 @@ class DocumentDeletionIntegrationTests(unittest.TestCase):
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM transactions").fetchone()[0], 0)
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM imported_files").fetchone()[0], 0)
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM stored_documents").fetchone()[0], 0)
+
+    def test_confirmed_repair_removes_only_nubank_january_2025_batches(self) -> None:
+        self.conn.executescript(
+            """
+            CREATE TABLE accounts(id TEXT PRIMARY KEY, name TEXT);
+            ALTER TABLE transactions ADD COLUMN account_id TEXT;
+            ALTER TABLE transactions ADD COLUMN competence_month TEXT;
+            INSERT INTO accounts VALUES ('nubank','CARTAO NUBANK'),('xp','CARTAO XP');
+            INSERT INTO imported_files VALUES
+              ('import-xp','xp-01-25.pdf','CARTAO XP','2025','01');
+            INSERT INTO transactions VALUES
+              ('tx-xp','import-xp',NULL,'xp','2025/01');
+            UPDATE transactions SET account_id='nubank',competence_month='2025/01'
+            WHERE imported_file_id='import-nubank';
+            """
+        )
+        target_ids = [r[0] for r in self.conn.execute(
+            """
+            SELECT DISTINCT t.imported_file_id
+            FROM transactions t JOIN accounts a ON a.id=t.account_id
+            WHERE a.name='CARTAO NUBANK' AND t.competence_month='2025/01'
+            """
+        ).fetchall()]
+
+        deleted = app.delete_import_batches(self.conn, target_ids)
+
+        self.assertEqual(deleted, 2)
+        self.assertEqual(self.conn.execute("SELECT id FROM transactions").fetchall(), [("tx-xp",)])
 
 
 if __name__ == "__main__":

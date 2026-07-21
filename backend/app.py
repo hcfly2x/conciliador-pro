@@ -1372,6 +1372,46 @@ def create_index_safely(conn, index_name: str, sql: str) -> None:
         conn.execute("RELEASE SAVEPOINT create_optional_index")
 
 
+def delete_import_batches(conn, imported_ids: list[str]) -> int:
+    """Remove lotes de importacao e todos os dados derivados dos lancamentos."""
+    deleted_transactions = 0
+    for imported_id in imported_ids:
+        deleted_transactions += int(conn.execute(
+            "SELECT COUNT(1) FROM transactions WHERE imported_file_id=?", (imported_id,)
+        ).fetchone()[0] or 0)
+        conn.execute(
+            """
+            DELETE FROM transaction_reconciliations
+            WHERE expense_transaction_id IN (SELECT id FROM transactions WHERE imported_file_id=?)
+               OR income_transaction_id IN (SELECT id FROM transactions WHERE imported_file_id=?)
+            """,
+            (imported_id, imported_id),
+        )
+        conn.execute(
+            "DELETE FROM transaction_suggestions WHERE transaction_id IN "
+            "(SELECT id FROM transactions WHERE imported_file_id=?)",
+            (imported_id,),
+        )
+        conn.execute(
+            "DELETE FROM transaction_suggestion_state WHERE transaction_id IN "
+            "(SELECT id FROM transactions WHERE imported_file_id=?)",
+            (imported_id,),
+        )
+        conn.execute(
+            "DELETE FROM classification_history WHERE source_file_id IN "
+            "(SELECT ('manual:' || id) FROM transactions WHERE imported_file_id=?)",
+            (imported_id,),
+        )
+        conn.execute("DELETE FROM transactions WHERE imported_file_id=?", (imported_id,))
+        conn.execute("DELETE FROM imported_files WHERE id=?", (imported_id,))
+    if imported_ids:
+        conn.execute(
+            "DELETE FROM installment_plans WHERE id NOT IN "
+            "(SELECT installment_plan_id FROM transactions WHERE installment_plan_id IS NOT NULL)"
+        )
+    return deleted_transactions
+
+
 def init_db() -> None:
     with db_connect() as conn:
         conn.execute(
@@ -1810,6 +1850,29 @@ def init_db() -> None:
             conn.execute("ALTER TABLE stored_documents ADD COLUMN imported_file_id TEXT")
         create_index_safely(conn, "idx_docs_acc_month", "CREATE INDEX IF NOT EXISTS idx_docs_acc_month ON stored_documents(account_name, year_month)")
         create_index_safely(conn, "idx_docs_imported_file", "CREATE INDEX IF NOT EXISTS idx_docs_imported_file ON stored_documents(imported_file_id)")
+
+        # Manutencao unica confirmada pelo proprietario em 21/07/2026: o documento
+        # CARTAO NUBANK 01-25 foi apagado do cofre com a intencao de remover tambem
+        # seus lancamentos, mas o vinculo legado por competencia nao encontrou o lote.
+        repair_id = "repair-deleted-cartao-nubank-2025-01"
+        repair_done = conn.execute("SELECT 1 FROM maintenance_log WHERE id=?", (repair_id,)).fetchone()
+        if not repair_done:
+            repair_import_ids = [r[0] for r in conn.execute(
+                """
+                SELECT DISTINCT t.imported_file_id
+                FROM transactions t JOIN accounts a ON a.id=t.account_id
+                WHERE a.name='CARTAO NUBANK' AND t.competence_month='2025/01'
+                """
+            ).fetchall()]
+            repair_deleted = delete_import_batches(conn, repair_import_ids)
+            conn.execute(
+                "INSERT INTO maintenance_log(id,executed_at,detail) VALUES (?,?,?)",
+                (
+                    repair_id,
+                    dt.datetime.now().isoformat(timespec="seconds"),
+                    f"imported_files={len(repair_import_ids)};deleted_transactions={repair_deleted}",
+                ),
+            )
 
 
 def seed() -> None:
@@ -4440,23 +4503,7 @@ def coverage_delete_file():
                     ).fetchall()
                     if len(legacy_candidates) == 1:
                         imported_ids = [legacy_candidates[0][0]]
-            tx_deleted = 0
-            for imported_id in imported_ids:
-                tx_deleted += int(conn.execute(
-                    "SELECT COUNT(1) FROM transactions WHERE imported_file_id=?", (imported_id,)
-                ).fetchone()[0] or 0)
-                conn.execute(
-                    """
-                    DELETE FROM transaction_reconciliations
-                    WHERE expense_transaction_id IN (SELECT id FROM transactions WHERE imported_file_id=?)
-                       OR income_transaction_id IN (SELECT id FROM transactions WHERE imported_file_id=?)
-                    """,
-                    (imported_id, imported_id),
-                )
-                conn.execute("DELETE FROM transactions WHERE imported_file_id=?", (imported_id,))
-                conn.execute("DELETE FROM imported_files WHERE id=?", (imported_id,))
-            if imported_ids:
-                conn.execute("DELETE FROM installment_plans WHERE id NOT IN (SELECT installment_plan_id FROM transactions WHERE installment_plan_id IS NOT NULL)")
+            tx_deleted = delete_import_batches(conn, imported_ids)
             conn.execute("DELETE FROM stored_documents WHERE id=?", (doc_id,))
             record_audit(
                 current_user(), "delete_document", "document", doc_id, "filename", row[1], "",
@@ -4486,23 +4533,7 @@ def coverage_delete_file():
                     (rel_path, str(file_path)),
                 ).fetchall()
             ]
-        tx_deleted = 0
-        for imported_id in imported_ids:
-            tx_deleted += int(conn.execute(
-                "SELECT COUNT(1) FROM transactions WHERE imported_file_id=?",
-                (imported_id,),
-            ).fetchone()[0] or 0)
-            conn.execute(
-                """
-                DELETE FROM transaction_reconciliations
-                WHERE expense_transaction_id IN (SELECT id FROM transactions WHERE imported_file_id=?)
-                   OR income_transaction_id IN (SELECT id FROM transactions WHERE imported_file_id=?)
-                """,
-                (imported_id, imported_id),
-            )
-            conn.execute("DELETE FROM transactions WHERE imported_file_id=?", (imported_id,))
-            conn.execute("DELETE FROM installment_plans WHERE id NOT IN (SELECT installment_plan_id FROM transactions WHERE installment_plan_id IS NOT NULL)")
-            conn.execute("DELETE FROM imported_files WHERE id=?", (imported_id,))
+        tx_deleted = delete_import_batches(conn, imported_ids)
         record_audit(
             current_user(), "delete_document", "document", rel_path, "filename", file_path.name, "",
             detail=f"deleted_transactions={tx_deleted}", conn=conn,
