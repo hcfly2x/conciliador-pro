@@ -440,7 +440,7 @@ export async function bulkClassify(ids: string[], category_id: string, subcatego
   return http<{ updated: number; skipped_locked?: number; skipped_history_links?: number }>('PATCH', '/transactions/bulk-classify', { ids, category_id, subcategory_id })
 }
 
-export async function downloadAuditExport(): Promise<void> {
+export async function downloadAuditExport(): Promise<{ filename: string; dataUrl: string }> {
   const res = await fetch(`${BASE}/system/audit-export`, { headers: authHeaders() })
   if (res.status === 401) {
     handleUnauthorized()
@@ -462,6 +462,13 @@ export async function downloadAuditExport(): Promise<void> {
   anchor.click()
   anchor.remove()
   window.URL.revokeObjectURL(url)
+  const dataUrl = await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(String(reader.result || ''))
+    reader.onerror = () => reject(reader.error)
+    reader.readAsDataURL(blob)
+  })
+  return { filename, dataUrl }
 }
 
 export async function getMonths(): Promise<string[]> {
