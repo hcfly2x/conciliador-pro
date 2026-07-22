@@ -127,6 +127,28 @@ class PoolFallbackTests(unittest.TestCase):
 
         fake_psycopg.connect.assert_called_once()
 
+    def test_connection_returns_to_the_pool_that_provided_it(self) -> None:
+        raw_connection = mock.Mock()
+        owner_pool = mock.Mock()
+        owner_pool.getconn.return_value = raw_connection
+        replacement_pool = mock.Mock()
+
+        with (
+            mock.patch.object(db, "IS_POSTGRES", True),
+            mock.patch.object(
+                db,
+                "_get_pool",
+                side_effect=[owner_pool, replacement_pool],
+                create=True,
+            ) as get_pool,
+        ):
+            with db.db_connect():
+                pass
+
+        owner_pool.putconn.assert_called_once_with(raw_connection)
+        replacement_pool.putconn.assert_not_called()
+        get_pool.assert_called_once_with()
+
 
 if __name__ == "__main__":
     unittest.main()

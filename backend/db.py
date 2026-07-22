@@ -56,24 +56,27 @@ if IS_POSTGRES:
     # o pooler as derrube.
     _POOL = None
     _POOL_PID = None
+    _POOL_LOCK = Lock()
 
     def _get_pool():
         """Cria o pool sob demanda, por processo (seguro com fork do gunicorn)."""
         global _POOL, _POOL_PID
         pid = os.getpid()
         if _POOL is None or _POOL_PID != pid:
-            _POOL = ConnectionPool(
-                DATABASE_URL,
-                min_size=0,
-                max_size=int(os.environ.get("DB_POOL_MAX", "10")),
-                max_idle=120,
-                # check: testa a conexao antes de entregar; descarta conexoes que o
-                # pooler do Supabase tenha derrubado (evita 500 apos ociosidade).
-                check=ConnectionPool.check_connection,
-                kwargs={"prepare_threshold": None},
-                open=True,
-            )
-            _POOL_PID = pid
+            with _POOL_LOCK:
+                if _POOL is None or _POOL_PID != pid:
+                    _POOL = ConnectionPool(
+                        DATABASE_URL,
+                        min_size=0,
+                        max_size=int(os.environ.get("DB_POOL_MAX", "10")),
+                        max_idle=120,
+                        # check: testa a conexao antes de entregar; descarta conexoes que o
+                        # pooler do Supabase tenha derrubado (evita 500 apos ociosidade).
+                        check=ConnectionPool.check_connection,
+                        kwargs={"prepare_threshold": None},
+                        open=True,
+                    )
+                    _POOL_PID = pid
         return _POOL
 
 
@@ -204,9 +207,12 @@ class _PgCursor:
 class _PgConnection:
     """Imita a interface minima de sqlite3.Connection usada pelo app."""
 
-    def __init__(self, conn, pooled: bool = False):
+    def __init__(self, conn, pool=None):
         self._conn = conn
-        self._pooled = pooled
+        # A conexao deve sempre voltar ao mesmo pool que a forneceu. Consultar
+        # novamente o pool global ao fechar e inseguro durante inicializacao
+        # concorrente ou troca de processos do gunicorn.
+        self._pool = pool
         self.row_factory = (
             None  # compat: atribuicoes sao ignoradas (chaves sempre disponiveis)
         )
@@ -235,14 +241,14 @@ class _PgConnection:
         self._conn.rollback()
 
     def close(self):
-        if self._pooled:
+        if self._pool is not None:
             try:
                 self._conn.rollback()
             except Exception:
                 logger.exception(
                     "Falha ao desfazer transacao PostgreSQL antes de devolver conexao ao pool"
                 )
-            _get_pool().putconn(self._conn)
+            self._pool.putconn(self._conn)
         else:
             self._conn.close()
 
@@ -256,8 +262,8 @@ class _PgConnection:
             else:
                 self._conn.rollback()
         finally:
-            if self._pooled:
-                _get_pool().putconn(self._conn)
+            if self._pool is not None:
+                self._pool.putconn(self._conn)
             else:
                 self._conn.close()
         return False
@@ -309,10 +315,11 @@ def db_connect(direct: bool = False, timeout_seconds: float = 5.0):
     if IS_POSTGRES:
         if direct:
             return _PgConnection(
-                psycopg.connect(DATABASE_URL, prepare_threshold=None), pooled=False
+                psycopg.connect(DATABASE_URL, prepare_threshold=None)
             )
         try:
-            return _PgConnection(_get_pool().getconn(timeout=15), pooled=True)
+            pool = _get_pool()
+            return _PgConnection(pool.getconn(timeout=15), pool=pool)
         except Exception:
             logger.warning(
                 "Pool PostgreSQL indisponivel; abrindo conexao direta", exc_info=True
@@ -323,7 +330,7 @@ def db_connect(direct: bool = False, timeout_seconds: float = 5.0):
                 )
                 raise PoolOverloadError("Banco temporariamente sobrecarregado")
             return _PgConnection(
-                psycopg.connect(DATABASE_URL, prepare_threshold=None), pooled=False
+                psycopg.connect(DATABASE_URL, prepare_threshold=None)
             )
     DATA.mkdir(parents=True, exist_ok=True)
     return sqlite3.connect(DB_PATH, timeout=timeout_seconds, factory=_SqliteConnection)
