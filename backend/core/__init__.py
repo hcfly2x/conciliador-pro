@@ -1,0 +1,1 @@
+"""Nucleo compartilhado da aplicacao."""

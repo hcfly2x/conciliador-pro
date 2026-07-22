@@ -1,13 +1,20 @@
 import type { NextConfig } from "next";
+import { withSentryConfig } from "@sentry/nextjs";
 
 const apiProxyTarget = (process.env.API_PROXY_TARGET || "http://127.0.0.1:5061").replace(/\/$/, "");
 const publicApiUrl = process.env.NEXT_PUBLIC_API_URL || "/api/v1";
 const isDevelopment = process.env.NODE_ENV !== "production";
 let apiOrigin = "'self'";
+let sentryOrigin = "";
 try {
   apiOrigin = new URL(publicApiUrl).origin;
 } catch {
   // URL relativa usa a propria origem.
+}
+try {
+  sentryOrigin = new URL(process.env.NEXT_PUBLIC_SENTRY_DSN || '').origin;
+} catch {
+  // Sentry fica totalmente desligado quando o DSN nao existe.
 }
 
 const contentSecurityPolicy = [
@@ -21,7 +28,7 @@ const contentSecurityPolicy = [
   "style-src 'self' 'unsafe-inline'",
   // Next.js em exportacao estatica injeta bootstrap inline; nonce exige middleware dinamico.
   `script-src 'self' 'unsafe-inline'${isDevelopment ? " 'unsafe-eval'" : ""}`,
-  `connect-src 'self' ${apiOrigin}`,
+  `connect-src 'self' ${apiOrigin}${sentryOrigin ? ` ${sentryOrigin}` : ''}`,
 ].join("; ");
 
 const nextConfig: NextConfig = {
@@ -46,4 +53,9 @@ const nextConfig: NextConfig = {
   },
 };
 
-export default nextConfig;
+export default withSentryConfig(nextConfig, {
+  silent: true,
+  authToken: process.env.SENTRY_AUTH_TOKEN,
+  org: process.env.SENTRY_ORG,
+  project: process.env.SENTRY_PROJECT,
+});

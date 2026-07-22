@@ -1,4 +1,8 @@
-# Architecture
+# Architecture - HISTORICO
+
+> Documento supersedido. Consulte `PROJECT_CONTEXT.md` e
+> `docs/ARQUITETURA-WEB.md`. Nao use decisoes de autoclassificacao, importacao por
+> pasta ou SQLite-only descritas abaixo como regras vigentes.
 
 Data: 2026-05-08
 

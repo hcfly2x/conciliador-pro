@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 from pathlib import Path
 
 import app
+
+logger = logging.getLogger(__name__)
 
 
 SUPPORTED_EXTENSIONS = {".csv", ".xls", ".xlsx", ".pdf"}
@@ -20,7 +23,11 @@ def expected_account_from_path(path: Path) -> str:
         bank = "XP"
     else:
         return ""
-    kind = "CARTAO" if "cartao" in normalized or "cartoes" in normalized else "CONTA"
+    kind = (
+        "CARTAO"
+        if any(token in normalized for token in ("cartao", "cartoes", "card"))
+        else "CONTA"
+    )
     return f"{kind} {bank}"
 
 
@@ -57,6 +64,7 @@ def audit_file(path: Path) -> dict[str, object]:
             "error": "",
         })
     except Exception as exc:
+        logger.exception("Falha ao auditar amostra de importacao %s", path)
         row["error"] = f"{type(exc).__name__}: {exc}"
     return row
 
@@ -71,7 +79,7 @@ def main() -> int:
         path for path in sorted(args.root.rglob("*"))
         if path.is_file()
         and path.suffix.lower() in SUPPORTED_EXTENSIONS
-        and app.norm_text(path.name).startswith(("cartao", "extrato"))
+        and expected_account_from_path(path)
     ]
     rows = [audit_file(path) for path in files]
     if args.json:

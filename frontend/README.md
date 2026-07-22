@@ -21,10 +21,12 @@ Na Vercel, configure:
 ```env
 NEXT_PUBLIC_API_URL=https://seu-backend.onrender.com/api/v1
 NEXT_PUBLIC_AUTH_DISABLED=false
+NEXT_PUBLIC_SENTRY_DSN=
 ```
 
 No Render, configure `CORS_ORIGINS` com o dominio do frontend e mantenha a
 autenticacao habilitada. Consulte `../docs/DEPLOY.md` para o checklist completo.
+Sem DSN, o Sentry fica desativado.
 
 ## Comandos
 

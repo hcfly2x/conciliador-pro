@@ -1,14 +1,16 @@
 # Deploy - Conciliador Pro Web
 
-Guia passo a passo para colocar o sistema no ar com banco hosted, sem depender da sua maquina. Combinacao recomendada (tudo com plano gratuito ou barato): **Neon** (Postgres) + **Render** (backend Flask) + **Vercel** (frontend Next.js).
+Guia passo a passo para colocar o sistema no ar com banco hosted, sem depender da sua maquina. Ambiente vigente: **Supabase** (PostgreSQL) + **Render** (backend Flask e worker) + **Vercel** (frontend Next.js).
 
-## 1. Banco de dados hosted (Neon)
+## 1. Banco de dados hosted (Supabase)
 
-1. Crie uma conta em https://neon.tech e crie um projeto (regiao `aws-sa-east-1` / Sao Paulo, se disponivel).
-2. Na tela do projeto, copie a **connection string** no formato `postgresql://usuario:senha@host/neondb?sslmode=require`.
-3. Nao precisa criar tabelas: o backend cria e migra o schema sozinho na primeira subida.
+1. Crie o projeto e selecione a regiao mais proxima disponivel.
+2. Copie a connection string PostgreSQL compativel com o ambiente Render.
+3. Nao crie tabelas manualmente: o backend aplica o bootstrap compativel e as
+   migrations versionadas na inicializacao.
 
-Alternativas equivalentes: Supabase (use a connection string "Direct connection") ou Railway Postgres. Em qualquer uma, o que importa e a `DATABASE_URL`.
+Neon e Railway sao alternativas equivalentes. Em qualquer provedor, o contrato
+da aplicacao e uma `DATABASE_URL` PostgreSQL acessivel pelo web e pelo worker.
 
 ## 2. Backend (Render)
 
@@ -18,13 +20,20 @@ Alternativas equivalentes: Supabase (use a connection string "Direct connection"
    - Root Directory: `backend`
    - Runtime: Python
    - Build Command: `pip install -r requirements.txt`
-   - Start Command: `gunicorn -b 0.0.0.0:$PORT -w 2 --timeout 120 app:app`
+   - Start Command: `gunicorn -b 0.0.0.0:$PORT -w 2 --threads 8 --timeout 300 app:app`
 4. Em Environment, adicione:
    - `DATABASE_URL` = connection string do Neon
    - `ADMIN_USERNAME` = seu usuario (ex.: `helcio`)
    - `ADMIN_PASSWORD` = uma senha forte (minimo 8 caracteres)
    - `CORS_ORIGINS` = URL do frontend na Vercel (pode preencher depois do passo 3 e salvar de novo)
-5. Deploy. Teste: `https://SEU-SERVICO.onrender.com/api/v1/health` deve responder `{"status": "ok"}`.
+   - `WORKER_MODE` = `process`
+   - `TRUSTED_PROXY_COUNT` = `1` no Render/Railway
+   - `DB_POOL_FALLBACKS_PER_MINUTE` = `5` (limite de conexoes diretas quando o pool falha)
+   - `SENTRY_DSN` = DSN do projeto backend (opcional; sem valor, fica desligado)
+6. Crie tambem um **Background Worker** com o mesmo root/build e comando
+   `WORKER_MODE=process WORKER_PROCESS=1 python worker.py`. Ele consome as filas
+   persistidas de importacao, sugestoes e recalculo sem competir com requests web.
+7. Deploy. Teste: `https://SEU-SERVICO.onrender.com/api/v1/health` deve responder `{"status": "ok"}`.
 
 O admin e criado automaticamente na primeira subida (somente se ainda nao existir nenhum usuario; depois disso as variaveis ADMIN_* podem ate ser removidas).
 
@@ -38,6 +47,8 @@ Observacao sobre o plano gratuito do Render: o servico hiberna apos inatividade 
    - Framework: Next.js (detectado automaticamente)
 3. Em Environment Variables:
    - `NEXT_PUBLIC_API_URL` = `https://SEU-SERVICO.onrender.com/api/v1`
+   - `NEXT_PUBLIC_SENTRY_DSN` = DSN do projeto frontend (opcional)
+   - `SENTRY_ORG`, `SENTRY_PROJECT` e `SENTRY_AUTH_TOKEN` = apenas se quiser upload de source maps
 4. Deploy. Copie a URL final (ex.: `https://conciliador-pro.vercel.app`) e coloque-a no `CORS_ORIGINS` do backend no Render (redeploy automatico).
 
 ## 4. Criar o usuario da funcionaria
@@ -63,9 +74,12 @@ O que cada perfil pode fazer:
 
 ## 5. Backups
 
-- Neon: use o recurso de branches/restore point-in-time (plano gratuito ja tem historico de 24h; confira o plano).
-- Antes de qualquer "Resetar sistema" no modo hosted, crie um branch/backup no Neon - o app nao gera arquivo `.db` de backup nesse modo.
-- Os arquivos originais dos extratos nao persistem no Render entre deploys; mantenha os PDFs/planilhas originais no Google Drive.
+- Supabase: configure e verifique a politica de backup/restore do plano contratado.
+- Antes de qualquer "Resetar sistema" no modo hosted, crie um backup/branch; o
+  app nao gera arquivo `.db` quando utiliza PostgreSQL.
+- Os documentos originais sao persistidos na tabela `stored_documents` junto ao
+  lote financeiro. A copia no disco do Render e secundaria e pode desaparecer
+  entre deploys. Mantenha tambem uma copia externa como contingencia operacional.
 
 ## 6. Desenvolvimento local (opcional)
 
@@ -83,7 +97,12 @@ npm install
 npm run dev
 ```
 
-Tambem e possivel apontar o backend local para o Postgres do Neon exportando `DATABASE_URL` - util para testar contra os dados reais com cuidado.
+Tambem e possivel apontar o backend local para um PostgreSQL de staging
+exportando `DATABASE_URL`; nunca use o banco de producao para testes destrutivos.
+
+O CI possui o job `backend-postgres`, que cria PostgreSQL 16 descartavel, aplica
+as migrations e testa web/worker em processos separados com reinicio do web. Esse
+teste deve passar antes de implantar a revisao.
 
 ## 7. Checklist final
 
@@ -92,3 +111,5 @@ Tambem e possivel apontar o backend local para o Postgres do Neon exportando `DA
 3. Colaboradora consegue logar, ver lancamentos e classificar; recebe "apenas administrador" ao tentar importar.
 4. Classificar um lancamento e tentar mudar de novo mostra o cadeado; Desbloquear (admin) libera e registra na auditoria (`GET /api/v1/audit?entity_id=...`).
 5. Importacao completa: upload -> preview com totais/duplicados -> confirmar -> lancamentos aparecem como pendentes.
+6. O Background Worker esta ativo e os jobs deixam `queued` para `completed`.
+7. Um erro controlado aparece no projeto Sentry correto, sem dados financeiros no payload.

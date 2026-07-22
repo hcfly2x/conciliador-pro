@@ -9,13 +9,16 @@ Tabelas: users, sessions, audit_log (criadas em init_auth_db).
   de ambiente ADMIN_USERNAME / ADMIN_PASSWORD (obrigatorias em producao).
 - Dev local: exportar AUTH_DISABLED=1 para pular autenticacao.
 """
+
 from __future__ import annotations
 
 import datetime as dt
 import hashlib
 import os
 import secrets
+import time
 import uuid
+from collections import OrderedDict
 from typing import Any
 
 from db import db_connect
@@ -42,16 +45,20 @@ def _session_token_digest(token: str) -> str:
 
 def hash_password(password: str) -> str:
     salt = secrets.token_hex(16)
-    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt.encode("utf-8"), _PBKDF2_ITERATIONS)
+    digest = hashlib.pbkdf2_hmac(
+        "sha256", password.encode("utf-8"), salt.encode("utf-8"), _PBKDF2_ITERATIONS
+    )
     return f"pbkdf2${_PBKDF2_ITERATIONS}${salt}${digest.hex()}"
 
 
 def verify_password(password: str, stored: str) -> bool:
     try:
         _scheme, iterations, salt, expected = stored.split("$", 3)
-        digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt.encode("utf-8"), int(iterations))
+        digest = hashlib.pbkdf2_hmac(
+            "sha256", password.encode("utf-8"), salt.encode("utf-8"), int(iterations)
+        )
         return secrets.compare_digest(digest.hex(), expected)
-    except Exception:
+    except (AttributeError, TypeError, ValueError):
         return False
 
 
@@ -106,9 +113,16 @@ def init_auth_db() -> None:
             )
             """
         )
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_entity ON audit_log(entity, entity_id)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_log(created_at)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id)")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_audit_entity ON audit_log(entity, entity_id)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_log(created_at)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id)"
+        )
+        conn.execute("DELETE FROM sessions WHERE expires_at < ?", (_now(),))
 
 
 def _login_attempt_key(username: str, client_ip: str) -> str:
@@ -130,12 +144,15 @@ def record_login_failure(username: str, client_ip: str) -> None:
     now = dt.datetime.now(dt.timezone.utc)
     with db_connect() as conn:
         row = conn.execute(
-            "SELECT attempt_count,blocked_until FROM login_attempts WHERE attempt_key=?", (key,)
+            "SELECT attempt_count,blocked_until FROM login_attempts WHERE attempt_key=?",
+            (key,),
         ).fetchone()
         count = int((row or (0, ""))[0] or 0) + 1
         blocked_until = (row or (0, ""))[1] or ""
         if count >= LOGIN_MAX_ATTEMPTS:
-            blocked_until = (now + dt.timedelta(minutes=LOGIN_BLOCK_MINUTES)).isoformat(timespec="seconds")
+            blocked_until = (now + dt.timedelta(minutes=LOGIN_BLOCK_MINUTES)).isoformat(
+                timespec="seconds"
+            )
             count = 0
         conn.execute(
             """
@@ -167,7 +184,9 @@ def bootstrap_admin() -> None:
         if not username or not password:
             if AUTH_DISABLED:
                 return
-            print("[auth] AVISO: nenhum usuario existe e ADMIN_USERNAME/ADMIN_PASSWORD nao foram definidos. Login sera impossivel.")
+            print(
+                "[auth] AVISO: nenhum usuario existe e ADMIN_USERNAME/ADMIN_PASSWORD nao foram definidos. Login sera impossivel."
+            )
             return
         conn.execute(
             "INSERT INTO users(id, username, password_hash, role, is_active, created_at) VALUES (?,?,?,?,1,?)",
@@ -183,7 +202,12 @@ def create_session(user_id: str) -> str:
     with db_connect() as conn:
         conn.execute(
             "INSERT INTO sessions(token, user_id, created_at, expires_at) VALUES (?,?,?,?)",
-            (_session_token_digest(token), user_id, now.isoformat(timespec="seconds"), expires.isoformat(timespec="seconds")),
+            (
+                _session_token_digest(token),
+                user_id,
+                now.isoformat(timespec="seconds"),
+                expires.isoformat(timespec="seconds"),
+            ),
         )
     return token
 
@@ -191,10 +215,13 @@ def create_session(user_id: str) -> str:
 def destroy_session(token: str) -> None:
     invalidate_token_cache(token)
     with db_connect() as conn:
-        conn.execute("DELETE FROM sessions WHERE token=? OR token=?", (token, _session_token_digest(token)))
+        conn.execute(
+            "DELETE FROM sessions WHERE token=? OR token=?",
+            (token, _session_token_digest(token)),
+        )
 
 
-_TOKEN_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+_TOKEN_CACHE: OrderedDict[str, tuple[float, dict[str, Any]]] = OrderedDict()
 _TOKEN_CACHE_TTL = 10.0  # reduz janela de revogacao entre multiplos workers
 _TOKEN_CACHE_MAX = 500
 
@@ -204,18 +231,18 @@ def _cache_get(token: str) -> dict[str, Any] | None:
     if not item:
         return None
     ts, user = item
-    import time
     if time.monotonic() - ts > _TOKEN_CACHE_TTL:
         _TOKEN_CACHE.pop(token, None)
         return None
+    _TOKEN_CACHE.move_to_end(token)
     return user
 
 
 def _cache_put(token: str, user: dict[str, Any]) -> None:
-    import time
-    if len(_TOKEN_CACHE) >= _TOKEN_CACHE_MAX:
-        _TOKEN_CACHE.clear()
+    _TOKEN_CACHE.pop(token, None)
     _TOKEN_CACHE[token] = (time.monotonic(), user)
+    while len(_TOKEN_CACHE) > _TOKEN_CACHE_MAX:
+        _TOKEN_CACHE.popitem(last=False)
 
 
 def invalidate_token_cache(token: str | None = None) -> None:
@@ -234,7 +261,7 @@ def user_for_token(token: str) -> dict[str, Any] | None:
     with db_connect() as conn:
         row = conn.execute(
             """
-            SELECT u.id, u.username, u.role, u.is_active, s.expires_at
+            SELECT u.id, u.username, u.role, u.is_active, s.expires_at, s.token
             FROM sessions s JOIN users u ON u.id = s.user_id
             WHERE s.token=? OR s.token=?
             """,
@@ -245,13 +272,28 @@ def user_for_token(token: str) -> dict[str, Any] | None:
         if int(row[3]) != 1:
             return None
         if str(row[4]) < _now():
-            conn.execute("DELETE FROM sessions WHERE token=? OR token=?", (_session_token_digest(token), token))
+            conn.execute(
+                "DELETE FROM sessions WHERE token=? OR token=?",
+                (_session_token_digest(token), token),
+            )
             return None
-        expires = dt.datetime.now(dt.timezone.utc) + dt.timedelta(days=SESSION_DAYS)
-        conn.execute(
-            "UPDATE sessions SET token=?, expires_at=? WHERE token=? OR token=?",
-            (_session_token_digest(token), expires.isoformat(timespec="seconds"), _session_token_digest(token), token),
-        )
+        now = dt.datetime.now(dt.timezone.utc)
+        current_expiry = dt.datetime.fromisoformat(str(row[4]))
+        if current_expiry.tzinfo is None:
+            current_expiry = current_expiry.replace(tzinfo=dt.timezone.utc)
+        digest = _session_token_digest(token)
+        needs_digest_migration = str(row[5]) != digest
+        needs_renewal = current_expiry - now < dt.timedelta(days=25)
+        if needs_digest_migration or needs_renewal:
+            expires = (
+                now + dt.timedelta(days=SESSION_DAYS)
+                if needs_renewal
+                else current_expiry
+            )
+            conn.execute(
+                "UPDATE sessions SET token=?, expires_at=? WHERE token=? OR token=?",
+                (digest, expires.isoformat(timespec="seconds"), digest, token),
+            )
     user = {"id": row[0], "username": row[1], "role": row[2]}
     _cache_put(token, user)
     return user
