@@ -5,7 +5,7 @@ import { systemReset, isAdmin } from '@/lib/api'
 import { useStore } from '@/store/app'
 
 export default function SistemaPage() {
-  const { addToast, bumpRefresh } = useStore()
+  const { addToast, bumpRefresh, bumpCatalogRefresh, bumpMonthsRefresh } = useStore()
   const [confirmText, setConfirmText] = useState('')
   const [wipeCategories, setWipeCategories] = useState(false)
   const [loading, setLoading] = useState<'transactions' | 'all' | null>(null)
@@ -35,6 +35,8 @@ export default function SistemaPage() {
       addToast('Banco de dados zerado')
       setConfirmText('')
       bumpRefresh()
+      bumpMonthsRefresh()
+      bumpCatalogRefresh()
     } catch (e: unknown) {
       const err = e as { detail?: string }
       addToast(err?.detail || 'Erro ao resetar', 'err')

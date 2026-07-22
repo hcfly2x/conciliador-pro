@@ -6,7 +6,7 @@ confirmados pelo proprietario no uso normal do produto.
 
 ## Ambiente local homologado
 
-- 94 testes Python locais aprovados na rodada atual, incluindo migrations,
+- 95 testes Python locais aprovados na rodada atual, incluindo migrations,
   seguranca, tradutor SQL, propriedade do pool e worker em processo separado.
 - TypeScript e build Next.js aprovados.
 - 8 jornadas Playwright aprovadas contra `next build` + `next start`: CSP,
@@ -39,8 +39,8 @@ confirmados pelo proprietario no uso normal do produto.
 
 ## Versoes observadas
 
-- Deploy Vercel/GitHub: `d4699b2`.
-- Commit informado pelo health do Render: `d4699b287c88`.
+- Deploy Vercel/GitHub: `c853b14`.
+- Commit informado pelo health do Render: `c853b142aa9f`.
 - Migration informada pelo health publicado: versao 2; executor de jobs:
   `WORKER_MODE=inline` no processo web.
 

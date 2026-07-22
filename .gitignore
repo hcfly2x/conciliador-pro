@@ -29,6 +29,7 @@ backend/data/backups/
 logs/
 tmp/
 temp/
+handoff/*.zip
 
 # Sistema e editores
 .DS_Store

@@ -4,6 +4,16 @@ Atualizado em 22/07/2026. Este arquivo consolida o contexto de produto. O codigo
 continua sendo a fonte principal da verdade; `docs/ROADMAP-FINALIZACAO.md` e o
 checklist operacional vigente. Roadmaps anteriores sao apenas historicos.
 
+## Lema de engenharia
+
+**Principio de Pareto: buscar 80% do resultado com 20% do esforco.**
+
+O projeto prioriza melhorias de maior impacto percebido e operacional, com
+baixo risco para a integridade financeira. Nao faremos esforcos grandes em
+problemas pequenos, nem adotaremos complexidade preventiva sem medicao. Entre
+alternativas equivalentes, vence a solucao mais simples, testavel, reversivel e
+facil de operar.
+
 ## Objetivo do produto
 
 Aplicativo web de controle financeiro pessoal que importa extratos e faturas,
@@ -26,15 +36,15 @@ O produto possui fluxo funcional de autenticacao, importacao com preview,
 deduplicacao, base historica, vinculos revisaveis, sugestoes assincronas,
 classificacao, parcelas, conciliacao, relatorios, cofre e reset administrativo.
 
-A branch oficial e `main`. O commit `d4699b2` esta em `origin/main`, Vercel e
+A branch oficial e `main`. O commit `c853b14` esta em `origin/main`, Vercel e
 Render. O Render usa PostgreSQL e, por possuir apenas o web service no plano
 atual, executa jobs com `WORKER_MODE=inline`. O Background Worker separado
 continua sendo a arquitetura alvo, mas nao esta ativo em producao.
 
 Validacao da versao publicada e da rodada local seguinte:
 
-- O health de `d4699b2` informa commit, schema 2 e executor de jobs inline.
-- Na rodada local seguinte, 94 testes Python e 8 jornadas Playwright foram
+- O health de `c853b14` informa commit, schema 2 e executor de jobs inline.
+- Na rodada local seguinte, 95 testes Python e 8 jornadas Playwright foram
   aprovados; essa rodada ainda nao foi publicada.
 - A integracao PostgreSQL do CI passou com banco descartavel, web e worker em
   processos separados e reinicio do web durante um job.
@@ -58,12 +68,14 @@ Validacao da versao publicada e da rodada local seguinte:
 - Observabilidade: logs estruturados e Sentry opcional por DSN.
 - CI: testes Python, typecheck/build e Playwright.
 
-`backend/app.py` e uma fachada pequena. Dos 62 endpoints de blueprint, 42 ja
+`backend/app.py` e uma fachada pequena. Dos 62 endpoints de blueprint, 49 ja
 possuem handlers nos modulos de dominio, incluindo auth/auditoria, sistema,
 relatorios, contas/razoes/categorias, cobertura/cofre, conciliacoes e sugestoes.
-Os 20 endpoints grandes de importacao, transacoes e vinculos ainda dependem de
-`backend/core/application.py`. O bootstrap legado continua idempotente para
-compatibilidade; novos schemas passam obrigatoriamente por migrations versionadas.
+Leitura, confirmacao individual/em lote, rejeicao, desvinculo e recalculo de
+vinculos historicos tambem estao no dominio. Os 13 endpoints restantes de
+importacao e transacoes ainda dependem de `backend/core/application.py`. O
+bootstrap legado continua idempotente para compatibilidade; novos schemas
+passam obrigatoriamente por migrations versionadas.
 
 ## Funcionalidades existentes
 
@@ -84,8 +96,8 @@ compatibilidade; novos schemas passam obrigatoriamente por migrations versionada
 - Conciliacao manual e reversivel de entrada e saida do mesmo valor.
 - Relatorios de resumo, categorias e evolucao mensal.
 - Cofre de documentos, cobertura de arquivos e exclusao auditada.
-- Release `d4699b2` homologado em producao; o proprietario confirmou importacao
-  de extrato e vinculo em lote funcionando com dados reais.
+- Release `c853b14` homologado em producao; o proprietario confirmou importacao
+  de extrato, vinculo em lote e persistencia das classificacoes com dados reais.
 
 ## Regras de negocio vigentes
 
@@ -131,6 +143,8 @@ compatibilidade; novos schemas passam obrigatoriamente por migrations versionada
 
 ## Pendencias confirmadas
 
+- Medir e reduzir a lentidao causada pelo crescimento de transacoes e da base
+  historica, seguindo a prioridade Pareto registrada no roadmap.
 - Concluir a separacao real dos handlers/regras por dominio.
 - Manter migrations versionadas obrigatorias para qualquer novo schema.
 - Criar e homologar o Background Worker no Render; web e worker separados ja

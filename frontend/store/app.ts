@@ -19,6 +19,8 @@ interface AppState {
   pendingCount: number
   toasts: AppToast[]
   refreshKey: number
+  catalogRefreshKey: number
+  monthsRefreshKey: number
   setAccounts: (accounts: Account[]) => void
   setCategories: (categories: Category[]) => void
   setSubcategories: (subcategories: Subcategory[]) => void
@@ -27,6 +29,8 @@ interface AppState {
   addToast: (msg: string, type?: ToastType) => void
   removeToast: (id: string) => void
   bumpRefresh: () => void
+  bumpCatalogRefresh: () => void
+  bumpMonthsRefresh: () => void
 }
 
 export const useStore = create<AppState>((set) => ({
@@ -37,6 +41,8 @@ export const useStore = create<AppState>((set) => ({
   pendingCount: 0,
   toasts: [],
   refreshKey: 0,
+  catalogRefreshKey: 0,
+  monthsRefreshKey: 0,
   setAccounts: (accounts) => set({ accounts }),
   setCategories: (categories) => set({ categories }),
   setSubcategories: (subcategories) => set({ subcategories }),
@@ -51,4 +57,6 @@ export const useStore = create<AppState>((set) => ({
   },
   removeToast: (id) => set((state) => ({ toasts: state.toasts.filter((toast) => toast.id !== id) })),
   bumpRefresh: () => set((state) => ({ refreshKey: state.refreshKey + 1 })),
+  bumpCatalogRefresh: () => set((state) => ({ catalogRefreshKey: state.catalogRefreshKey + 1 })),
+  bumpMonthsRefresh: () => set((state) => ({ monthsRefreshKey: state.monthsRefreshKey + 1 })),
 }))

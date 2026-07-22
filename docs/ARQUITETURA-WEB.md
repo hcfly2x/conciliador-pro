@@ -23,10 +23,12 @@ frontend usa proxy local para `http://127.0.0.1:5061` quando
 
 - `backend/app.py`: fachada compativel com Flask/Gunicorn e imports legados.
 - `backend/core/application.py`: nucleo compartilhado ainda em separacao.
-- `backend/blueprints/`: 42 dos 62 handlers por dominio. Auth, auditoria, sistema,
+- `backend/blueprints/`: 49 dos 62 handlers por dominio. Auth, auditoria, sistema,
   health/reset, relatorios, contas/razoes/categorias, cobertura/cofre e
-  conciliacoes e sugestoes possuem implementacao propria. Os 20 handlers de
-  importacao, transacoes e vinculos continuam dependentes do nucleo.
+  conciliacoes e sugestoes possuem implementacao propria. Leitura, confirmacao
+  individual/em lote, rejeicao, desvinculo e recalculo historico tambem estao no
+  dominio de vinculos. Os 13 handlers de importacao e transacoes continuam no
+  nucleo.
 - `backend/parsers/engine.py`: parsing e validacao financeira.
 - `backend/db.py`: compatibilidade SQLite/PostgreSQL e pool.
 - `backend/auth.py`: usuarios, sessoes, rate limit e auditoria.

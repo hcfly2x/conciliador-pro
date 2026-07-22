@@ -65,6 +65,9 @@
 - Backend e publicado no Render; o commit publicado deve ser registrado a cada release.
 
 ## Cuidados De Trabalho
+- Lema de engenharia: aplicar o principio de Pareto — buscar 80% do resultado
+  com 20% do esforco. Priorizar impacto percebido, integridade financeira e
+  solucoes simples/reversiveis; nao fazer esforcos grandes em problemas pequenos.
 - Nao criar copias paralelas do repositorio.
 - Se precisar gerar entregaveis, criar uma subpasta dentro da pasta oficial.
 - Nao remover dados do banco sem pedido explicito.

@@ -13,14 +13,65 @@ Legenda:
 
 Nenhum commit ou push pode ser feito sem autorizacao explicita do proprietario.
 
+## Lema e criterio de prioridade
+
+**Principio de Pareto: buscar 80% do resultado com 20% do esforco.** Priorizar
+impacto percebido, integridade financeira e mudancas simples/reversiveis. Nao
+fazer esforcos grandes em problemas pequenos ou otimizacoes nao medidas.
+
 ## Marco atual
 
-- `origin/main`, Vercel e Render: commit `d4699b2`.
+- `origin/main`, Vercel e Render: commit `c853b14`.
 - Producao usa PostgreSQL e `WORKER_MODE=inline` no unico web service do Render.
-- Validacao: 94 testes Python locais na rodada atual, PostgreSQL descartavel no CI,
+- Validacao: 95 testes Python locais na rodada atual, PostgreSQL descartavel no CI,
   TypeScript, build e 8 jornadas Playwright aprovados.
 - O proprietario confirmou em producao importacao de extrato e vinculo em lote.
 - O health publicado confirma PostgreSQL, schema 2 e executor inline.
+
+## Prioridade Pareto: performance com dados acumulados
+
+Decisoes e ressalvas completas em
+`docs/DECISAO-CODE-REVIEW-PERFORMANCE-2026-07-22.md`.
+
+### P0 - medir e remover desperdicio evidente
+
+- [ ] Registrar linha de base do vinculo para 10, 50 e 200 itens, com tamanho
+  de `transactions` e `classification_history`.
+- [ ] Consultar `pg_stat_statements` e obter `EXPLAIN (ANALYZE, BUFFERS)` das
+  consultas que realmente dominarem o tempo.
+- [x] Remover a consulta redundante por `tx_id` do lote; usar as colunas ja
+  retornadas pela consulta inicial.
+- [x] Mover o parse da data para fora do loop de `find_identity_match` e testar
+  compatibilidade numerica antes da textual, preservando a alternativa de total
+  parcelado.
+- [x] Separar `bumpRefresh` da recarga de contas, categorias, subcategorias e
+  meses; mutacoes operacionais devem atualizar somente estado e totais afetados.
+
+### P1 - atacar o gargalo dominante com evidencia
+
+- [ ] Pre-filtrar no SQL um superconjunto seguro dos candidatos comuns e
+  parcelados, evitando carregar todo o historico por bloco.
+- [ ] Validar com EXPLAIN o indice `classification_history(type, date, amount)`
+  antes de cria-lo por migration.
+- [ ] Comparar resultados e leave-one-out antes/depois para provar ausencia de
+  falsos negativos.
+- [ ] Avaliar indice parcial de transacoes vinculadas e contagens sem joins
+  somente se `/history` permanecer entre as consultas mais caras.
+
+### P2 - isolamento operacional
+
+- [ ] Criar e homologar Background Worker no Render apos aprovacao do custo,
+  com cutover atomico para impedir execucao simultanea inline + worker.
+
+### Deliberadamente nao priorizado
+
+- [>] Cache por processo: somente se o pre-filtro SQL for insuficiente e com
+  versao monotona explicita; `COUNT(*)`, `rowid` ou `ctid` nao sao carimbo aceito.
+- [>] `pg_trgm`/GIN: somente se busca textual aparecer nas metricas.
+- [>] Coluna `seed_sheet`: somente se o filtro de planilha provar uso e custo
+  relevantes.
+- [>] Bucket de valores em memoria e nova biblioteca de cache frontend: evitar
+  enquanto as solucoes simples forem suficientes.
 
 ## 1. Produto e integridade financeira
 
@@ -87,11 +138,12 @@ Nenhum commit ou push pode ser feito sem autorizacao explicita do proprietario.
 ## 5. Arquitetura do backend
 
 - [x] Reforcar testes do tradutor SQL e usar schema real nos workflows.
-- [~] `app.py` reduzido e 42 de 62 handlers movidos para blueprints: auth,
+- [~] `app.py` reduzido e 49 de 62 handlers movidos para blueprints: auth,
   sistema, relatorios, contas/razoes/categorias, cobertura/cofre, conciliacoes e
-  sugestoes.
-- [ ] Mover os 20 handlers grandes restantes: importacao, transacoes e vinculos
-  ainda permanecem em `core/application.py`.
+  sugestoes; todo o fluxo HTTP de vinculos historicos, inclusive confirmacao
+  individual/em lote, ja pertence ao dominio de vinculos.
+- [ ] Mover os 13 handlers restantes de importacao e transacoes que ainda
+  permanecem no nucleo; temporariamente abaixo do P0/P1 de performance.
 - [x] Criar worker persistente para importacoes, seed, sugestoes e recalculo.
 - [x] Proteger deploys sobrepostos com lease PostgreSQL exclusivo; processo web
   nao recupera nem altera jobs em execucao.
@@ -124,7 +176,7 @@ Nenhum commit ou push pode ser feito sem autorizacao explicita do proprietario.
 - [x] Sentry opcional no backend e frontend, desligado sem DSN.
 - [ ] Confirmar erro controlado no Sentry de staging.
 - [ ] Confirmar formato JSON e correlacao de logs no ambiente hospedado.
-- [x] Confirmar commits atuais: Vercel e Render em `d4699b2`.
+- [x] Confirmar commits atuais: Vercel e Render em `c853b14`.
 - [~] Fazer smoke test em Vercel, Render e Supabase: frontend, health PostgreSQL,
   CSP, CORS, 401, importacao real e vinculo em lote aprovados; matriz completa
   de perfis e auditoria ainda aguarda homologacao dirigida.
@@ -138,7 +190,7 @@ Nenhum commit ou push pode ser feito sem autorizacao explicita do proprietario.
   oferece backup gerenciado; ainda falta automatizar a rotina e testar a
   restauracao em PostgreSQL descartavel.
 - [x] Registrar commit e versao do schema em cada release persistente; o health
-  de `d4699b2` confirmou publicamente schema 2.
+  de `c853b14` confirmou publicamente schema 2.
 - [ ] Restaurar um backup em ambiente de teste.
 - [>] Avaliar `NUMERIC` depois da estabilizacao e testar arredondamentos.
 - [>] Adicionar foreign keys somente depois de auditar dados existentes.

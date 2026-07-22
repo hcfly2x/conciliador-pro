@@ -41,7 +41,7 @@ function visibleFlags(flags?: string) {
 }
 
 export default function ArquivosPage() {
-  const { addToast, bumpRefresh } = useStore()
+  const { addToast, bumpRefresh, bumpMonthsRefresh } = useStore()
   const inputRef = useRef<HTMLInputElement | null>(null)
   const recoveryStartedRef = useRef(false)
   const [coverage, setCoverage] = useState<CoverageResponse | null>(null)
@@ -77,6 +77,7 @@ export default function ArquivosPage() {
         if (job.status === 'completed' && job.result) {
           addToast(`${job.result.total_inserted} lancamentos importados`)
           bumpRefresh()
+          bumpMonthsRefresh()
           return load()
         }
         addToast(job.error || 'Erro ao importar arquivo', 'err')
@@ -87,7 +88,7 @@ export default function ArquivosPage() {
         setBusy(false)
         setImportJob(null)
       })
-  }, [addToast, bumpRefresh, load])
+  }, [addToast, bumpMonthsRefresh, bumpRefresh, load])
 
   const years = useMemo(() => {
     return (coverage?.available_years ?? [2023, 2024, 2025, 2026])
@@ -171,6 +172,7 @@ export default function ArquivosPage() {
       setPreview(null)
       setImportJob(null)
       bumpRefresh()
+      bumpMonthsRefresh()
       await load()
       if (selected) await selectCell({ id: selected.accountId, name: selected.accountName } as CoverageAccount, selected.yearMonth)
     } catch (err: any) {
@@ -194,6 +196,7 @@ export default function ArquivosPage() {
       const txMsg = result.deleted_transactions > 0 ? ` e ${result.deleted_transactions} lancamentos` : ''
       addToast(`Arquivo removido${txMsg}`)
       bumpRefresh()
+      if (result.deleted_transactions > 0) bumpMonthsRefresh()
       await load()
       await selectCell({ id: selected.accountId, name: selected.accountName } as CoverageAccount, selected.yearMonth)
     } catch (err: any) {

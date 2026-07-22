@@ -420,6 +420,35 @@ class WorkflowIntegrationTests(unittest.TestCase):
             (1, 1),
         )
 
+    def test_batch_uses_state_from_initial_query_without_per_item_select(self) -> None:
+        statements: list[str] = []
+        original_db_connect = app.db_connect
+
+        def traced_db_connect(*args, **kwargs):
+            conn = original_db_connect(*args, **kwargs)
+            conn.set_trace_callback(statements.append)
+            return conn
+
+        app.db_connect = traced_db_connect
+        try:
+            response = self.client.post(
+                "/api/v1/transactions/history-links/batch",
+                json={"ids": ["tx-1", "tx-2"]},
+            )
+        finally:
+            app.db_connect = original_db_connect
+
+        self.assertEqual(response.status_code, 200)
+        normalized = [" ".join(statement.upper().split()) for statement in statements]
+        self.assertFalse(
+            any(
+                statement.startswith(
+                    "SELECT HISTORY_MATCH_CONFIRMED,LOCKED FROM TRANSACTIONS WHERE ID="
+                )
+                for statement in normalized
+            )
+        )
+
     def test_batch_requires_exact_date_amount_and_description_at_least_75(
         self,
     ) -> None:

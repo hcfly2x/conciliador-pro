@@ -27,7 +27,7 @@ function visibleFlags(flags?: string) {
 const ACTIVE_IMPORT_JOB_KEY = 'conciliador_active_import_job'
 
 export default function ImportPage() {
-  const { accounts, addToast, bumpRefresh } = useStore()
+  const { accounts, addToast, bumpRefresh, bumpMonthsRefresh } = useStore()
   const [drag, setDrag] = useState(false)
   const [file, setFile] = useState<File | null>(null)
   const [accountId, setAccountId] = useState('')
@@ -85,11 +85,12 @@ export default function ImportPage() {
         ? 'Extrato sem movimentações registrado no cofre'
         : `${importJob.result.total_inserted} lançamentos importados com sucesso`)
       bumpRefresh()
+      bumpMonthsRefresh()
     } else {
       setError(importJob.error || 'Falha ao confirmar importação.')
       addToast('Erro ao confirmar importação', 'err')
     }
-  }, [addToast, bumpRefresh, importJob])
+  }, [addToast, bumpMonthsRefresh, bumpRefresh, importJob])
 
   function resetAll() {
     setFile(null)

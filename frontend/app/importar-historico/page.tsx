@@ -10,7 +10,7 @@ export default function HistoricoPage() {
   const [error, setError] = useState('')
   const [importJob, setImportJob] = useState<SeedImportJob | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
-  const { addToast } = useStore()
+  const { addToast, bumpRefresh, bumpCatalogRefresh } = useStore()
 
   useEffect(() => {
     let cancelled = false
@@ -33,6 +33,8 @@ export default function HistoricoPage() {
         if (current.status === 'completed' && current.result) {
           setResult(current.result)
           addToast('Planilha base importada com sucesso')
+          bumpCatalogRefresh()
+          bumpRefresh()
         } else if (current.status === 'failed') {
           setError(current.error || 'Erro ao importar planilha base')
           addToast('Falha na importacao da base', 'err')
@@ -45,7 +47,7 @@ export default function HistoricoPage() {
     }
     timer = setTimeout(poll, 500)
     return () => { cancelled = true; if (timer) clearTimeout(timer) }
-  }, [importJob?.id, importJob?.status, addToast])
+  }, [importJob?.id, importJob?.status, addToast, bumpCatalogRefresh, bumpRefresh])
 
   async function handleSend() {
     if (!file) return
