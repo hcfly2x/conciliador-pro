@@ -23,10 +23,10 @@ frontend usa proxy local para `http://127.0.0.1:5061` quando
 
 - `backend/app.py`: fachada compativel com Flask/Gunicorn e imports legados.
 - `backend/core/application.py`: nucleo compartilhado ainda em separacao.
-- `backend/blueprints/`: 34 handlers por dominio. Auth, auditoria, sistema,
+- `backend/blueprints/`: 42 dos 62 handlers por dominio. Auth, auditoria, sistema,
   health/reset, relatorios, contas/razoes/categorias, cobertura/cofre e
-  conciliacoes possuem implementacao propria. Importacao, transacoes, vinculos e
-  sugestoes continuam como os dominios grandes dependentes do nucleo.
+  conciliacoes e sugestoes possuem implementacao propria. Os 20 handlers de
+  importacao, transacoes e vinculos continuam dependentes do nucleo.
 - `backend/parsers/engine.py`: parsing e validacao financeira.
 - `backend/db.py`: compatibilidade SQLite/PostgreSQL e pool.
 - `backend/auth.py`: usuarios, sessoes, rate limit e auditoria.
@@ -40,12 +40,13 @@ adicionadas apenas como `ALTER TABLE` solto no nucleo.
 
 ## Jobs
 
-Ambiente hospedado usa `WORKER_MODE=process` e um processo com
-`WORKER_PROCESS=1`. O web apenas enfileira. O worker reivindica atomicamente um
-job `queued`, muda para `claimed` e executa. Reiniciar o web nao deve alterar o
-job. Em PostgreSQL, um advisory lock exclusivo impede dois workers de recuperar
-ou consumir a fila durante a sobreposicao de processos em um deploy. Somente o
-worker que obtem esse lease recupera jobs interrompidos; o web nunca os refila.
+A arquitetura alvo usa `WORKER_MODE=process` e um processo com
+`WORKER_PROCESS=1`: o web apenas enfileira e o worker reivindica atomicamente um
+job `queued`, muda para `claimed` e executa. A producao atual possui somente o
+web service do Render e, por isso, usa `WORKER_MODE=inline`. Em PostgreSQL, um
+advisory lock exclusivo impede dois workers de recuperar ou consumir a fila
+durante a sobreposicao de processos em um deploy. Somente o worker que obtem
+esse lease recupera jobs interrompidos; o web nunca os refila.
 
 SQLite local usa `WORKER_MODE=inline` por padrao. Um teste multi-processo valida
 a persistencia da fila e reinicio do web; o CI repete o cenario em PostgreSQL 16.
@@ -75,6 +76,7 @@ avaliar `bytea` ou object storage. Nao migrar antes da medicao.
 ## Dividas conhecidas
 
 - Terminar a separacao dos dominios grandes do nucleo.
-- Homologar migrations e worker no PostgreSQL da nova rodada.
+- Ativar e homologar o worker separado no Render; a fila ja foi homologada com
+  web e worker separados no CI/PostgreSQL.
 - Avaliar `NUMERIC` e foreign keys depois de auditoria dos dados.
 - Remover compatibilidade de token legado apos 30 dias.

@@ -420,7 +420,7 @@ class WorkflowIntegrationTests(unittest.TestCase):
             (1, 1),
         )
 
-    def test_batch_only_prepares_exact_date_amount_and_description_above_95(
+    def test_batch_requires_exact_date_amount_and_description_at_least_75(
         self,
     ) -> None:
         self.conn.executemany(
@@ -497,6 +497,27 @@ class WorkflowIntegrationTests(unittest.TestCase):
                 ),
             ],
         )
+        self.conn.execute(
+            "INSERT INTO classification_history(id,source_file_id,account_id,date,description,description_norm,amount,type,category_id,subcategory_id) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (
+                "hist-description-75",
+                "seed:sheet:saidas",
+                "acc",
+                "2026-03-10",
+                "MERCADO CENTRAL",
+                "mercado central",
+                50,
+                "expense",
+                "cat-expense",
+                "sub-market",
+            ),
+        )
+        threshold_similarity = (
+            app.description_similarity("MERCADO CENTRAL LOJA", "MERCADO CENTRAL")
+            * 100
+        )
+        self.assertGreaterEqual(threshold_similarity, 75.0)
+        self.assertLess(threshold_similarity, 95.0)
         # As tolerancias gerais continuam encontrando estes candidatos; a regra
         # exata deve ser aplicada somente pela operacao em lote.
         near_candidate = app.find_identity_match(
@@ -526,11 +547,11 @@ class WorkflowIntegrationTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         payload = response.get_json()
-        self.assertEqual(payload["matched_ids"], ["tx-link"])
+        self.assertEqual(payload["matched_ids"], ["tx-link", "tx-desc-near"])
         self.assertEqual(payload["failed"], 0)
         self.assertEqual(
             set(payload["manual_review_ids"]),
-            {"tx-date-near", "tx-amount-near", "tx-desc-near"},
+            {"tx-date-near", "tx-amount-near"},
         )
         self.assertEqual(payload["without_match_ids"], ["tx-no-candidate"])
         self.assertEqual(
@@ -541,15 +562,21 @@ class WorkflowIntegrationTests(unittest.TestCase):
         )
         manual_rows = self.conn.execute(
             "SELECT id,history_match_id,history_match_confirmed,locked FROM transactions "
-            "WHERE id IN ('tx-date-near','tx-amount-near','tx-desc-near') ORDER BY id"
+            "WHERE id IN ('tx-date-near','tx-amount-near') ORDER BY id"
         ).fetchall()
         self.assertEqual(
             manual_rows,
             [
                 ("tx-amount-near", "hist-1", 0, 0),
                 ("tx-date-near", "hist-1", 0, 0),
-                ("tx-desc-near", "hist-1", 0, 0),
             ],
+        )
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT history_match_id,history_match_confirmed,locked FROM transactions "
+                "WHERE id='tx-desc-near'"
+            ).fetchone(),
+            ("hist-description-75", 1, 1),
         )
 
     def test_batch_treats_equivalent_installment_descriptions_as_exact(self) -> None:

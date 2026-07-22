@@ -5,6 +5,19 @@ export interface HistoryLinkBatchLog {
   message: string
 }
 
+export interface HistoryLinkBatchProgress {
+  total: number
+  completed: number
+  currentBlock: number
+  blockCount: number
+  matched: number
+  manualReview: number
+  withoutMatch: number
+  skipped: number
+  failed: number
+  status: 'running' | 'completed' | 'error'
+}
+
 const CHUNK_SIZE = 10
 
 function unique(values: string[]): string[] {
@@ -49,12 +62,31 @@ function mergeResult(target: HistoryLinkBatchResult, part: HistoryLinkBatchResul
 export async function runHistoricalLinkBatch(
   ids: string[],
   onLog: (entry: HistoryLinkBatchLog) => void,
+  onProgress: (progress: HistoryLinkBatchProgress) => void,
 ): Promise<HistoryLinkBatchResult> {
   const result = emptyResult(ids.length)
   const chunkCount = Math.ceil(ids.length / CHUNK_SIZE)
   const localTime = () => new Date().toLocaleTimeString('pt-BR', { hour12: false })
   const operationIds: string[] = []
 
+  const reportProgress = (
+    completed: number,
+    currentBlock: number,
+    status: HistoryLinkBatchProgress['status'] = 'running',
+  ) => onProgress({
+    total: ids.length,
+    completed,
+    currentBlock,
+    blockCount: chunkCount,
+    matched: result.matched,
+    manualReview: result.manual_review,
+    withoutMatch: result.without_match,
+    skipped: result.skipped,
+    failed: result.failed,
+    status,
+  })
+
+  reportProgress(0, 1)
   onLog({
     time: localTime(),
     message: `${ids.length} lancamento(s) divididos em ${chunkCount} bloco(s) de ate ${CHUNK_SIZE}`,
@@ -63,18 +95,11 @@ export async function runHistoricalLinkBatch(
   for (let index = 0; index < chunkCount; index += 1) {
     const chunk = ids.slice(index * CHUNK_SIZE, (index + 1) * CHUNK_SIZE)
     const completedBefore = index * CHUNK_SIZE
-    const blockStartedAt = Date.now()
     onLog({
       time: localTime(),
       message: `Bloco ${index + 1}/${chunkCount} enviado: itens ${completedBefore + 1}-${completedBefore + chunk.length}; ${completedBefore}/${ids.length} concluidos`,
     })
-    const heartbeat = window.setInterval(() => {
-      const elapsed = Math.round((Date.now() - blockStartedAt) / 1000)
-      onLog({
-        time: localTime(),
-        message: `Bloco ${index + 1}/${chunkCount} em processamento ha ${elapsed}s; ${completedBefore}/${ids.length} concluidos`,
-      })
-    }, 5000)
+    reportProgress(completedBefore, index + 1)
 
     let part: HistoryLinkBatchResult
     try {
@@ -85,17 +110,17 @@ export async function runHistoricalLinkBatch(
         time: localTime(),
         message: `Bloco ${index + 1}/${chunkCount} sem resposta: ${detail}. ${completedBefore}/${ids.length} estavam concluidos antes deste bloco`,
       })
+      reportProgress(completedBefore, index + 1, 'error')
       throw error
-    } finally {
-      window.clearInterval(heartbeat)
     }
 
     mergeResult(result, part)
     if (part.operation_id) operationIds.push(part.operation_id)
     for (const entry of part.logs || []) {
-      onLog({ time: entry.time, message: `[bloco ${index + 1}/${chunkCount}] ${entry.message}` })
+      onLog({ time: localTime(), message: `[bloco ${index + 1}/${chunkCount}] ${entry.message}` })
     }
     const completed = Math.min((index + 1) * CHUNK_SIZE, ids.length)
+    reportProgress(completed, index + 1)
     onLog({
       time: localTime(),
       message: `Progresso real: ${completed}/${ids.length} analisados; ${result.matched} confirmados; ${result.manual_review} para revisao; ${result.without_match} sem vinculo; ${result.failed} falhas`,
@@ -107,5 +132,6 @@ export async function runHistoricalLinkBatch(
     time: localTime(),
     message: `Lote completo: ${ids.length}/${ids.length} analisados em ${chunkCount} bloco(s)`,
   })
+  reportProgress(ids.length, chunkCount, 'completed')
   return result
 }

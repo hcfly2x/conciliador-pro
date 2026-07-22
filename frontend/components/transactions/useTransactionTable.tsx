@@ -5,7 +5,7 @@ import { useStore } from '@/store/app'
 import { getTransactions, bulkClassify, classifyTransaction, getTransactionSuggestionsBatch, getLedgers, includeTransactionsInLedger, excludeTransactionsFromLedger, unlockTransaction, isAdmin, reviewHistoricalMatch, type TransactionSuggestion } from '@/lib/api'
 import type { Ledger, Transaction } from '@/types'
 import { buildTransactionFilters, hasPendingDirectHistoryLink, type TransactionTableProps } from './transactionTableUtils'
-import { runHistoricalLinkBatch } from './historyLinkBatch'
+import { runHistoricalLinkBatch, type HistoryLinkBatchProgress } from './historyLinkBatch'
 
 export type Props = TransactionTableProps
 
@@ -52,6 +52,7 @@ export function useTransactionTable({
   const [bulkLedgerId, setBulkLedgerId] = useState('')
   const [linkingBatch, setLinkingBatch] = useState(false)
   const [linkBatchLogs, setLinkBatchLogs] = useState<Array<{ time: string; message: string }>>([])
+  const [linkBatchProgress, setLinkBatchProgress] = useState<HistoryLinkBatchProgress | null>(null)
   const [rowDraft, setRowDraft] = useState<Record<string, { category_id: string; subcategory_id: string; notes: string }>>({})
   const [savingRow, setSavingRow] = useState<Record<string, boolean>>({})
   const [rowSuggestions, setRowSuggestions] = useState<Record<string, TransactionSuggestion[]>>({})
@@ -346,14 +347,15 @@ export function useTransactionTable({
     setLinkBatchLogs([
       { time: localTime(), message: `Iniciando vinculo em lote para ${selectedIds.length} lancamento(s)` },
     ])
+    setLinkBatchProgress(null)
     try {
       const result = await runHistoricalLinkBatch(selectedIds, entry => {
         setLinkBatchLogs(current => [...current.slice(-119), entry])
-      })
+      }, setLinkBatchProgress)
       if (!result.matched && !result.manual_review) {
         const failure = result.failed ? `; ${result.failed} falharam na confirmacao` : ''
         const skipped = result.skipped ? `; ${result.skipped} ja vinculados, protegidos ou indisponiveis` : ''
-        addToast(`Nenhum vinculo atende ao lote: descricao >95%, mesma data e valor exato (${result.without_match} sem correspondencia${skipped}${failure})`, 'err')
+        addToast(`Nenhum vinculo atende ao lote: descricao >=75%, mesma data e valor exato (${result.without_match} sem correspondencia${skipped}${failure})`, 'err')
         return
       }
       addToast(`${result.matched} vinculo(s) confirmado(s) em lote${result.manual_review ? `; ${result.manual_review} aguardando revisao manual` : ''}${result.without_match ? `; ${result.without_match} sem candidato` : ''}${result.skipped ? `; ${result.skipped} ignorado(s)` : ''}`)
@@ -399,5 +401,5 @@ export function useTransactionTable({
     }
   }
 
-  return { months, accounts, categories, subcategories, txs, total, page, totalPages, summary, loading, linkReviewId, batchReviewIds, reviewingLink, search, statusFilter, typeFilter, monthFilter, accountFilter, categoryFilter, subcategoryFilter, installmentFilter, dateFrom, dateTo, tagMode, tagFilters, sortBy, sortOrder, pageSize, ledgers, selected, bulkCatId, bulkSubId, bulkLedgerId, linkingBatch, linkBatchLogs, rowDraft, savingRow, rowSuggestions, rowSuggestionStates, suggestionsLoading, suggestionErrors, defaultLedgerId, moveTargetLedgerId, moveTargetLedgerName, setSearch, setMonthFilter, setTypeFilter, setAccountFilter, setCategoryFilter, setSubcategoryFilter, setInstallmentFilter, setPageSize, setDateFrom, setDateTo, setTagMode, setTagFilters, setBulkCatId, setBulkSubId, setBulkLedgerId, setLinkBatchLogs, setLinkReviewId, setRowDraft, saveRow, patchRowDraft, handleHistoryLink, load, toggleSort, SortIcon, toggleOne, toggleAll, handleBulkClassify, toggleTagFilter, handlePrepareHistoricalLinks, handleUnlock, handleMoveToLedger }
+  return { months, accounts, categories, subcategories, txs, total, page, totalPages, summary, loading, linkReviewId, batchReviewIds, reviewingLink, search, statusFilter, typeFilter, monthFilter, accountFilter, categoryFilter, subcategoryFilter, installmentFilter, dateFrom, dateTo, tagMode, tagFilters, sortBy, sortOrder, pageSize, ledgers, selected, bulkCatId, bulkSubId, bulkLedgerId, linkingBatch, linkBatchLogs, linkBatchProgress, rowDraft, savingRow, rowSuggestions, rowSuggestionStates, suggestionsLoading, suggestionErrors, defaultLedgerId, moveTargetLedgerId, moveTargetLedgerName, setSearch, setMonthFilter, setTypeFilter, setAccountFilter, setCategoryFilter, setSubcategoryFilter, setInstallmentFilter, setPageSize, setDateFrom, setDateTo, setTagMode, setTagFilters, setBulkCatId, setBulkSubId, setBulkLedgerId, setLinkBatchLogs, setLinkReviewId, setRowDraft, saveRow, patchRowDraft, handleHistoryLink, load, toggleSort, SortIcon, toggleOne, toggleAll, handleBulkClassify, toggleTagFilter, handlePrepareHistoricalLinks, handleUnlock, handleMoveToLedger }
 }

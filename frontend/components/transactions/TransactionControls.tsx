@@ -13,7 +13,10 @@ const TAG_OPTIONS = [
 ]
 
 export function TransactionControls({ model }: { model: ReturnType<typeof useTransactionTable> }) {
-  const { total, summary, search, setSearch, months, monthFilter, setMonthFilter, typeFilter, setTypeFilter, accounts, accountFilter, setAccountFilter, categories, categoryFilter, setCategoryFilter, subcategories, subcategoryFilter, setSubcategoryFilter, installmentFilter, setInstallmentFilter, pageSize, setPageSize, load, page, dateFrom, setDateFrom, dateTo, setDateTo, tagMode, setTagMode, tagFilters, setTagFilters, selected, bulkCatId, setBulkCatId, bulkSubId, setBulkSubId, handleBulkClassify, linkingBatch, handlePrepareHistoricalLinks, moveTargetLedgerId, handleMoveToLedger, moveTargetLedgerName, bulkLedgerId, setBulkLedgerId, defaultLedgerId, ledgers, linkBatchLogs, setLinkBatchLogs, batchReviewIds, linkReviewId, setLinkReviewId, toggleTagFilter } = model
+  const { total, summary, search, setSearch, months, monthFilter, setMonthFilter, typeFilter, setTypeFilter, accounts, accountFilter, setAccountFilter, categories, categoryFilter, setCategoryFilter, subcategories, subcategoryFilter, setSubcategoryFilter, installmentFilter, setInstallmentFilter, pageSize, setPageSize, load, page, dateFrom, setDateFrom, dateTo, setDateTo, tagMode, setTagMode, tagFilters, setTagFilters, selected, bulkCatId, setBulkCatId, bulkSubId, setBulkSubId, handleBulkClassify, linkingBatch, handlePrepareHistoricalLinks, moveTargetLedgerId, handleMoveToLedger, moveTargetLedgerName, bulkLedgerId, setBulkLedgerId, defaultLedgerId, ledgers, linkBatchLogs, linkBatchProgress, setLinkBatchLogs, batchReviewIds, linkReviewId, setLinkReviewId, toggleTagFilter } = model
+  const progressPercent = linkBatchProgress?.total
+    ? Math.round((linkBatchProgress.completed / linkBatchProgress.total) * 100)
+    : 0
   return (
     <>
       <div className="grid grid-cols-4 gap-3 mb-5">
@@ -171,14 +174,48 @@ export function TransactionControls({ model }: { model: ReturnType<typeof useTra
       )}
 
       {linkBatchLogs.length > 0 && (
-        <div className="mb-3 rounded-lg px-4 py-3" style={{ background: '#0d0f14', border: '1px solid rgba(96,165,250,0.22)' }}>
+        <div data-testid="history-link-batch-progress" className="mb-3 rounded-lg px-4 py-3" style={{ background: '#0d0f14', border: '1px solid rgba(96,165,250,0.22)' }}>
           <div className="mb-2 flex items-center justify-between">
             <span className="text-xs font-semibold text-[#93c5fd]">Progresso do vinculo em lote</span>
             {!linkingBatch && <button type="button" onClick={() => setLinkBatchLogs([])} className="text-[#5a5f73] hover:text-[#e8eaf0]" title="Fechar logs"><X size={14} /></button>}
           </div>
-          <div className="max-h-32 overflow-auto font-mono text-[11px] text-[#8b90a4]">
-            {[...linkBatchLogs].reverse().map((entry, index) => <div key={`${entry.time}-${index}`}><span className="text-[#5a5f73]">{entry.time}</span> · {entry.message}</div>)}
-          </div>
+          {linkBatchProgress && (
+            <>
+              <div className="mb-2 flex items-center justify-between text-xs">
+                <span className="font-medium text-[#e8eaf0]">
+                  {linkBatchProgress.status === 'completed'
+                    ? 'Processamento concluido'
+                    : linkBatchProgress.status === 'error'
+                      ? 'Processamento interrompido'
+                      : `Processando bloco ${linkBatchProgress.currentBlock} de ${linkBatchProgress.blockCount}`}
+                </span>
+                <strong className="text-[#93c5fd]">{linkBatchProgress.completed}/{linkBatchProgress.total} · {progressPercent}%</strong>
+              </div>
+              <div role="progressbar" aria-label="Progresso do vinculo" aria-valuemin={0} aria-valuemax={100} aria-valuenow={progressPercent} className="h-2 overflow-hidden rounded-full bg-white/[.06]">
+                <div className="h-full rounded-full bg-[#60a5fa] transition-all duration-300" style={{ width: `${progressPercent}%` }} />
+              </div>
+              <div className="mt-3 grid grid-cols-2 gap-2 text-center sm:grid-cols-5">
+                {[
+                  ['Confirmados', linkBatchProgress.matched, '#3ecf8e'],
+                  ['Para revisar', linkBatchProgress.manualReview, '#fbbf24'],
+                  ['Sem vinculo', linkBatchProgress.withoutMatch, '#8b90a4'],
+                  ['Ignorados', linkBatchProgress.skipped, '#8b90a4'],
+                  ['Falhas', linkBatchProgress.failed, '#f87171'],
+                ].map(([label, value, color]) => (
+                  <div key={String(label)} className="rounded-md bg-white/[.025] px-2 py-2">
+                    <div className="text-lg font-bold" style={{ color: String(color) }}>{value}</div>
+                    <div className="text-[10px] uppercase tracking-wide text-[#5a5f73]">{label}</div>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+          <details className="mt-3 text-[11px] text-[#8b90a4]">
+            <summary className="cursor-pointer select-none text-[#5a5f73] hover:text-[#8b90a4]">Ver detalhes tecnicos ({linkBatchLogs.length})</summary>
+            <div className="mt-2 max-h-32 overflow-auto rounded bg-black/15 p-2 font-mono">
+              {linkBatchLogs.map((entry, index) => <div key={`${entry.time}-${index}`}><span className="text-[#5a5f73]">{entry.time}</span> · {entry.message}</div>)}
+            </div>
+          </details>
           {batchReviewIds.length > 0 && !linkReviewId && (
             <button type="button" onClick={() => setLinkReviewId(batchReviewIds[0])} className="mt-3 h-8 rounded-md px-3 text-xs font-semibold" style={{ background: 'rgba(96,165,250,0.18)', border: '1px solid rgba(96,165,250,0.35)', color: '#93c5fd' }}>
               Continuar revisao manual ({batchReviewIds.length})

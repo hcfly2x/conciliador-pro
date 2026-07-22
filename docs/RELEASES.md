@@ -6,6 +6,7 @@ schema e ao modo operacional que preservam os dados de producao.
 | Data | Commit | Schema | Backend | Executor de jobs | Evidencia |
 |---|---|---:|---|---|---|
 | 22/07/2026 | `e73adfd` | 2 (runner; confirmacao publica pendente) | Render/PostgreSQL | `inline` no web | CI verde, health 200, 40 requests concorrentes, importacao e vinculo em lote confirmados pelo proprietario |
+| 22/07/2026 | `d4699b2` | 2 (confirmado pelo health) | Render/PostgreSQL | `inline` no web | CI completo verde, Vercel 200, health 200 e processamento de vinculos em blocos de 10 |
 
 Antes da proxima migration, registrar aqui a evidencia de backup verificavel e
 da restauracao homologada. O Supabase Free atual nao fornece essa garantia.

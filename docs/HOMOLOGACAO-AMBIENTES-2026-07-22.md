@@ -9,9 +9,9 @@ confirmados pelo proprietario no uso normal do produto.
 - 94 testes Python locais aprovados na rodada atual, incluindo migrations,
   seguranca, tradutor SQL, propriedade do pool e worker em processo separado.
 - TypeScript e build Next.js aprovados.
-- 6 jornadas Playwright aprovadas contra `next build` + `next start`: CSP,
-  autenticacao admin, importacao/classificacao, conciliacao/desfazer, cofre e
-  RBAC/auditoria.
+- 8 jornadas Playwright aprovadas contra `next build` + `next start`: CSP,
+  autenticacao admin, importacao/classificacao, conciliacao/desfazer, cofre,
+  RBAC/auditoria, vinculo em lote e ciclo completo de revisao de vinculos.
 - Auditoria de 8 fixtures: zero erros e cinco avisos esperados.
 - No SQLite, eventos auxiliares de progresso produzidos durante a transacao
   financeira sao acumulados e persistidos ao fim, evitando falsos avisos de lock.
@@ -39,10 +39,10 @@ confirmados pelo proprietario no uso normal do produto.
 
 ## Versoes observadas
 
-- Deploy Vercel/GitHub: `e73adfd`.
-- Commit informado pelo health do Render: `e73adfd5c874`.
-- Migration mais recente no codigo: versao 2; confirmacao pelo health ampliado
-  esta preparada na rodada local seguinte.
+- Deploy Vercel/GitHub: `d4699b2`.
+- Commit informado pelo health do Render: `d4699b287c88`.
+- Migration informada pelo health publicado: versao 2; executor de jobs:
+  `WORKER_MODE=inline` no processo web.
 
 ## Bloqueios externos
 

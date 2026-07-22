@@ -15,13 +15,12 @@ Nenhum commit ou push pode ser feito sem autorizacao explicita do proprietario.
 
 ## Marco atual
 
-- `origin/main`, Vercel e Render: commit `e73adfd`.
+- `origin/main`, Vercel e Render: commit `d4699b2`.
 - Producao usa PostgreSQL e `WORKER_MODE=inline` no unico web service do Render.
 - Validacao: 94 testes Python locais na rodada atual, PostgreSQL descartavel no CI,
-  TypeScript, build e 6 jornadas Playwright aprovados.
+  TypeScript, build e 8 jornadas Playwright aprovados.
 - O proprietario confirmou em producao importacao de extrato e vinculo em lote.
-- A rodada local seguinte adiciona visibilidade de schema e executor de jobs ao
-  health; permanece sem commit/push ate autorizacao explicita.
+- O health publicado confirma PostgreSQL, schema 2 e executor inline.
 
 ## 1. Produto e integridade financeira
 
@@ -56,10 +55,12 @@ Nenhum commit ou push pode ser feito sem autorizacao explicita do proprietario.
 - [x] Exibir comparacao lado a lado e justificativas de data, valor e descricao.
 - [x] Persistir confirmacao, rejeicao, desvinculo e auditoria.
 - [x] Preservar a conta do documento ao confirmar o vinculo.
-- [x] Confirmar lotes estritos sem recarregar a pagina a cada item.
+- [x] Confirmar lotes sem recarregar a pagina a cada item, exigindo descricao
+  com similaridade minima de 75%, mesma data e valor exato.
 - [x] Abrir candidatos recusados/ambiguos em revisao manual.
 - [x] Tratar total parcelado com tolerancia de R$ 1 e similaridade minima de 50%.
-- [x] Processar lotes sucessivos de 50 com logs visiveis.
+- [x] Processar selecoes grandes em blocos sequenciais de 10, com progresso real
+  e totais acumulados; uma selecao de 50 resulta em cinco blocos.
 - [x] Usar historico e transacoes classificadas como evidencias de sugestao.
 - [x] Persistir Top 3, justificativas e estado do job.
 - [x] Avaliacao retrospectiva leave-one-out disponivel.
@@ -67,7 +68,7 @@ Nenhum commit ou push pode ser feito sem autorizacao explicita do proprietario.
   aprovar ativacao no ranking.
 - [ ] Medir falsos positivos do vinculo com amostra real.
 - [ ] Separar similaridade, confianca e probabilidade calibrada.
-- [ ] Cobrir confirmar/rejeitar/desvincular/recalcular em Playwright.
+- [x] Cobrir confirmar/rejeitar/desvincular/recalcular em Playwright.
 
 ## 4. Seguranca e confiabilidade
 
@@ -86,10 +87,11 @@ Nenhum commit ou push pode ser feito sem autorizacao explicita do proprietario.
 ## 5. Arquitetura do backend
 
 - [x] Reforcar testes do tradutor SQL e usar schema real nos workflows.
-- [~] `app.py` reduzido e 34 de 62 handlers movidos para blueprints: auth,
-  sistema, relatorios, contas/razoes/categorias, cobertura/cofre e conciliacoes.
-- [ ] Mover os 28 handlers grandes restantes: importacao, transacoes, vinculos e
-  sugestoes ainda permanecem em `core/application.py`.
+- [~] `app.py` reduzido e 42 de 62 handlers movidos para blueprints: auth,
+  sistema, relatorios, contas/razoes/categorias, cobertura/cofre, conciliacoes e
+  sugestoes.
+- [ ] Mover os 20 handlers grandes restantes: importacao, transacoes e vinculos
+  ainda permanecem em `core/application.py`.
 - [x] Criar worker persistente para importacoes, seed, sugestoes e recalculo.
 - [x] Proteger deploys sobrepostos com lease PostgreSQL exclusivo; processo web
   nao recupera nem altera jobs em execucao.
@@ -105,13 +107,15 @@ Nenhum commit ou push pode ser feito sem autorizacao explicita do proprietario.
 
 - [x] Extrair controles, grid e modal de historico da tabela de transacoes.
 - [x] Reduzir todos os componentes da tabela para menos de 400 linhas;
-  `useTransactionTable.tsx` possui 372 linhas.
+  `useTransactionTable.tsx` possui 382 linhas.
 - [x] Remover configuracao Tailwind duplicada.
 - [x] Normalizar BOM/LF e adicionar `.gitattributes`.
-- [x] Manter logs de operacoes longas visiveis ao usuario.
-- [~] Cobrir cofre, vinculos, perfil colaborador e auditoria em E2E: CSP,
+- [x] Manter progresso visual de operacoes longas, com barra, contadores e logs
+  tecnicos recolhiveis no horario local do navegador.
+- [x] Cobrir cofre, vinculos, perfil colaborador e auditoria em E2E: CSP,
   autenticacao admin, importacao/classificacao, conciliacao/desfazer, exclusao
-  segura no cofre e RBAC/auditoria aprovados; UI de vinculos continua pendente.
+  segura no cofre, RBAC/auditoria, vinculo em lote e ciclo completo de revisao
+  de vinculos aprovados.
 - [ ] Revisar responsividade e textos visiveis.
 
 ## 7. Observabilidade e operacao
@@ -120,7 +124,7 @@ Nenhum commit ou push pode ser feito sem autorizacao explicita do proprietario.
 - [x] Sentry opcional no backend e frontend, desligado sem DSN.
 - [ ] Confirmar erro controlado no Sentry de staging.
 - [ ] Confirmar formato JSON e correlacao de logs no ambiente hospedado.
-- [x] Confirmar commits atuais: Vercel e Render em `e73adfd`.
+- [x] Confirmar commits atuais: Vercel e Render em `d4699b2`.
 - [~] Fazer smoke test em Vercel, Render e Supabase: frontend, health PostgreSQL,
   CSP, CORS, 401, importacao real e vinculo em lote aprovados; matriz completa
   de perfis e auditoria ainda aguarda homologacao dirigida.
@@ -133,8 +137,8 @@ Nenhum commit ou push pode ser feito sem autorizacao explicita do proprietario.
   metadados de schema, checksums internos e SHA-256 externo. O Supabase Free nao
   oferece backup gerenciado; ainda falta automatizar a rotina e testar a
   restauracao em PostgreSQL descartavel.
-- [~] Registrar commit e versao do schema em cada release persistente: commit
-  registrado; exposicao/confirmacao publica da versao do schema esta na rodada local.
+- [x] Registrar commit e versao do schema em cada release persistente; o health
+  de `d4699b2` confirmou publicamente schema 2.
 - [ ] Restaurar um backup em ambiente de teste.
 - [>] Avaliar `NUMERIC` depois da estabilizacao e testar arredondamentos.
 - [>] Adicionar foreign keys somente depois de auditar dados existentes.

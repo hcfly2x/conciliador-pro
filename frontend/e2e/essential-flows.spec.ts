@@ -1,5 +1,6 @@
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test'
 import path from 'node:path'
+import { readFileSync } from 'node:fs'
 
 test('frontend envia Content-Security-Policy', async ({ request }) => {
   const response = await request.get('/')
@@ -26,6 +27,43 @@ async function resetApplication(request: APIRequestContext) {
   })
   expect(response.ok()).toBeTruthy()
   return token
+}
+
+async function seedHistoricalLinks(request: APIRequestContext) {
+  const token = await apiLogin(request)
+  const headers = { Authorization: `Bearer ${token}` }
+  for (const category of [
+    { name: 'E2E VINCULO SAIDA', type: 'expense' },
+    { name: 'E2E VINCULO ENTRADA', type: 'income' },
+  ]) {
+    const response = await request.post(`${backend}/categories`, {
+      headers,
+      data: { ...category, color: '#335577', text_color: '#ffffff' },
+    })
+    expect(response.status()).toBe(201)
+  }
+
+  const fixture = path.resolve(__dirname, 'fixtures/history-links.xlsx')
+  const response = await request.post(`${backend}/import/seed`, {
+    headers,
+    multipart: {
+      file: {
+        name: 'history-links.xlsx',
+        mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        buffer: readFileSync(fixture),
+      },
+    },
+  })
+  expect(response.status()).toBe(202)
+  const jobId = (await response.json()).job_id as string
+  let result: { status: string; result?: { total_inserted?: number }; error?: string } | undefined
+  await expect.poll(async () => {
+    const statusResponse = await request.get(`${backend}/seed-import-jobs/${jobId}`, { headers })
+    expect(statusResponse.ok()).toBeTruthy()
+    result = await statusResponse.json()
+    return result?.status
+  }, { timeout: 60_000 }).toBe('completed')
+  expect(result?.result?.total_inserted).toBe(14)
 }
 
 async function login(page: Page) {
@@ -210,4 +248,60 @@ test('aplica permissoes de colaborador e registra auditoria administrativa', asy
   expect(audit).toEqual(expect.arrayContaining([
     expect.objectContaining({ username: 'e2e-admin', action: 'create_user', new_value: username }),
   ]))
+})
+
+test('vincula selecao grande em blocos e exibe progresso real', async ({ page, request }) => {
+  test.setTimeout(180_000)
+  await login(page)
+  await seedHistoricalLinks(request)
+  const fixture = path.resolve(__dirname, 'fixtures/history-links.csv')
+  await importThroughUi(page, fixture, 'CONTA XP')
+
+  await page.goto('/pendentes')
+  await expect(page.getByText('VINCULO E2E 01', { exact: true })).toBeVisible()
+  await page.locator('thead input[type=checkbox]').check()
+  await page.getByRole('button', { name: 'Vincular selecionados' }).click()
+
+  const progress = page.getByTestId('history-link-batch-progress')
+  await expect(progress.getByText('Processamento concluido')).toBeVisible({ timeout: 90_000 })
+  await expect(progress.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '100')
+  await expect(progress.getByText('12/12 · 100%')).toBeVisible()
+  await expect(progress.getByText('Confirmados').locator('..').getByText('12', { exact: true })).toBeVisible()
+  await expect(progress.getByText(/Lote completo:/)).toBeHidden()
+  await expect(page.getByText('Nenhum lancamento encontrado')).toBeVisible()
+})
+
+test('rejeita, confirma, desvincula e recalcula vinculos pela interface', async ({ page, request }) => {
+  test.setTimeout(180_000)
+  await login(page)
+  await seedHistoricalLinks(request)
+
+  const cardFixture = path.resolve(__dirname, '../../backend/tests/fixtures/imports/xp_card.csv')
+  await importThroughUi(page, cardFixture, undefined, '2026-03')
+  await page.goto('/pendentes')
+  const marketRow = page.getByRole('row').filter({ hasText: 'MERCADO BETA' })
+  await marketRow.getByRole('button', { name: /Possivel vinculo/ }).click()
+  await expect(page.getByText('Confira se os dois registros representam o mesmo lancamento')).toBeVisible()
+  await page.getByRole('button', { name: 'Nao sao o mesmo' }).click()
+  await expect(marketRow.getByRole('button', { name: /Possivel vinculo/ })).toHaveCount(0)
+
+  const statementFixture = path.resolve(__dirname, '../../backend/tests/fixtures/imports/xp_statement.csv')
+  await importThroughUi(page, statementFixture, 'CONTA XP')
+  await page.goto('/pendentes')
+  const incomeRow = page.getByRole('row').filter({ hasText: 'PIX RECEBIDO CLIENTE TESTE' })
+  await incomeRow.getByRole('button', { name: /Possivel vinculo/ }).click()
+  await expect(page.getByRole('paragraph').filter({ hasText: 'E2E VINCULO ENTRADA' })).toBeVisible()
+  await page.getByRole('button', { name: 'Confirmar vinculo' }).click()
+  await expect(incomeRow.getByText('Vinculado', { exact: true })).toBeVisible()
+
+  await page.goto('/base-historica')
+  await page.getByRole('button', { name: 'Entradas' }).click()
+  const historyRow = page.getByRole('row').filter({ hasText: 'PIX RECEBIDO CLIENTE TESTE' })
+  await expect(historyRow.getByText('vinculado', { exact: true })).toBeVisible()
+  page.once('dialog', dialog => dialog.accept())
+  await historyRow.getByRole('button', { name: 'desvincular' }).click()
+  await expect(historyRow.getByText('vinculado', { exact: true })).toHaveCount(0)
+
+  await page.getByRole('button', { name: 'Calcular vinculos historicos' }).click()
+  await expect(page.getByText(/Calculo concluido:/)).toBeVisible({ timeout: 60_000 })
 })

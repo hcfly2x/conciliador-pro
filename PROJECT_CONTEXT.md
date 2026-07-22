@@ -26,19 +26,20 @@ O produto possui fluxo funcional de autenticacao, importacao com preview,
 deduplicacao, base historica, vinculos revisaveis, sugestoes assincronas,
 classificacao, parcelas, conciliacao, relatorios, cofre e reset administrativo.
 
-A branch oficial e `main`. O commit `e73adfd` esta em `origin/main`, Vercel e
+A branch oficial e `main`. O commit `d4699b2` esta em `origin/main`, Vercel e
 Render. O Render usa PostgreSQL e, por possuir apenas o web service no plano
 atual, executa jobs com `WORKER_MODE=inline`. O Background Worker separado
 continua sendo a arquitetura alvo, mas nao esta ativo em producao.
 
 Validacao da versao publicada e da rodada local seguinte:
 
-- 94 testes Python aprovados localmente na rodada atual; o release `e73adfd`
-  possuia a cobertura anterior e a rodada local
-  seguinte adiciona cobertura do contrato operacional do health.
+- O health de `d4699b2` informa commit, schema 2 e executor de jobs inline.
+- Na rodada local seguinte, 94 testes Python e 8 jornadas Playwright foram
+  aprovados; essa rodada ainda nao foi publicada.
 - A integracao PostgreSQL do CI passou com banco descartavel, web e worker em
   processos separados e reinicio do web durante um job.
-- 6 jornadas Playwright aprovadas.
+- As jornadas Playwright incluem vinculo em lote e o ciclo de
+  rejeitar, confirmar, desvincular e recalcular vinculos pela interface.
 - TypeScript e build de producao Next.js aprovados.
 - `npm audit --omit=dev` sem vulnerabilidades conhecidas.
 - `pip check` sem dependencias quebradas.
@@ -57,11 +58,11 @@ Validacao da versao publicada e da rodada local seguinte:
 - Observabilidade: logs estruturados e Sentry opcional por DSN.
 - CI: testes Python, typecheck/build e Playwright.
 
-`backend/app.py` e uma fachada pequena. Dos 62 endpoints de blueprint, 34 ja
+`backend/app.py` e uma fachada pequena. Dos 62 endpoints de blueprint, 42 ja
 possuem handlers nos modulos de dominio, incluindo auth/auditoria, sistema,
-relatorios, contas/razoes/categorias, cobertura/cofre e conciliacoes. Os 28
-endpoints grandes de importacao, transacoes, vinculos e sugestoes ainda dependem
-de `backend/core/application.py`. O bootstrap legado continua idempotente para
+relatorios, contas/razoes/categorias, cobertura/cofre, conciliacoes e sugestoes.
+Os 20 endpoints grandes de importacao, transacoes e vinculos ainda dependem de
+`backend/core/application.py`. O bootstrap legado continua idempotente para
 compatibilidade; novos schemas passam obrigatoriamente por migrations versionadas.
 
 ## Funcionalidades existentes
@@ -83,7 +84,7 @@ compatibilidade; novos schemas passam obrigatoriamente por migrations versionada
 - Conciliacao manual e reversivel de entrada e saida do mesmo valor.
 - Relatorios de resumo, categorias e evolucao mensal.
 - Cofre de documentos, cobertura de arquivos e exclusao auditada.
-- Release `e73adfd` homologado em producao; o proprietario confirmou importacao
+- Release `d4699b2` homologado em producao; o proprietario confirmou importacao
   de extrato e vinculo em lote funcionando com dados reais.
 
 ## Regras de negocio vigentes
@@ -100,8 +101,8 @@ compatibilidade; novos schemas passam obrigatoriamente por migrations versionada
 - Rejeitar vinculo impede o mesmo candidato de reaparecer para o lancamento.
 - Lancamentos com vinculo pendente nao recebem sugestao/classificacao antes da
   revisao.
-- O botao `Vincular selecionados` exige descricao acima de 95%, mesma data e
-  valor exato.
+- O botao `Vincular selecionados` exige similaridade de descricao de no minimo
+  75%, mesma data e valor exato.
 - Para parcelas, o total estimado (`parcela x quantidade`) pode diferir ate R$ 1
   do historico, com descricao a partir de 50%. Ambiguidade abre revisao manual.
 - Todas as parcelas do documento sao preservadas; plano de parcelas serve apenas
@@ -136,7 +137,8 @@ compatibilidade; novos schemas passam obrigatoriamente por migrations versionada
   estao cobertos no CI com PostgreSQL e reinicio do web.
 - Validar Sentry, Vercel, Render e Supabase em staging/producao.
 - Executar regressao manual dos seis formatos oficiais.
-- Cobrir por E2E vinculos, cofre, colaborador e auditoria.
+- Ampliar a cobertura E2E alem dos fluxos ja cobertos de vinculos, cofre,
+  colaborador e auditoria.
 - Medir falsos positivos de vinculo e calibracao das sugestoes.
 - Definir o caso de uso futuro de `ledgers`.
 - Backup local consistente do PostgreSQL de producao criado e validado em
