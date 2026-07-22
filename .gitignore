@@ -22,6 +22,7 @@ backend/.venv/
 *.sqlite3
 backend/data/documents/
 backend/data/uploads/
+backend/data/backups/
 
 # Logs e arquivos temporarios
 *.log

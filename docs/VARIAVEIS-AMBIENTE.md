@@ -55,3 +55,11 @@ Atualizado em 22/07/2026. Segredos nunca devem ser adicionados ao repositorio.
 - Vercel: `NEXT_PUBLIC_API_URL` e, se habilitado, Sentry.
 - Credenciais administrativas iniciais devem ser removidas ou rotacionadas
   depois de confirmar o primeiro usuario.
+
+## Producao atual
+
+Em 22/07/2026 o Render possui somente o web service e esta configurado com
+`WORKER_MODE=inline`. Essa configuracao e funcional e evita jobs parados, mas e
+uma mitigacao temporaria. Ao criar o Background Worker, alterar o web para
+`WORKER_MODE=process` somente depois de confirmar que o worker esta ativo e
+consumindo a mesma `DATABASE_URL`.

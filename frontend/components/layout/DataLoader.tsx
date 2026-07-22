@@ -12,7 +12,7 @@ export default function DataLoader() {
       getCategories().then(setCategories),
       getSubcategories().then(setSubcategories),
       getMonths().then(setMonths),
-      getTransactions({ status: 'pending', page_size: 1 }).then(data => setPendingCount(data.total)),
+      getTransactions({ status: 'pending', reconciliation_status: 'unmatched', page_size: 1 }).then(data => setPendingCount(data.total)),
     ]).catch(() => addToast('Alguns dados iniciais nao puderam ser carregados', 'err'))
   }, [refreshKey])
 

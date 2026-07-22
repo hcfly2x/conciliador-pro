@@ -74,7 +74,12 @@ O que cada perfil pode fazer:
 
 ## 5. Backups
 
-- Supabase: configure e verifique a politica de backup/restore do plano contratado.
+- Supabase: configure e verifique a politica de backup/restore do plano
+  contratado. O plano Free do projeto atual nao inclui backups gerenciados.
+- Antes da proxima mudanca de schema, escolher uma das opcoes: plano Pro com
+  backup agendado ou rotina externa com exportacao integral, checksum e
+  restauracao comprovada em banco descartavel. Criptografia e opcional para os
+  dados atuais, mas credenciais de conexao nunca devem permanecer no backup.
 - Antes de qualquer "Resetar sistema" no modo hosted, crie um backup/branch; o
   app nao gera arquivo `.db` quando utiliza PostgreSQL.
 - Os documentos originais sao persistidos na tabela `stored_documents` junto ao
@@ -106,7 +111,8 @@ teste deve passar antes de implantar a revisao.
 
 ## 7. Checklist final
 
-1. `GET /api/v1/health` responde ok.
+1. `GET /api/v1/health` responde ok e informa o commit, `schema_version` e o
+   `worker_mode` esperados para o release.
 2. Login com admin funciona no frontend.
 3. Colaboradora consegue logar, ver lancamentos e classificar; recebe "apenas administrador" ao tentar importar.
 4. Classificar um lancamento e tentar mudar de novo mostra o cadeado; Desbloquear (admin) libera e registra na auditoria (`GET /api/v1/audit?entity_id=...`).

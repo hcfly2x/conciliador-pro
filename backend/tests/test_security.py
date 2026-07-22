@@ -7,6 +7,7 @@ from unittest import mock
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 import app as app_module
+from blueprints import system as system_blueprint
 
 
 class SecurityTests(unittest.TestCase):
@@ -112,6 +113,41 @@ class SecurityTests(unittest.TestCase):
         message = "\n".join(captured.output)
         for expected in ("GET", "/api/v1/auth/me", "200", "local"):
             self.assertIn(expected, message)
+
+    def test_health_exposes_release_schema_and_job_executor(self) -> None:
+        connection = mock.MagicMock()
+        connection.__enter__.return_value = connection
+        connection.execute.side_effect = [
+            mock.Mock(fetchone=mock.Mock(return_value=(1,))),
+            mock.Mock(fetchone=mock.Mock(return_value=(2,))),
+        ]
+        client = app_module.app.test_client()
+
+        with (
+            mock.patch.object(app_module, "db_connect", return_value=connection),
+            mock.patch.object(app_module, "WORKER_MODE", "inline"),
+            mock.patch.object(app_module, "IS_WORKER_PROCESS", False),
+            mock.patch.object(system_blueprint, "IS_POSTGRES", True),
+            mock.patch.dict(
+                "os.environ",
+                {"RENDER_GIT_COMMIT": "e73adfd5c874787e34bf"},
+            ),
+        ):
+            response = client.get("/api/v1/health")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.get_json(),
+            {
+                "status": "ok",
+                "version": "1.0.0",
+                "db": "postgres",
+                "commit": "e73adfd5c874",
+                "schema_version": 2,
+                "worker_mode": "inline",
+                "worker_process": False,
+            },
+        )
 
 
 if __name__ == "__main__":

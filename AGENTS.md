@@ -18,8 +18,9 @@
   `backend\.venv\Scripts\python.exe backend\app.py`
 - `backend/run.bat` deve chamar diretamente `.venv\Scripts\python.exe app.py`.
 - Backend atualmente sobe em `http://127.0.0.1:5061`.
-- Em ambiente hospedado, jobs persistentes sao consumidos por
-  `backend/worker.py`; localmente existe fallback inline.
+- A arquitetura hospedada alvo usa `backend/worker.py`, mas a producao atual no
+  Render opera temporariamente com `WORKER_MODE=inline` no web service. Nao
+  remover esse fallback antes de criar e homologar o Background Worker.
 
 ## Frontend
 - Frontend principal: `frontend`.

@@ -26,16 +26,18 @@ O produto possui fluxo funcional de autenticacao, importacao com preview,
 deduplicacao, base historica, vinculos revisaveis, sugestoes assincronas,
 classificacao, parcelas, conciliacao, relatorios, cofre e reset administrativo.
 
-A branch oficial e `main`. O commit `5b238c8` e o estado atual de `origin/main`.
-Existe uma rodada local, ainda sem commit ou push, com seguranca, testes, worker,
-observabilidade e refatoracoes estruturais. Assim, o workspace local esta mais
-avancado que a versao remota. O commit efetivamente implantado na Vercel e no
-Render ainda precisa ser confirmado durante a homologacao.
+A branch oficial e `main`. O commit `e73adfd` esta em `origin/main`, Vercel e
+Render. O Render usa PostgreSQL e, por possuir apenas o web service no plano
+atual, executa jobs com `WORKER_MODE=inline`. O Background Worker separado
+continua sendo a arquitetura alvo, mas nao esta ativo em producao.
 
-Validacao da rodada local:
+Validacao da versao publicada e da rodada local seguinte:
 
-- 92 testes Python descobertos: 91 aprovados localmente e 1 integracao
-  PostgreSQL condicional, executada pelo CI com banco descartavel.
+- 94 testes Python aprovados localmente na rodada atual; o release `e73adfd`
+  possuia a cobertura anterior e a rodada local
+  seguinte adiciona cobertura do contrato operacional do health.
+- A integracao PostgreSQL do CI passou com banco descartavel, web e worker em
+  processos separados e reinicio do web durante um job.
 - 6 jornadas Playwright aprovadas.
 - TypeScript e build de producao Next.js aprovados.
 - `npm audit --omit=dev` sem vulnerabilidades conhecidas.
@@ -48,9 +50,9 @@ Validacao da rodada local:
 - Backend: Flask, Python e Gunicorn.
 - Banco: PostgreSQL quando `DATABASE_URL` esta configurada; SQLite local/testes.
 - Persistencia: SQL direto com adaptador de compatibilidade SQLite/PostgreSQL.
-- Jobs: tabelas persistentes consumidas por `backend/worker.py` em ambiente
-  hospedado, com lease PostgreSQL exclusivo entre workers; modo inline como
-  fallback local.
+- Jobs: tabelas persistentes. O worker separado possui lease PostgreSQL
+  exclusivo e esta homologado no CI; a producao atual usa o fallback inline no
+  web service ate a criacao de um Background Worker no Render.
 - Arquivos: documentos originais em Base64 no banco, com fallback local.
 - Observabilidade: logs estruturados e Sentry opcional por DSN.
 - CI: testes Python, typecheck/build e Playwright.
@@ -81,6 +83,8 @@ compatibilidade; novos schemas passam obrigatoriamente por migrations versionada
 - Conciliacao manual e reversivel de entrada e saida do mesmo valor.
 - Relatorios de resumo, categorias e evolucao mensal.
 - Cofre de documentos, cobertura de arquivos e exclusao auditada.
+- Release `e73adfd` homologado em producao; o proprietario confirmou importacao
+  de extrato e vinculo em lote funcionando com dados reais.
 
 ## Regras de negocio vigentes
 
@@ -127,15 +131,19 @@ compatibilidade; novos schemas passam obrigatoriamente por migrations versionada
 ## Pendencias confirmadas
 
 - Concluir a separacao real dos handlers/regras por dominio.
-- Introduzir migrations versionadas antes de novos schemas.
-- Homologar web e worker separados em PostgreSQL, inclusive reinicio do web.
+- Manter migrations versionadas obrigatorias para qualquer novo schema.
+- Criar e homologar o Background Worker no Render; web e worker separados ja
+  estao cobertos no CI com PostgreSQL e reinicio do web.
 - Validar Sentry, Vercel, Render e Supabase em staging/producao.
 - Executar regressao manual dos seis formatos oficiais.
 - Cobrir por E2E vinculos, cofre, colaborador e auditoria.
 - Medir falsos positivos de vinculo e calibracao das sugestoes.
 - Definir o caso de uso futuro de `ledgers`.
-- Tornar backup verificavel obrigatorio quando os dados forem preservados entre
-  releases.
+- Backup local consistente do PostgreSQL de producao criado e validado em
+  22/07/2026: 24 tabelas, 17.004 registros, manifesto e SHA-256. O projeto
+  Supabase esta no plano Free e nao inclui backups gerenciados; ainda falta
+  homologar a restauracao desse pacote em um banco descartavel antes da proxima
+  mudanca de schema.
 
 ## Avaliacoes depois da estabilizacao
 

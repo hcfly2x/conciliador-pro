@@ -13,6 +13,7 @@
 - `AVALIACOES-POS-ESTABILIZACAO.md`: criterios para NUMERIC, FKs, storage,
   score e Pluggy.
 - `VARIAVEIS-AMBIENTE.md`: contrato de configuracao para web, worker e frontend.
+- `RELEASES.md`: commits, schema e modo operacional observados em producao.
 
 ## Historicos
 

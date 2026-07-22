@@ -7,6 +7,10 @@ Base: `/api/v1`. Atualizado em 22/07/2026. O mapa Flask e os testes prevalecem.
 - `GET /health`
 - `POST /auth/login`
 
+`GET /health` responde `status`, `version`, `db`, `commit`, `schema_version`,
+`worker_mode` e `worker_process`. Esses campos permitem conferir a revisao, o
+schema e quem executa os jobs sem acessar dados financeiros.
+
 Demais endpoints exigem `Authorization: Bearer <token>`. Escritas sao de admin
 por padrao; rotas de trabalho cotidiano do colaborador sao marcadas
 explicitamente no backend.

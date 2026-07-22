@@ -58,7 +58,6 @@ idempotencia.
 
 ## Backup
 
-Enquanto a homologacao permite reset, backup persistente nao bloqueia releases.
-Quando os dados passarem a ser preservados entre versoes, cada release deve
-registrar commit + versao do schema e exigir backup restauravel antes da
-migration.
+Os dados de producao passaram a ser preservados entre versoes. Antes da proxima
+mudanca de schema, o release deve registrar commit + versao do schema e exigir
+backup restauravel. Reset em producao nao e um procedimento de homologacao.

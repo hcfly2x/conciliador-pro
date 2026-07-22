@@ -15,12 +15,13 @@ Nenhum commit ou push pode ser feito sem autorizacao explicita do proprietario.
 
 ## Marco atual
 
-- `origin/main`: commit `5b238c8`.
-- Rodada de estabilizacao: somente no working tree, sem commit/push.
-- Validacao local: 91 testes Python aprovados e 1 PostgreSQL condicional,
-  TypeScript, build e 6 jornadas Playwright aprovados; o E2E usa o runtime de
-  producao do Next.js.
-- Producao/staging: commit implantado e integracoes externas ainda nao homologados.
+- `origin/main`, Vercel e Render: commit `e73adfd`.
+- Producao usa PostgreSQL e `WORKER_MODE=inline` no unico web service do Render.
+- Validacao: 94 testes Python locais na rodada atual, PostgreSQL descartavel no CI,
+  TypeScript, build e 6 jornadas Playwright aprovados.
+- O proprietario confirmou em producao importacao de extrato e vinculo em lote.
+- A rodada local seguinte adiciona visibilidade de schema e executor de jobs ao
+  health; permanece sem commit/push ate autorizacao explicita.
 
 ## 1. Produto e integridade financeira
 
@@ -92,10 +93,11 @@ Nenhum commit ou push pode ser feito sem autorizacao explicita do proprietario.
 - [x] Criar worker persistente para importacoes, seed, sugestoes e recalculo.
 - [x] Proteger deploys sobrepostos com lease PostgreSQL exclusivo; processo web
   nao recupera nem altera jobs em execucao.
-- [~] Validar worker e web separados em PostgreSQL: job preparado no CI com
-  PostgreSQL 16 descartavel; a primeira execucao apos o push ainda precisa passar.
-- [x] Validar persistencia do job ao reiniciar o processo web em teste
-  multi-processo SQLite; repetir no PostgreSQL hospedado continua pendente.
+- [x] Validar worker e web separados no CI com PostgreSQL 16 descartavel.
+- [x] Validar persistencia do job ao reiniciar o processo web em testes
+  multiprocesso SQLite e PostgreSQL.
+- [ ] Criar e homologar o Background Worker no Render. Producao permanece em
+  `WORKER_MODE=inline` ate haver aprovacao do custo/servico separado.
 - [x] Introduzir migrations versionadas, checksum e tabela de versao do schema.
 - [x] Aplicar migrations pendentes no boot de forma idempotente.
 
@@ -118,16 +120,21 @@ Nenhum commit ou push pode ser feito sem autorizacao explicita do proprietario.
 - [x] Sentry opcional no backend e frontend, desligado sem DSN.
 - [ ] Confirmar erro controlado no Sentry de staging.
 - [ ] Confirmar formato JSON e correlacao de logs no ambiente hospedado.
-- [x] Confirmar commits atuais: Vercel `5b238c8`; Render `3f17d8a`.
+- [x] Confirmar commits atuais: Vercel e Render em `e73adfd`.
 - [~] Fazer smoke test em Vercel, Render e Supabase: frontend, health PostgreSQL,
-  CSP, CORS e 401 aprovados; fluxos autenticados aguardam credenciais.
+  CSP, CORS, 401, importacao real e vinculo em lote aprovados; matriz completa
+  de perfis e auditoria ainda aguarda homologacao dirigida.
 - [ ] Validar admin, colaborador e auditoria no ambiente hospedado.
 
 ## 8. Dados persistentes e schema
 
-- [>] Backup verificavel passa a bloquear releases quando dados forem preservados
-  entre atualizacoes; durante homologacao o reset continua permitido.
-- [ ] Registrar commit e versao do schema em cada release persistente.
+- [~] Backup local verificavel criado antes da release de 22/07/2026: exportacao
+  consistente e somente leitura das 24 tabelas publicas, com 17.004 registros,
+  metadados de schema, checksums internos e SHA-256 externo. O Supabase Free nao
+  oferece backup gerenciado; ainda falta automatizar a rotina e testar a
+  restauracao em PostgreSQL descartavel.
+- [~] Registrar commit e versao do schema em cada release persistente: commit
+  registrado; exposicao/confirmacao publica da versao do schema esta na rodada local.
 - [ ] Restaurar um backup em ambiente de teste.
 - [>] Avaliar `NUMERIC` depois da estabilizacao e testar arredondamentos.
 - [>] Adicionar foreign keys somente depois de auditar dados existentes.

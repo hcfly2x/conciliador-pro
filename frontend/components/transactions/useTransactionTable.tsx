@@ -2,9 +2,10 @@
 import { useState, useEffect, useCallback } from 'react'
 import { ChevronUp, ChevronDown } from 'lucide-react'
 import { useStore } from '@/store/app'
-import { getTransactions, bulkClassify, classifyTransaction, getTransactionSuggestionsBatch, getLedgers, includeTransactionsInLedger, excludeTransactionsFromLedger, unlockTransaction, isAdmin, reviewHistoricalMatch, prepareHistoricalLinks, type TransactionSuggestion } from '@/lib/api'
+import { getTransactions, bulkClassify, classifyTransaction, getTransactionSuggestionsBatch, getLedgers, includeTransactionsInLedger, excludeTransactionsFromLedger, unlockTransaction, isAdmin, reviewHistoricalMatch, type TransactionSuggestion } from '@/lib/api'
 import type { Ledger, Transaction } from '@/types'
 import { buildTransactionFilters, hasPendingDirectHistoryLink, type TransactionTableProps } from './transactionTableUtils'
+import { runHistoricalLinkBatch } from './historyLinkBatch'
 
 export type Props = TransactionTableProps
 
@@ -17,7 +18,7 @@ export function useTransactionTable({
   moveTargetLedgerName = '',
   defaultReconciliationStatus,
 }: Props) {
-  const { months, accounts, categories, subcategories, addToast, refreshKey } = useStore()
+  const { months, accounts, categories, subcategories, addToast, refreshKey, setPendingCount } = useStore()
   const [txs, setTxs] = useState<Transaction[]>([])
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
@@ -57,6 +58,19 @@ export function useTransactionTable({
   const [rowSuggestionStates, setRowSuggestionStates] = useState<Record<string, string>>({})
   const [suggestionsLoading, setSuggestionsLoading] = useState<Set<string>>(new Set())
   const [suggestionErrors, setSuggestionErrors] = useState<Set<string>>(new Set())
+
+  async function refreshPendingBadge() {
+    try {
+      const pending = await getTransactions({
+        status: 'pending',
+        reconciliation_status: 'unmatched',
+        page_size: 1,
+      })
+      setPendingCount(pending.total)
+    } catch {
+      // A tabela continua utilizavel mesmo se apenas o contador global falhar.
+    }
+  }
 
   useEffect(() => {
     setRowDraft(current => {
@@ -103,6 +117,7 @@ export function useTransactionTable({
           locked: true,
         }
       }))
+      await refreshPendingBadge()
     } catch (err: unknown) {
       if ((err as { code?: string })?.code === 'TX_LOCKED') {
         addToast('Lancamento protegido. Use Desbloquear para alterar.', 'err')
@@ -192,6 +207,7 @@ export function useTransactionTable({
         return next
       })
       addToast(action === 'confirm' ? 'Vinculo confirmado e classificacao historica aplicada' : 'Sugestao de vinculo rejeitada')
+      await refreshPendingBadge()
     } catch {
       if (isBatchReview) {
         setLinkBatchLogs(current => [
@@ -317,7 +333,8 @@ export function useTransactionTable({
       ].filter(Boolean).join(', ')
       addToast(`${updated} lancamentos classificados${skipped ? ` (${skipped} ignorados)` : ''}`)
       setSelected(new Set()); setBulkCatId(''); setBulkSubId('')
-      load(page)
+      await load(page)
+      await refreshPendingBadge()
     } catch { addToast('Erro na classificacao em lote', 'err') }
   }
 
@@ -325,27 +342,14 @@ export function useTransactionTable({
     if (!selected.size || linkingBatch) return
     setLinkingBatch(true)
     const selectedIds = [...selected]
-    const startedAt = Date.now()
     const localTime = () => new Date().toLocaleTimeString('pt-BR', { hour12: false })
     setLinkBatchLogs([
       { time: localTime(), message: `Iniciando vinculo em lote para ${selectedIds.length} lancamento(s)` },
-      { time: localTime(), message: 'Enviando para analise e confirmacao no servidor' },
     ])
-    const waitingLog = window.setInterval(() => {
-      const elapsed = Math.round((Date.now() - startedAt) / 1000)
-      setLinkBatchLogs(current => [
-        ...current.slice(-11),
-        { time: localTime(), message: `Processamento em andamento ha ${elapsed}s` },
-      ])
-    }, 10000)
     try {
-      const result = await prepareHistoricalLinks(selectedIds)
-      window.clearInterval(waitingLog)
-      const serverLogs = result.logs || []
-      setLinkBatchLogs([
-        { time: localTime(), message: `Operacao ${result.operation_id || 'concluida'} recebida do servidor` },
-        ...serverLogs,
-      ])
+      const result = await runHistoricalLinkBatch(selectedIds, entry => {
+        setLinkBatchLogs(current => [...current.slice(-119), entry])
+      })
       if (!result.matched && !result.manual_review) {
         const failure = result.failed ? `; ${result.failed} falharam na confirmacao` : ''
         const skipped = result.skipped ? `; ${result.skipped} ja vinculados, protegidos ou indisponiveis` : ''
@@ -355,18 +359,23 @@ export function useTransactionTable({
       addToast(`${result.matched} vinculo(s) confirmado(s) em lote${result.manual_review ? `; ${result.manual_review} aguardando revisao manual` : ''}${result.without_match ? `; ${result.without_match} sem candidato` : ''}${result.skipped ? `; ${result.skipped} ignorado(s)` : ''}`)
       setSelected(new Set())
       await load(page)
+      await refreshPendingBadge()
       setBatchReviewIds(result.manual_review_ids)
       setLinkReviewId(result.manual_review_ids[0] || null)
       if (result.failed) addToast(`${result.failed} vinculo(s) nao puderam ser confirmados`, 'err')
     } catch (error: unknown) {
       const detail = (error as { detail?: string })?.detail
+      const timedOut = (error as { code?: string })?.code === 'REQUEST_TIMEOUT'
       setLinkBatchLogs(current => [
         ...current,
-        { time: localTime(), message: `Falha: ${detail || 'erro de comunicacao com o servidor'}` },
+        { time: localTime(), message: timedOut
+          ? 'O servidor pode continuar concluindo o ultimo bloco. Os blocos seguintes nao foram enviados para evitar processamento concorrente; atualize a tela em instantes.'
+          : `Operacao interrompida: ${detail || 'erro de comunicacao com o servidor'}` },
       ])
-      addToast(detail || 'Nao foi possivel buscar vinculos para os selecionados', 'err')
+      addToast(timedOut
+        ? 'O ultimo bloco ainda pode estar sendo concluido pelo servidor; atualize em instantes'
+        : (detail || 'Nao foi possivel buscar vinculos para os selecionados'), 'err')
     } finally {
-      window.clearInterval(waitingLog)
       setLinkingBatch(false)
     }
   }

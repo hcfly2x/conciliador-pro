@@ -46,6 +46,9 @@ def health():
     try:
         with application.db_connect() as conn:
             conn.execute("SELECT 1").fetchone()
+            schema_row = conn.execute(
+                "SELECT COALESCE(MAX(version), 0) FROM schema_migrations"
+            ).fetchone()
     except Exception:
         logger.exception("Banco indisponivel durante health check")
         return jsonify({"status": "error", "db": "unavailable"}), 503
@@ -55,6 +58,9 @@ def health():
             "version": "1.0.0",
             "db": "postgres" if IS_POSTGRES else "sqlite",
             "commit": (os.environ.get("RENDER_GIT_COMMIT") or "")[:12],
+            "schema_version": int(schema_row[0]),
+            "worker_mode": application.WORKER_MODE,
+            "worker_process": bool(application.IS_WORKER_PROCESS),
         }
     )
 

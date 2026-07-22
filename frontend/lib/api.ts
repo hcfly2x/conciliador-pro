@@ -692,7 +692,7 @@ export async function reviewHistoricalMatch(id: string, action: 'confirm' | 'rej
   return http('POST', `/transactions/${id}/history-link`, { action })
 }
 
-export async function prepareHistoricalLinks(ids: string[]): Promise<{
+export interface HistoryLinkBatchResult {
   selected: number
   matched: number
   manual_review: number
@@ -708,7 +708,9 @@ export async function prepareHistoricalLinks(ids: string[]): Promise<{
   operation_id: string
   duration_ms: number
   logs: Array<{ time: string; message: string }>
-}> {
+}
+
+export async function prepareHistoricalLinks(ids: string[]): Promise<HistoryLinkBatchResult> {
   if (USE_MOCK) { await delay(); return { selected: ids.length, matched: ids.length, manual_review: 0, without_match: 0, skipped: 0, failed: 0, matched_ids: ids, manual_review_ids: [], without_match_ids: [], skipped_ids: [], failed_ids: [], affected_ids: ids, operation_id: 'mock', duration_ms: 250, logs: [{ time: new Date().toLocaleTimeString('pt-BR'), message: `Lote concluido: ${ids.length} confirmado(s)` }] } }
   return http('POST', '/transactions/history-links/batch', { ids }, 120000)
 }

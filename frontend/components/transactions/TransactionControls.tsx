@@ -177,7 +177,7 @@ export function TransactionControls({ model }: { model: ReturnType<typeof useTra
             {!linkingBatch && <button type="button" onClick={() => setLinkBatchLogs([])} className="text-[#5a5f73] hover:text-[#e8eaf0]" title="Fechar logs"><X size={14} /></button>}
           </div>
           <div className="max-h-32 overflow-auto font-mono text-[11px] text-[#8b90a4]">
-            {linkBatchLogs.map((entry, index) => <div key={`${entry.time}-${index}`}><span className="text-[#5a5f73]">{entry.time}</span> Â· {entry.message}</div>)}
+            {[...linkBatchLogs].reverse().map((entry, index) => <div key={`${entry.time}-${index}`}><span className="text-[#5a5f73]">{entry.time}</span> · {entry.message}</div>)}
           </div>
           {batchReviewIds.length > 0 && !linkReviewId && (
             <button type="button" onClick={() => setLinkReviewId(batchReviewIds[0])} className="mt-3 h-8 rounded-md px-3 text-xs font-semibold" style={{ background: 'rgba(96,165,250,0.18)', border: '1px solid rgba(96,165,250,0.35)', color: '#93c5fd' }}>
