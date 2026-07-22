@@ -11,6 +11,8 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
+from pypdf import PdfReader
+
 from parsers.engine import norm_text, run_import_pipeline
 
 
@@ -51,12 +53,27 @@ def sha1(path: Path) -> str:
     return digest.hexdigest()
 
 
+def is_zero_transaction_statement(path: Path) -> bool:
+    if path.suffix.lower() != ".pdf":
+        return False
+    try:
+        text = "\n".join(page.extract_text() or "" for page in PdfReader(str(path)).pages)
+    except Exception:
+        return False
+    normalized = norm_text(text)
+    return "nao ha lancamentos para o periodo" in normalized
+
+
 def account_for_path(path: Path) -> tuple[str, str]:
     upper = str(path).upper()
     bank = next((name for name in ("SANTANDER", "NUBANK", "XP", "SMARTEK") if name in upper), "GENERICA")
     if "CARTOES" in upper or "CARTAO" in upper:
         return f"CARTAO {bank}", "credit_card"
     return f"CONTA {bank}", "checking"
+
+
+def is_financial_file(path: Path) -> bool:
+    return "DOCUMENTOS_EMPRESA" not in (part.upper() for part in path.parts)
 
 
 def parser_key(row: Any) -> tuple[Any, ...]:
@@ -74,6 +91,26 @@ def database_key(row: dict[str, str]) -> tuple[Any, ...]:
     return (
         row["date"],
         norm_text(row["description"]),
+        round(float(row["amount"]), 2),
+        row["type"],
+        int(row.get("installment_current") or 0),
+        int(row.get("installment_total") or 0),
+    )
+
+
+def parser_financial_key(row: Any) -> tuple[Any, ...]:
+    return (
+        row.date,
+        round(float(row.amount_signed), 2),
+        row.tx_type,
+        int(row.installment_current or 0),
+        int(row.installment_total or 0),
+    )
+
+
+def database_financial_key(row: dict[str, str]) -> tuple[Any, ...]:
+    return (
+        row["date"],
         round(float(row["amount"]), 2),
         row["type"],
         int(row.get("installment_current") or 0),
@@ -101,7 +138,12 @@ def audit(snapshot_path: Path, organized_root: Path) -> dict[str, Any]:
             "sha1": digest,
             "account_name": account_name,
             "account_type": account_type,
+            "declared_incomplete": "INCOMPLETO" in path.name.upper(),
         }
+        if not is_financial_file(path):
+            row.update({"parse_status": "not_applicable", "reason": "documento societario, nao financeiro"})
+            local_rows.append(row)
+            continue
         try:
             parsed = run_import_pipeline(path, account_name, account_type)
             row.update(
@@ -115,7 +157,10 @@ def audit(snapshot_path: Path, organized_root: Path) -> dict[str, Any]:
                 }
             )
         except Exception as exc:
-            row.update({"parse_status": "error", "error": f"{type(exc).__name__}: {exc}"})
+            if is_zero_transaction_statement(path):
+                row.update({"parse_status": "valid_zero", "transactions": 0, "net": 0.0})
+            else:
+                row.update({"parse_status": "error", "error": f"{type(exc).__name__}: {exc}"})
         local_rows.append(row)
 
     by_import: dict[str, list[dict[str, str]]] = {}
@@ -149,6 +194,8 @@ def audit(snapshot_path: Path, organized_root: Path) -> dict[str, Any]:
             parsed = run_import_pipeline(path, imported_file["account_name"], account_type)
             database_counter = Counter(map(database_key, by_import.get(imported_file["id"], [])))
             parser_counter = Counter(map(parser_key, parsed.txs))
+            database_financial = Counter(map(database_financial_key, by_import.get(imported_file["id"], [])))
+            parser_financial = Counter(map(parser_financial_key, parsed.txs))
             exact = database_counter & parser_counter
             missing = parser_counter - database_counter
             extra = database_counter - parser_counter
@@ -167,27 +214,43 @@ def audit(snapshot_path: Path, organized_root: Path) -> dict[str, Any]:
                     "balance_difference": parsed.balance_check.diferenca,
                 }
             )
-            batch["status"] = "exact" if not missing and not extra else "divergent"
+            if not missing and not extra:
+                batch["status"] = "exact"
+            elif database_financial == parser_financial:
+                batch["status"] = "structural_only"
+            else:
+                batch["status"] = "financial_divergence"
         except Exception as exc:
             batch.update({"status": "parse_error", "error": f"{type(exc).__name__}: {exc}"})
         batch_rows.append(batch)
 
     document_hashes = Counter(row.get("content_sha1") or "" for row in stored)
-    transaction_keys = Counter(database_key(row) for row in transactions)
+    signature_batches: dict[tuple[Any, ...], set[str]] = {}
+    for row in transactions:
+        signature = (row.get("account_id") or "",) + database_key(row)
+        signature_batches.setdefault(signature, set()).add(row.get("imported_file_id") or "")
     return {
         "snapshot": snapshot["manifest"],
         "summary": {
             "local_files": len(local_rows),
+            "local_financial_files": sum(row["parse_status"] != "not_applicable" for row in local_rows),
+            "local_not_applicable": sum(row["parse_status"] == "not_applicable" for row in local_rows),
             "local_parse_errors": sum(row["parse_status"] == "error" for row in local_rows),
             "production_files": len(batch_rows),
             "production_transactions": len(transactions),
             "production_documents": len(stored),
             "exact_batches": sum(row.get("status") == "exact" for row in batch_rows),
-            "divergent_batches": sum(row.get("status") == "divergent" for row in batch_rows),
+            "structural_only_batches": sum(row.get("status") == "structural_only" for row in batch_rows),
+            "financial_divergent_batches": sum(row.get("status") == "financial_divergence" for row in batch_rows),
             "missing_local_documents": sum(row.get("status") == "document_missing_locally" for row in batch_rows),
-            "unimported_local_files": sum(row["sha1"] not in matched_hashes for row in local_rows),
+            "unimported_local_files": sum(
+                row["parse_status"] != "not_applicable" and row["sha1"] not in matched_hashes
+                for row in local_rows
+            ),
             "duplicate_document_hashes": sum(count > 1 for digest, count in document_hashes.items() if digest),
-            "cross_batch_duplicate_signatures": sum(count > 1 for count in transaction_keys.values()),
+            "cross_batch_duplicate_signatures": sum(
+                len(batch_ids) > 1 for batch_ids in signature_batches.values()
+            ),
         },
         "batches": batch_rows,
         "local_files": local_rows,

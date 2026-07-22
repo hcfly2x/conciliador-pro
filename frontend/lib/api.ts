@@ -453,7 +453,13 @@ export async function downloadAuditExport(): Promise<{ filename: string; dataUrl
   const blob = await res.blob()
   const disposition = res.headers.get('content-disposition') || ''
   const match = disposition.match(/filename\*?=(?:UTF-8''|\")?([^\";]+)/i)
-  const filename = match ? decodeURIComponent(match[1]) : 'production-audit.zip'
+  const filename = match ? decodeURIComponent(match[1]) : 'auditoria-lancamentos.xlsx'
+  const dataUrl = await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(String(reader.result || ''))
+    reader.onerror = () => reject(reader.error)
+    reader.readAsDataURL(blob)
+  })
   const url = window.URL.createObjectURL(blob)
   const anchor = document.createElement('a')
   anchor.href = url
@@ -462,12 +468,6 @@ export async function downloadAuditExport(): Promise<{ filename: string; dataUrl
   anchor.click()
   anchor.remove()
   window.URL.revokeObjectURL(url)
-  const dataUrl = await new Promise<string>((resolve, reject) => {
-    const reader = new FileReader()
-    reader.onload = () => resolve(String(reader.result || ''))
-    reader.onerror = () => reject(reader.error)
-    reader.readAsDataURL(blob)
-  })
   return { filename, dataUrl }
 }
 

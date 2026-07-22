@@ -75,7 +75,8 @@ export default function SistemaPage() {
       <div className="rounded-xl p-5 mb-5" style={{ background: '#13161d', border: '1px solid rgba(255,255,255,0.08)' }}>
         <h3 className="font-display font-bold text-[14px] text-[#e8eaf0] mb-2">Auditoria financeira</h3>
         <p className="text-sm text-[#8b90a4] mb-4">
-          Exporta lançamentos, lotes e hashes do cofre sem senhas nem conteúdo dos documentos.
+          Gera uma planilha com uma linha por lançamento, incluindo classificação, parcelamento,
+          vínculos com a base histórica, conciliações e documento de origem.
         </p>
         <button
           onClick={handleAuditExport}
@@ -84,7 +85,7 @@ export default function SistemaPage() {
           style={{ background: 'rgba(59,130,246,0.12)', color: '#93c5fd', border: '1px solid rgba(59,130,246,0.3)' }}
         >
           <Download size={14} />
-          {exporting ? 'Gerando...' : 'Exportar fotografia de auditoria'}
+          {exporting ? 'Gerando planilha...' : 'Exportar auditoria em Excel'}
         </button>
         {auditPayload && (
           <textarea
