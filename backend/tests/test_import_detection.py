@@ -10,6 +10,7 @@ import app
 from parsers.engine import (
     RawTx,
     _is_explicit_empty_nubank_text,
+    _parse_credit_card_pdf_text,
     _parse_nubank_statement,
     enrich_transaction,
     run_import_pipeline,
@@ -572,6 +573,44 @@ class SuggestionJobTests(unittest.TestCase):
 
 
 class InstallmentTests(unittest.TestCase):
+    def test_santander_pdf_uses_brl_credit_section_and_undated_iof(self) -> None:
+        text = """
+        Vencimento 20/10/2025
+        Pagamento e Demais Créditos
+        13/08 MERCADOPAGO*NOOPDISTRIBUI -0,08
+        Parcelamentos
+        05/12 AMAZON BR 10/10 212,70
+        Despesas
+        10/09 AMAZON PRIME*5S9HO0433 86,99 15,12
+        COTAÇÃO DÓLAR R$ 5,7531
+        IOF DESPESA NO EXTERIOR 3,04
+        """
+
+        raw = _parse_credit_card_pdf_text(text, "Cartao - 10-25 - Santander.pdf")
+        result = [enrich_transaction(row, "credit_card", "pdf") for row in raw]
+
+        self.assertEqual(len(result), 4)
+        self.assertEqual((result[0].description, result[0].amount_signed, result[0].tx_type),
+                         ("MERCADOPAGO*NOOPDISTRIBUI", 0.08, "income"))
+        self.assertEqual((result[2].description, result[2].amount_signed, result[2].tx_type),
+                         ("AMAZON PRIME*5S9HO0433", -86.99, "expense"))
+        self.assertEqual((result[3].date, result[3].description, result[3].amount_signed),
+                         ("2025-09-10", "IOF DESPESA NO EXTERIOR", -3.04))
+
+    def test_santander_positive_value_in_credit_section_is_income(self) -> None:
+        text = """
+        Vencimento 20/02/2025
+        Pagamento e Demais Créditos
+        06/01 PAGAMENTO DE FATURA 500,00
+        Despesas
+        07/01 LOJA TESTE 20,00
+        """
+
+        raw = _parse_credit_card_pdf_text(text, "Cartao - 02-25 - Santander.pdf")
+        result = [enrich_transaction(row, "credit_card", "pdf") for row in raw]
+
+        self.assertEqual([row.amount_signed for row in result], [500.0, -20.0])
+
     def test_installment_keeps_statement_amount(self) -> None:
         # CSV de cartao usa valor positivo para compra; o parser base chama isso
         # de income antes da regra especifica de cartao converte-lo em despesa.

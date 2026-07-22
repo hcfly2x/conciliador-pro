@@ -1,7 +1,7 @@
 'use client'
 import { useState } from 'react'
-import { AlertTriangle, Trash2 } from 'lucide-react'
-import { systemReset, isAdmin } from '@/lib/api'
+import { AlertTriangle, Download, Trash2 } from 'lucide-react'
+import { downloadAuditExport, systemReset, isAdmin } from '@/lib/api'
 import { useStore } from '@/store/app'
 
 export default function SistemaPage() {
@@ -10,6 +10,7 @@ export default function SistemaPage() {
   const [wipeCategories, setWipeCategories] = useState(false)
   const [loading, setLoading] = useState<'transactions' | 'all' | null>(null)
   const [result, setResult] = useState<string>('')
+  const [exporting, setExporting] = useState(false)
 
   const admin = isAdmin()
 
@@ -45,6 +46,19 @@ export default function SistemaPage() {
     }
   }
 
+  async function handleAuditExport() {
+    setExporting(true)
+    try {
+      await downloadAuditExport()
+      addToast('Exportação de auditoria gerada')
+    } catch (e: unknown) {
+      const err = e as { detail?: string }
+      addToast(err?.detail || 'Erro ao exportar auditoria', 'err')
+    } finally {
+      setExporting(false)
+    }
+  }
+
   if (!admin) {
     return <p className="text-sm text-[#8b90a4]">Apenas o administrador pode acessar esta página.</p>
   }
@@ -55,6 +69,22 @@ export default function SistemaPage() {
       <p className="text-sm text-[#8b90a4] mb-6">
         Ações administrativas do banco de dados. Contas bancárias, usuários e trilha de auditoria são sempre preservados.
       </p>
+
+      <div className="rounded-xl p-5 mb-5" style={{ background: '#13161d', border: '1px solid rgba(255,255,255,0.08)' }}>
+        <h3 className="font-display font-bold text-[14px] text-[#e8eaf0] mb-2">Auditoria financeira</h3>
+        <p className="text-sm text-[#8b90a4] mb-4">
+          Exporta lançamentos, lotes e hashes do cofre sem senhas nem conteúdo dos documentos.
+        </p>
+        <button
+          onClick={handleAuditExport}
+          disabled={exporting}
+          className="flex items-center justify-center gap-2 h-10 px-4 rounded-lg text-sm font-semibold disabled:opacity-40"
+          style={{ background: 'rgba(59,130,246,0.12)', color: '#93c5fd', border: '1px solid rgba(59,130,246,0.3)' }}
+        >
+          <Download size={14} />
+          {exporting ? 'Gerando...' : 'Exportar fotografia de auditoria'}
+        </button>
+      </div>
 
       <div className="rounded-xl p-5" style={{ background: 'rgba(248,113,113,0.05)', border: '1px solid rgba(248,113,113,0.25)' }}>
         <div className="flex items-center gap-2 mb-4">

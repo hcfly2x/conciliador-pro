@@ -1,12 +1,18 @@
 from __future__ import annotations
 
 import datetime as dt
+import base64
+import csv
+import hashlib
+import io
+import json
 import logging
 import os
 import shutil
+import zipfile
 from pathlib import Path
 
-from flask import Blueprint, jsonify, request, send_from_directory
+from flask import Blueprint, jsonify, request, send_file, send_from_directory
 
 from auth import record_audit
 from db import IS_POSTGRES
@@ -78,6 +84,88 @@ def import_scan_ui():
 @bp.route("/ui/arquivos")
 def import_files_ui():
     return send_from_directory(TOOLS / "import-files", "index.html")
+
+
+def _csv_bytes(columns: list[str], rows: list[tuple]) -> bytes:
+    stream = io.StringIO(newline="")
+    writer = csv.writer(stream, lineterminator="\n")
+    writer.writerow(columns)
+    writer.writerows(rows)
+    return stream.getvalue().encode("utf-8-sig")
+
+
+@bp.route("/api/v1/system/audit-export")
+def system_audit_export():
+    """Exporta somente dados necessarios para auditoria financeira."""
+    application = _application()
+    forbidden = application.require_admin()
+    if forbidden:
+        return forbidden
+
+    table_names = (
+        "accounts",
+        "account_file_coverage",
+        "imported_files",
+        "maintenance_log",
+        "transaction_reconciliations",
+        "transactions",
+    )
+    exported: dict[str, tuple[list[str], list[tuple]]] = {}
+    stored_rows: list[tuple] = []
+    stored_columns = [
+        "id", "account_name", "year_month", "filename", "size",
+        "content_sha1", "created_at", "imported_file_id",
+    ]
+    with application.db_connect() as conn:
+        if IS_POSTGRES:
+            conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+        for table in table_names:
+            cursor = conn.execute(f"SELECT * FROM {table}")
+            columns = [item[0] for item in cursor.description]
+            exported[table] = (columns, [tuple(row) for row in cursor.fetchall()])
+        docs = conn.execute(
+            """
+            SELECT id,account_name,year_month,filename,size,content_b64,
+                   created_at,imported_file_id
+            FROM stored_documents
+            """
+        ).fetchall()
+        for row in docs:
+            try:
+                content_hash = hashlib.sha1(base64.b64decode(row[5])).hexdigest()
+            except Exception:
+                content_hash = "INVALID_BASE64"
+            stored_rows.append(
+                (row[0], row[1], row[2], row[3], row[4], content_hash,
+                 row[6], row[7])
+            )
+
+    created_at = dt.datetime.now(dt.timezone.utc).isoformat()
+    archive = io.BytesIO()
+    manifest = {
+        "format": "conciliador-audit-export-v1",
+        "created_at": created_at,
+        "database": "postgres" if IS_POSTGRES else "sqlite",
+        "tables": {name: len(rows) for name, (_, rows) in exported.items()},
+    }
+    manifest["tables"]["stored_documents"] = len(stored_rows)
+    with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as bundle:
+        bundle.writestr("manifest.json", json.dumps(manifest, indent=2, ensure_ascii=False))
+        for name, (columns, rows) in exported.items():
+            bundle.writestr(f"tables/{name}.csv", _csv_bytes(columns, rows))
+        bundle.writestr(
+            "tables/stored_documents.csv",
+            _csv_bytes(stored_columns, stored_rows),
+        )
+    archive.seek(0)
+    filename = f"production-audit-{dt.datetime.now().strftime('%Y%m%d-%H%M%S')}.zip"
+    return send_file(
+        archive,
+        mimetype="application/zip",
+        as_attachment=True,
+        download_name=filename,
+        max_age=0,
+    )
 
 
 @bp.route("/api/v1/system/reset", methods=["POST"])

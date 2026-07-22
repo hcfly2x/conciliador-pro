@@ -388,9 +388,10 @@ def classify_credit_card_type(description: str, raw_type: str, file_format: str)
     """
     dn = norm_text(description)
 
-    # Para CSV: quando parser marca como expense (valor negativo), o sinal foi invertido
-    # corretamente pelo banco — é de fato income (storno, devolução)
-    inferred_from_sign = file_format == "csv" and raw_type == "expense"
+    # Em arquivos tabulares e PDFs de fatura, o parser base usa ``expense`` para
+    # valores impressos como negativos ou pertencentes ao bloco de creditos.
+    # Para o caixa do cartao isso representa reducao da fatura, portanto income.
+    inferred_from_sign = file_format in {"csv", "pdf"} and raw_type == "expense"
 
     is_income = inferred_from_sign or any(m in dn for m in CREDIT_CARD_INCOME_MARKERS)
     return "income" if is_income else "expense"
@@ -951,23 +952,13 @@ def parse_pdf_statement(
     return out, balance
 
 
-def parse_pdf_credit_card(path: Path, account_name: str = "") -> list[RawTx]:
-    """
-    Parser de fatura de cartão de crédito.
-    Suporta: Santander (parser dedicado) e genérico.
-    Detecta parcelas NO string bruto ANTES de limpar a descrição.
-    """
-    if PdfReader is None:
-        raise RuntimeError("pypdf não encontrado. Instale: pip install pypdf")
-
-    reader = PdfReader(str(path))
-    text = "\n".join((p.extract_text() or "") for p in reader.pages)
+def _parse_credit_card_pdf_text(text: str, filename: str) -> list[RawTx]:
+    """Interpreta o texto extraido de uma fatura de cartao em PDF."""
     if not text.strip():
         return []
 
-    # Inferir mês/ano de referência pelo nome do arquivo: "Cartao - 03-26"
-    ref_year = _infer_statement_year(text, path.name)
-    ref_month = _infer_statement_month(text, path.name)
+    ref_year = _infer_statement_year(text, filename)
+    ref_month = _infer_statement_month(text, filename)
     due = re.search(
         r"vencimento\s+(\d{2})/(\d{2})/(20\d{2})",
         re.sub(r"\s+", " ", strip_accents(text).lower()),
@@ -982,24 +973,32 @@ def parse_pdf_credit_card(path: Path, account_name: str = "") -> list[RawTx]:
     lines = [re.sub(r"\s+", " ", (ln or "").strip()) for ln in text.splitlines()]
     lines = [ln for ln in lines if ln]
 
-    # Linhas de seção que não são transações
-    SECTION_KEYWORDS = (
-        "detalhamento da fatura",
-        "pagamento e demais creditos",
-        "parcelamentos",
-        "despesas",
-        "valor total",
-        "compra data descricao",
-        "santander",
-        "vencimento",
-        "limite",
-        "fatura",
-        "total a pagar",
-    )
+    in_credit_section = False
+    last_foreign_date = ""
 
     for ln in lines:
         ln_norm = norm_text(ln)
-        if any(k in ln_norm for k in SECTION_KEYWORDS):
+        if ln_norm == "pagamento e demais creditos":
+            in_credit_section = True
+            continue
+        if ln_norm in {"parcelamentos", "despesas"}:
+            in_credit_section = False
+            continue
+        # O Santander imprime o IOF sem data logo apos a compra internacional.
+        if "iof despesa no exterior" in ln_norm:
+            vals = amount_re.findall(ln)
+            value = parse_money(vals[-1]) if vals else None
+            if last_foreign_date and value not in (None, 0.0):
+                out.append(
+                    RawTx(
+                        last_foreign_date,
+                        "IOF DESPESA NO EXTERIOR",
+                        abs(value),
+                        "income",
+                        source_line=ln,
+                    )
+                )
+            last_foreign_date = ""
             continue
 
         m = re.search(r"(\d{2}/\d{2})\s+(.+)$", ln)
@@ -1012,9 +1011,11 @@ def parse_pdf_credit_card(path: Path, account_name: str = "") -> list[RawTx]:
         if not vals:
             continue
 
-        val_txt = vals[-1]
-        v = parse_money(val_txt)
-        if v is None:
+        # Nas compras internacionais, as duas ultimas colunas sao R$ e US$.
+        is_foreign = len(vals) >= 2
+        val_txt = vals[-2] if is_foreign else vals[-1]
+        value = parse_money(val_txt)
+        if value is None:
             continue
 
         pos = rest.rfind(val_txt)
@@ -1022,22 +1023,42 @@ def parse_pdf_credit_card(path: Path, account_name: str = "") -> list[RawTx]:
         if not raw_desc_with_installment:
             continue
 
-        # Detectar parcela NO STRING BRUTO antes de qualquer limpeza
-        inst_raw = raw_desc_with_installment
-
         day = int(ddmm[:2])
         month = int(ddmm[3:5])
         year = ref_year if month <= ref_month else ref_year - 1
-        d = parse_date(f"{day:02d}/{month:02d}/{year}")
-        if not d:
+        date = parse_date(f"{day:02d}/{month:02d}/{year}")
+        if not date:
             continue
 
-        t = "income" if v > 0 else "expense"
+        # Valores negativos e itens do bloco de creditos reduzem a fatura.
+        raw_type = "expense" if value < 0 or in_credit_section else "income"
         out.append(
-            RawTx(d, raw_desc_with_installment, abs(v), t, inst_raw, source_line=ln)
+            RawTx(
+                date,
+                raw_desc_with_installment,
+                abs(value),
+                raw_type,
+                raw_desc_with_installment,
+                source_line=ln,
+            )
         )
+        last_foreign_date = date if is_foreign else ""
 
     return out
+
+
+def parse_pdf_credit_card(path: Path, account_name: str = "") -> list[RawTx]:
+    """
+    Parser de fatura de cartão de crédito.
+    Suporta: Santander (parser dedicado) e genérico.
+    Detecta parcelas NO string bruto ANTES de limpar a descrição.
+    """
+    if PdfReader is None:
+        raise RuntimeError("pypdf não encontrado. Instale: pip install pypdf")
+
+    reader = PdfReader(str(path))
+    text = "\n".join((p.extract_text() or "") for p in reader.pages)
+    return _parse_credit_card_pdf_text(text, path.name)
 
 
 # ─────────────────────────────────────────────────────────────
