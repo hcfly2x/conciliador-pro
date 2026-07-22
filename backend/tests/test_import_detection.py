@@ -7,7 +7,13 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import app
-from parsers.engine import RawTx, _is_explicit_empty_nubank_text, enrich_transaction, run_import_pipeline
+from parsers.engine import (
+    RawTx,
+    _is_explicit_empty_nubank_text,
+    _parse_nubank_statement,
+    enrich_transaction,
+    run_import_pipeline,
+)
 
 
 class DocumentDetectionTests(unittest.TestCase):
@@ -151,6 +157,35 @@ class EmptyStatementTests(unittest.TestCase):
         self.assertFalse(_is_explicit_empty_nubank_text(
             "Saldo inicial R$ 0,00\nMovimentacoes\nSaldo final do periodo R$ 0,00"
         ))
+
+    def test_nubank_parser_continues_after_intermediate_page_footer(self) -> None:
+        text = """
+        Saldo inicial 9,43
+        Rendimento liquido 0,00
+        Saldo final do periodo 28,63
+        Movimentacoes
+        01 OUT 2025 Total de entradas + 10,00
+        Transferencia recebida pelo Pix PESSOA 10,00
+        Extrato gerado dia 13 de maio de 2026 1 de 2
+        18 OUT 2025 Total de entradas + 20,00
+        Transferencia recebida pelo Pix PESSOA 20,00
+        Total de saidas - 10,80
+        Compra no debito CONCEBRA 5,40
+        Compra no debito CONCEBRA 5,40
+        Extrato gerado dia 13 de maio de 2026 2 de 2
+        """
+
+        parsed = _parse_nubank_statement(text, "Extrato - 10-25 - Nubank.pdf")
+
+        self.assertIsNotNone(parsed)
+        txs, balance = parsed
+        self.assertEqual([tx.date for tx in txs], [
+            "2025-10-01", "2025-10-18", "2025-10-18", "2025-10-18"
+        ])
+        self.assertEqual(
+            [tx.amount_raw for tx in txs], [10.0, 20.0, 5.4, 5.4]
+        )
+        self.assertTrue(balance.ok)
 
 
 class CompetenceDetectionTests(unittest.TestCase):

@@ -2418,6 +2418,146 @@ def init_db() -> None:
                     f"imported_files={len(repair_import_ids)};deleted_transactions={repair_deleted}",
                 ),
             )
+
+        # Reparo idempotente autorizado em 22/07/2026. O parser Nubank antigo
+        # encerrava no rodape da primeira pagina e omitiu os tres movimentos de
+        # 18/10/2025. Eles pertencem ao mesmo lote/documento ja importado.
+        repair_id = "repair-nubank-checking-2025-10-page-2"
+        repair_done = conn.execute(
+            "SELECT 1 FROM maintenance_log WHERE id=?", (repair_id,)
+        ).fetchone()
+        if not repair_done:
+            target = conn.execute(
+                """
+                SELECT f.id, f.account_id
+                FROM imported_files f JOIN accounts a ON a.id=f.account_id
+                WHERE a.name='CONTA NUBANK'
+                  AND f.year='2025' AND f.month='10'
+                  AND f.file_hash='ce73cc17f31a0bfa9a49d7296759d83dedbdb4b4'
+                """
+            ).fetchone()
+            if target:
+                imported_file_id, account_id = target[0], target[1]
+                # Preservar a grafia exibida no documento e usada nas demais
+                # linhas do mesmo extrato.
+                pix_display = (
+                    "Transferência recebida pelo Pix HELCIO CARNEIRO DE AVILA "
+                    "MENDONCA - •••. 243.161-•• - BCO SANTANDER (BRASIL) S.A. "
+                    "(0033) Agência: 1901 Conta: 1002864-2"
+                )
+                pix_norm = norm_text(pix_display)
+                concebra_display = "Compra no débito CONCEBRA"
+                concebra_norm = norm_text(concebra_display)
+                source_pix = conn.execute(
+                    """
+                    SELECT suggested_category_id,suggested_subcategory_id
+                    FROM transactions
+                    WHERE imported_file_id=? AND description_norm LIKE 'transferencia recebida pelo pix%'
+                    LIMIT 1
+                    """,
+                    (imported_file_id,),
+                ).fetchone()
+                source_concebra = conn.execute(
+                    """
+                    SELECT suggested_category_id,suggested_subcategory_id
+                    FROM transactions
+                    WHERE imported_file_id=? AND description_norm=?
+                    LIMIT 1
+                    """,
+                    (imported_file_id, concebra_norm),
+                ).fetchone()
+                repairs = [
+                    (
+                        str(uuid.uuid5(uuid.NAMESPACE_URL, repair_id + ":pix")),
+                        "2025-10-18",
+                        pix_display,
+                        pix_norm,
+                        20.0,
+                        "income",
+                        1,
+                        source_pix,
+                    ),
+                    (
+                        str(uuid.uuid5(uuid.NAMESPACE_URL, repair_id + ":concebra:1")),
+                        "2025-10-18",
+                        concebra_display,
+                        concebra_norm,
+                        -5.4,
+                        "expense",
+                        1,
+                        source_concebra,
+                    ),
+                    (
+                        str(uuid.uuid5(uuid.NAMESPACE_URL, repair_id + ":concebra:2")),
+                        "2025-10-18",
+                        concebra_display,
+                        concebra_norm,
+                        -5.4,
+                        "expense",
+                        2,
+                        source_concebra,
+                    ),
+                ]
+                inserted = 0
+                for (
+                    tx_id,
+                    date,
+                    desc,
+                    desc_norm,
+                    amount,
+                    tx_type,
+                    occurrence,
+                    source,
+                ) in repairs:
+                    tx_key = (
+                        f"{account_id}|{date}|{amount:.2f}|{desc_norm}|"
+                        f"{tx_type}|0|0#{occurrence}"
+                    )
+                    if conn.execute(
+                        "SELECT 1 FROM transactions WHERE tx_key=?", (tx_key,)
+                    ).fetchone():
+                        continue
+                    suggested_category_id = source[0] if source else None
+                    suggested_subcategory_id = source[1] if source else None
+                    conn.execute(
+                        """
+                        INSERT INTO transactions(
+                          id,tx_key,date,competence_month,description,description_norm,
+                          amount,type,status,account_id,category_id,subcategory_id,notes,
+                          suggested_category_id,suggested_subcategory_id,match_probability,
+                          match_notes,history_match_id,identity_score,installment_current,
+                          installment_total,flags,imported_file_id,installment_plan_id,
+                          locked,classified_by,classified_at
+                        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                        """,
+                        (
+                            tx_id, tx_key, date, "2025/10", desc, desc_norm, amount,
+                            tx_type, "pending", account_id, None, None, "",
+                            suggested_category_id, suggested_subcategory_id, 0.0, "",
+                            None, 0.0, None, None, "", imported_file_id, None, 0, "", "",
+                        ),
+                    )
+                    store_shadow_metadata(
+                        conn, "transactions", tx_id, desc, "checking", None, None
+                    )
+                    inserted += 1
+                conn.execute(
+                    """
+                    UPDATE imported_files
+                    SET total_parsed=(SELECT COUNT(1) FROM transactions WHERE imported_file_id=?),
+                        total_inserted=(SELECT COUNT(1) FROM transactions WHERE imported_file_id=?)
+                    WHERE id=?
+                    """,
+                    (imported_file_id, imported_file_id, imported_file_id),
+                )
+                conn.execute(
+                    "INSERT INTO maintenance_log(id,executed_at,detail) VALUES (?,?,?)",
+                    (
+                        repair_id,
+                        dt.datetime.now().isoformat(timespec="seconds"),
+                        f"imported_file_id={imported_file_id};inserted={inserted}",
+                    ),
+                )
         applied_migrations = run_migrations(conn)
         if applied_migrations:
             logger.info("Migrations aplicadas: %s", applied_migrations)

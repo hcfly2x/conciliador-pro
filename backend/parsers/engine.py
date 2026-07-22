@@ -1378,7 +1378,11 @@ def _parse_nubank_statement(
             or "extrato gerado" in ln_norm
             or "cnpj" in ln_norm
         ):
-            break
+            # O rodape aparece ao fim de cada pagina. Encerrar o parser aqui
+            # descartava movimentos validos das paginas seguintes.
+            current_date = ""
+            pending_desc = []
+            continue
 
         date_match = re.match(
             r"^(\d{2})\s+([A-Z]{3})\s+(20\d{2})\b", strip_accents(ln).upper()
