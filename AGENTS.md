@@ -2,19 +2,24 @@
 
 ## Contexto Fixo
 - Projeto: conciliador financeiro pessoal.
-- Stack: Flask + SQLite no backend, Next.js no frontend.
+- Stack: Flask com PostgreSQL hosted/SQLite local no backend, Next.js no frontend.
 - Pasta oficial do projeto: `C:\Users\hcfly\Downloads\conciliador-pro-github`.
 - Nao criar novas pastas de projeto fora da pasta oficial.
 - Qualquer arquivo temporario, log, zip ou documentacao deve ficar dentro da pasta do projeto, salvo pedido explicito do usuario.
 
 ## Backend
-- Backend principal: `backend/app.py`.
+- Entrada principal: `backend/app.py`; implementacao compartilhada atual em
+  `backend/core/application.py`, em processo de separacao por blueprints.
 - Banco local: `backend/data/conciliador_pro.db`.
-- Dependencias Python ficam em `backend/.venv`.
-- Para rodar backend, usar sempre:
+- Dependencias Python devem ficar em `backend/.venv`. Nesta copia o ambiente pode
+  estar ausente; nesse caso, registrar o desvio e usar o Python global somente
+  para validacao local.
+- Quando o ambiente existir, usar:
   `backend\.venv\Scripts\python.exe backend\app.py`
 - `backend/run.bat` deve chamar diretamente `.venv\Scripts\python.exe app.py`.
 - Backend atualmente sobe em `http://127.0.0.1:5061`.
+- Em ambiente hospedado, jobs persistentes sao consumidos por
+  `backend/worker.py`; localmente existe fallback inline.
 
 ## Frontend
 - Frontend principal: `frontend`.

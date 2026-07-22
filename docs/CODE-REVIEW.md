@@ -1,4 +1,9 @@
-# Code Review - Conciliador Pro (2026-07-14)
+# Code Review - Conciliador Pro (2026-07-14) - HISTORICO
+
+> Registro historico do estado observado em 14/07/2026. Nao e uma especificacao
+> vigente. Vinculos historicos e a operacao em lote foram posteriormente
+> reintroduzidos por decisao confirmada, com revisao humana e regras estritas.
+> Consulte `PROJECT_CONTEXT.md` e `docs/ROADMAP-FINALIZACAO.md`.
 
 Objetivo declarado do dono do sistema: **classificar todas as entradas e saidas da conta com categoria e subcategoria (quando houver)**, com a base historica servindo apenas como fonte de sugestoes.
 

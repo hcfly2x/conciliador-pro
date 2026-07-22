@@ -1,236 +1,160 @@
-# Roadmap de Finalizacao - Conciliador Pro
+# Roadmap vigente de finalizacao - Conciliador Pro
 
-Revisao consolidada em 15/07/2026 a partir do codigo atual, do
-`PROJECT_CONTEXT.md` e dos roadmaps anteriores.
+Atualizado em 22/07/2026. Este e o checklist operacional vigente. O codigo e a
+fonte principal da verdade e `PROJECT_CONTEXT.md` consolida as regras do produto.
+Os demais roadmaps sao historicos ou entradas de code review.
 
-Este e o checklist operacional vigente para finalizar o aplicativo. Documentos
-anteriores continuam como historico, mas nao devem prevalecer sobre este arquivo,
-o `PROJECT_CONTEXT.md` ou o codigo atual.
+Legenda:
 
-Regra de publicacao: commit e push exigem autorizacao explicita do proprietario.
+- `[x]` concluido e validado localmente.
+- `[~]` implementado parcialmente ou aguardando validacao externa.
+- `[ ]` pendente.
+- `[>]` condicionado ou deliberadamente adiado.
 
-## Diagnostico executivo
+Nenhum commit ou push pode ser feito sem autorizacao explicita do proprietario.
 
-O fluxo principal existe e o produto ja e utilizavel: autenticacao, importacao com
-preview, deduplicacao, classificacao, bloqueio, base historica, sugestoes, parcelas,
-cofre, relatorios e deploy web estao implementados. O trabalho restante nao pede
-reescrita; pede corrigir quatro fluxos criticos, fechar a regressao dos parsers,
-consolidar regras e validar producao.
+## Marco atual
 
-### Achados bloqueadores
+- `origin/main`: commit `5b238c8`.
+- Rodada de estabilizacao: somente no working tree, sem commit/push.
+- Validacao local: 91 testes Python aprovados e 1 PostgreSQL condicional,
+  TypeScript, build e 6 jornadas Playwright aprovados; o E2E usa o runtime de
+  producao do Next.js.
+- Producao/staging: commit implantado e integracoes externas ainda nao homologados.
 
-1. A importacao ainda classifica automaticamente um lancamento quando encontra
-   data, valor, descricao e tipo iguais em outro lancamento classificado. Isso
-   viola a regra que proibe autoclassificacao e ainda ignora a conta nessa busca.
-2. Na tabela, selecionar categoria salva e bloqueia imediatamente o lancamento.
-   Isso impede o preenchimento normal de subcategoria e observacao antes do
-   bloqueio.
-3. A exclusao de documentos tem comportamentos diferentes: apagar um documento
-   persistido no banco preserva os lancamentos; apagar um arquivo local remove
-   arquivo, importacao e lancamentos na mesma operacao.
-4. Os relatorios usam universos diferentes. Resumo geral e evolucao mensal filtram
-   `locked=0`, enquanto resumo mensal e categoria incluem classificados e pendentes.
+## 1. Produto e integridade financeira
 
-### Achados de alta prioridade
+- [x] Preservar os lancamentos dos documentos como fonte de verdade.
+- [x] Bloquear o lote quando houver duplicado ja persistido no banco.
+- [x] Preservar repeticoes internas legitimas do documento.
+- [x] Impedir autoclassificacao e exigir acao humana.
+- [x] Salvar categoria, subcategoria e observacao como uma operacao explicita.
+- [x] Validar categoria, tipo e subcategoria no backend.
+- [x] Preservar todas as parcelas e seus valores originais.
+- [x] Separar exclusao de documento e exclusao de lancamentos.
+- [x] Excluir pares conciliados de todos os relatorios e permitir desfazer.
+- [ ] Configurar por tipo de documento quando divergencia de saldo ou linhas
+  rejeitadas devem bloquear a importacao.
 
-1. Categoria e subcategoria recebidas pela API nao sao validadas quanto a
-   existencia, compatibilidade entre si ou tipo receita/despesa.
-2. O motor de sugestoes consulta apenas `classification_history`; lancamentos
-   classificados diretamente nao sao consultados como segunda fonte, apesar da
-   regra consolidada.
-3. O endpoint de confirmar/rejeitar vinculo historico nao esta liberado para o
-   perfil colaborador, embora a documentacao de perfis atribua essa operacao ao
-   trabalho cotidiano.
-4. A API ainda aceita `import_db_duplicates`, capaz de forcar a reinsercao de um
-   lancamento detectado no banco.
-5. Next.js 15.5.15 possui alertas de seguranca conhecidos; `npm audit` recomenda
-   atualizacao compativel para 15.5.20.
-6. Login nao possui limitacao de tentativas, atraso progressivo ou bloqueio
-   temporario.
+## 2. Importacao e regressao dos parsers
 
-### Divida tecnica relevante
+- [x] Cobrir os seis formatos oficiais com fixtures anonimizadas.
+- [x] Validar quantidade, datas, valores, sinais, competencia e conta detectada.
+- [x] Usar pagamento/vencimento da fatura para competencia de cartao.
+- [x] Cobrir documentos vazios, corrompidos, protegidos e layout inesperado.
+- [x] Cobrir CSV/XLSX com variacoes de encoding e formato monetario.
+- [x] Cobrir arquivo repetido, duplicado no banco e repeticao interna.
+- [x] Limitar tamanho e extensao antes da leitura completa.
+- [~] Executar regressao dos seis formatos oficiais: fixtures anonimizadas
+  aprovadas; originais privados ainda precisam de conferencia em staging.
+- [x] Registrar totais esperados e observados em
+  `docs/REGRESSAO-FINANCEIRA-2026-07-22.md`.
 
-1. `backend/app.py` concentra aproximadamente 5.000 linhas e mistura API, schema,
-   importacao, classificacao, documentos e relatorios.
-2. Alteracoes de schema rodam na inicializacao sem ferramenta formal de migrations.
-3. Valores monetarios usam `REAL`/double precision; deve-se avaliar `NUMERIC` no
-   PostgreSQL antes de ampliar o uso financeiro.
-4. As tabelas nao declaram chaves estrangeiras, deixando integridade referencial
-   dependente do codigo.
-5. Documentos sao armazenados em Base64 dentro do PostgreSQL, aumentando tamanho e
-   memoria de leitura. O destino definitivo ainda precisa de decisao.
-6. Roadmaps e documentos de arquitetura contem decisoes antigas sobre vinculo,
-   armazenamento, banco e contagem de testes.
+## 3. Vinculos historicos e sugestoes
 
-## Checklist ordenado de implementacao
+- [x] Exibir comparacao lado a lado e justificativas de data, valor e descricao.
+- [x] Persistir confirmacao, rejeicao, desvinculo e auditoria.
+- [x] Preservar a conta do documento ao confirmar o vinculo.
+- [x] Confirmar lotes estritos sem recarregar a pagina a cada item.
+- [x] Abrir candidatos recusados/ambiguos em revisao manual.
+- [x] Tratar total parcelado com tolerancia de R$ 1 e similaridade minima de 50%.
+- [x] Processar lotes sucessivos de 50 com logs visiveis.
+- [x] Usar historico e transacoes classificadas como evidencias de sugestao.
+- [x] Persistir Top 3, justificativas e estado do job.
+- [x] Avaliacao retrospectiva leave-one-out disponivel.
+- [~] Normalizacao de estabelecimento e metadados em modo sombra; falta medir e
+  aprovar ativacao no ranking.
+- [ ] Medir falsos positivos do vinculo com amostra real.
+- [ ] Separar similaridade, confianca e probabilidade calibrada.
+- [ ] Cobrir confirmar/rejeitar/desvincular/recalcular em Playwright.
 
-### Etapa 0 - Congelar regras e proteger dados
+## 4. Seguranca e confiabilidade
 
-- [x] Confirmar o universo oficial dos tres relatorios.
-- [x] Confirmar a UX de excluir somente o documento ou documento mais lancamentos.
-- [x] Confirmar a remocao definitiva de `import_db_duplicates`.
-- [x] Confirmar se colaboradores podem revisar candidatos de vinculo historico.
-- [ ] Fazer backup verificavel antes da primeira atualizacao que preserve dados
-      entre versoes. Durante a homologacao atual, o banco pode ser reiniciado a
-      cada publicacao e este item nao bloqueia os testes.
-- [ ] Registrar commit e schema publicados quando a aplicacao passar a preservar
-      os dados entre atualizacoes.
+- [x] Proxy confiavel para rate limit e teste contra `X-Forwarded-For` forjado.
+- [x] RBAC declarativo, escrita negada por padrao e matriz admin/colaborador.
+- [x] Escape literal de `%` e `_` em buscas `LIKE`.
+- [x] CSP e cabecalhos de seguranca no frontend.
+- [x] Rate limit e bloqueio temporario do login.
+- [x] Cache LRU, renovacao controlada e limpeza de sessoes expiradas.
+- [x] Visibilidade e limite do fallback de conexoes do pool.
+- [x] Auditoria dos `except Exception` silenciosos.
+- [x] Dependencias sem vulnerabilidades conhecidas no audit local.
+- [ ] Testar expiracao, logout, desativacao e troca de perfil com mais de um worker.
+- [>] Remover predicado de token legado depois de 30 dias de convivencia.
 
-**Saida:** decisoes pendentes fechadas; backup passa a ser obrigatorio antes da
-primeira versao com dados persistentes.
+## 5. Arquitetura do backend
 
-### Etapa 1 - Corrigir bloqueadores de regra e integridade
+- [x] Reforcar testes do tradutor SQL e usar schema real nos workflows.
+- [~] `app.py` reduzido e 34 de 62 handlers movidos para blueprints: auth,
+  sistema, relatorios, contas/razoes/categorias, cobertura/cofre e conciliacoes.
+- [ ] Mover os 28 handlers grandes restantes: importacao, transacoes, vinculos e
+  sugestoes ainda permanecem em `core/application.py`.
+- [x] Criar worker persistente para importacoes, seed, sugestoes e recalculo.
+- [x] Proteger deploys sobrepostos com lease PostgreSQL exclusivo; processo web
+  nao recupera nem altera jobs em execucao.
+- [~] Validar worker e web separados em PostgreSQL: job preparado no CI com
+  PostgreSQL 16 descartavel; a primeira execucao apos o push ainda precisa passar.
+- [x] Validar persistencia do job ao reiniciar o processo web em teste
+  multi-processo SQLite; repetir no PostgreSQL hospedado continua pendente.
+- [x] Introduzir migrations versionadas, checksum e tabela de versao do schema.
+- [x] Aplicar migrations pendentes no boot de forma idempotente.
 
-- [x] Remover a classificacao automatica por correspondencia exata na importacao;
-      manter o resultado apenas como sugestao.
-- [x] Transformar categoria, subcategoria e observacao em um rascunho unico com
-      botao explicito `Salvar e bloquear`.
-- [x] Validar no backend que categoria existe e corresponde ao tipo do lancamento.
-- [x] Validar que subcategoria existe antes de salvar.
-- [x] Preservar categoria e subcategoria entre parcelas somente pela regra
-      confirmada de plano de parcelamento.
-- [x] Separar explicitamente exclusao de arquivo e exclusao de lancamentos, com
-      confirmacoes e auditorias distintas.
-- [x] Unificar filtros dos relatorios conforme a decisao da Etapa 0.
-- [x] Criar testes de integracao para classificacao, bloqueio, desbloqueio,
-      propagacao de parcelas e exclusao de documentos.
+## 6. Frontend
 
-**Saida:** nenhuma classificacao sem acao humana e nenhuma exclusao ambigua.
+- [x] Extrair controles, grid e modal de historico da tabela de transacoes.
+- [x] Reduzir todos os componentes da tabela para menos de 400 linhas;
+  `useTransactionTable.tsx` possui 372 linhas.
+- [x] Remover configuracao Tailwind duplicada.
+- [x] Normalizar BOM/LF e adicionar `.gitattributes`.
+- [x] Manter logs de operacoes longas visiveis ao usuario.
+- [~] Cobrir cofre, vinculos, perfil colaborador e auditoria em E2E: CSP,
+  autenticacao admin, importacao/classificacao, conciliacao/desfazer, exclusao
+  segura no cofre e RBAC/auditoria aprovados; UI de vinculos continua pendente.
+- [ ] Revisar responsividade e textos visiveis.
 
-### Etapa 2 - Fechar o motor de importacao
+## 7. Observabilidade e operacao
 
-- [x] Inventariar a amostra privada real: 139 documentos dos seis tipos oficiais,
-      com cobertura e achados agregados em `docs/AMOSTRAS-HOMOLOGACAO.md`.
-- [x] Aceitar nomes de abas e cabecalhos historicos com acentos degradados,
-      inclusive no calculo do progresso da importacao.
-- [x] Diferenciar extrato vazio confirmado de falha de parser para os casos reais
-      Nubank PDF e XP CSV, mantendo os demais vazios bloqueados.
-- [x] Criar fixtures anonimizadas dos seis tipos oficiais: extrato e cartao de
-      Santander, XP e Nubank.
-- [x] Para cada fixture, afirmar quantidade, datas, valores, sinais, competencia,
-      conta detectada, duplicados internos, duplicados no banco e linhas rejeitadas.
-- [x] Testar PDFs vazios, protegidos, corrompidos e com layout inesperado.
-- [x] Testar CSV e XLSX com encoding, separador, coluna e formato monetario
-      diferentes. O XLS legado continua suportado pelo mesmo parser tabular e
-      permanece como compatibilidade secundaria, pois nao integra os seis formatos oficiais.
-- [x] Testar reimportacao do mesmo arquivo e arquivos distintos com lancamentos
-      coincidentes.
-- [x] Remover a opcao de reinserir duplicados do banco, se confirmada na Etapa 0.
-- [x] Garantir limite de tamanho e extensao antes de ler arquivos em memoria.
-- [ ] Tornar falha de saldo e linhas rejeitadas criterios de bloqueio configurados
-      por tipo de documento.
+- [x] Logging de request com metodo, path, status, duracao e usuario, sem payload.
+- [x] Sentry opcional no backend e frontend, desligado sem DSN.
+- [ ] Confirmar erro controlado no Sentry de staging.
+- [ ] Confirmar formato JSON e correlacao de logs no ambiente hospedado.
+- [x] Confirmar commits atuais: Vercel `5b238c8`; Render `3f17d8a`.
+- [~] Fazer smoke test em Vercel, Render e Supabase: frontend, health PostgreSQL,
+  CSP, CORS e 401 aprovados; fluxos autenticados aguardam credenciais.
+- [ ] Validar admin, colaborador e auditoria no ambiente hospedado.
 
-**Saida:** regressao automatizada completa dos seis parsers e deduplicacao.
+## 8. Dados persistentes e schema
 
-### Etapa 3 - Finalizar vinculos historicos
+- [>] Backup verificavel passa a bloquear releases quando dados forem preservados
+  entre atualizacoes; durante homologacao o reset continua permitido.
+- [ ] Registrar commit e versao do schema em cada release persistente.
+- [ ] Restaurar um backup em ambiente de teste.
+- [>] Avaliar `NUMERIC` depois da estabilizacao e testar arredondamentos.
+- [>] Adicionar foreign keys somente depois de auditar dados existentes.
+- [>] Monitorar `stored_documents`; migrar Base64 ao superar aproximadamente 200 MB.
 
-- [x] Usar limiar inicial de 96% para apresentar candidato.
-- [x] Exibir comparacao lado a lado antes da decisao.
-- [x] Exigir confirmacao humana e persistir rejeicao do mesmo candidato.
-- [x] Exibir `Vinculado` somente depois da confirmacao.
-- [ ] Testar interface de confirmar, rejeitar, desvincular e recalcular (API coberta).
-- [x] Definir permissao de colaborador e alinhar guard, frontend e documentacao.
-- [x] Exibir justificativa objetiva: diferenca de data, diferenca de valor e
-      similaridade de descricao, sem chamar score tecnico de probabilidade.
-- [ ] Medir falsos positivos do limiar de 96% com amostra real antes da producao.
+## 9. Documentacao e limpeza
 
-**Saida:** vinculo revisavel, auditavel e sem efeito de autoclassificacao.
+- [x] Atualizar `PROJECT_CONTEXT.md` e este roadmap para o estado de 22/07/2026.
+- [x] Marcar roadmaps antigos como historicos/supersedidos.
+- [x] Atualizar contexto, arquitetura, API, banco, deploy e README para a rodada
+  atual; revisar novamente ao concluir os dominios grandes.
+- [ ] Remover codigo legado somente depois de provar que nao possui consumidor.
+- [x] Registrar matriz final de variaveis de ambiente.
 
-### Etapa 4 - Reconstruir o motor de sugestoes
+## 10. Futuro deliberadamente adiado
 
-- [ ] Normalizar estabelecimentos removendo ruido bancario, parcelas, IDs e sufixos.
-      Modo sombra implementado; falta medir e aprovar antes de ativar no ranking.
-- [x] Usar base historica e lancamentos classificados como fontes de evidencia.
-- [ ] Tratar origens historicas desconhecidas sem penalidade de conta.
-- [x] Calcular categoria primeiro e subcategoria condicionada a categoria.
-- [ ] Separar similaridade tecnica, confianca e probabilidade calibrada.
-- [x] Exibir Top 3 com justificativas curtas e fontes de evidencia.
-- [x] Persistir sugestoes e estado de calculo para que a tabela nao dependa de
-      processamento sincrono nem permaneca indefinidamente carregando.
-- [x] Executar o calculo em job incremental ou completo, com progresso, logs,
-      recuperacao do job ativo e tratamento explicito de falha.
-- [x] Criar Central de Classificacao com filas de vinculo, sugestoes fortes/fracas,
-      sem evidencia, aguardando calculo, ignoradas e classificadas.
-- [x] Adicionar `Salvar e proximo`, atalhos, classificacao em lote e aplicacao
-      confirmada a lancamentos similares.
-- [x] Filtrar categorias da interface pelo tipo receita/despesa.
-- [x] Adicionar subcategoria a classificacao em lote.
-- [x] Criar avaliacao retrospectiva leave-one-out com Top 1, Top 3, cobertura
-      e faixas de calibracao, sem alterar classificacoes ou pesos.
-- [x] Manter toda aplicacao dependente de clique humano.
+- [>] Calibracao estatistica do score.
+- [>] Migracao monetaria para `NUMERIC`.
+- [>] Foreign keys extensivas.
+- [>] Object storage/`bytea` para documentos.
+- [>] Pluggy/Open Finance; nao iniciar antes da estabilizacao e da confirmacao do
+  uso de conta PJ.
+- [x] Registrar criterios de decisao para esses itens em
+  `docs/AVALIACOES-POS-ESTABILIZACAO.md`.
 
-**Saida:** sugestoes mensuraveis, explicaveis e coerentes com as regras do produto.
+## Criterio de encerramento
 
-### Etapa 5 - Consolidar cofre, relatorios e escopo
-
-- [x] Implementar conciliacao manual e reversivel entre entrada e saida de mesmo
-      valor, preservando os lancamentos e excluindo o par dos totais.
-- [x] Exibir candidatos lado a lado, exigir confirmacao humana, impedir reuso do
-      mesmo lancamento e registrar criacao/desfazimento na auditoria.
-- [x] Implementar a UX de exclusao decidida na Etapa 0.
-- [x] Escolher Base64 no PostgreSQL ou armazenamento de objetos para os originais.
-- [ ] Testar upload, download, exclusao, cobertura e auditoria no destino escolhido.
-- [ ] Exibir claramente pendentes/sem categoria nos relatorios, se incluidos.
-- [x] Testar totais, saldos e percentuais por categoria contra cenarios financeiros
-      deterministas, incluindo exclusao e restauracao de conciliacoes.
-- [ ] Avaliar com o usuario se os relatorios eliminam a necessidade de `ledgers`.
-- [ ] Se eliminarem, ocultar e depois remover `ledgers`; se nao, definir seu caso de
-      uso antes de evoluir a funcionalidade.
-
-**Saida:** documentos auditaveis e relatorios com significado financeiro definido.
-
-### Etapa 6 - Seguranca, schema e manutencao
-
-- [x] Atualizar Next.js para uma versao 15.5.x sem os alertas do `npm audit` e
-      repetir build/testes.
-- [x] Restringir `CORS_ORIGINS` em producao e falhar de forma segura se estiver `*`.
-- [x] Adicionar rate limit e bloqueio temporario ao login.
-- [x] Migrar token para `sessionStorage`, validar `/auth/me` e adicionar CSP inicial.
-- [x] Adicionar cabecalhos basicos contra MIME sniffing, framing e vazamento de referrer.
-- [ ] Testar expiracao, logout, desativacao e troca de perfil em mais de um worker.
-- [x] Impedir desativar ou rebaixar o ultimo administrador ativo.
-- [ ] Introduzir migrations versionadas antes de novas alteracoes de schema.
-- [ ] Adicionar chaves estrangeiras/indices apos auditoria dos dados existentes.
-- [ ] Avaliar migracao de dinheiro para `NUMERIC`, com testes de arredondamento.
-- [ ] Dividir `app.py` gradualmente por dominios, sem reescrever os parsers.
-- [x] Adicionar CI para testes Python, typecheck, build e auditoria de dependencias.
-
-**Saida:** deploy repetivel, schema versionado e riscos de seguranca reduzidos.
-
-### Etapa 7 - Limpeza e documentacao
-
-- [ ] Remover tratamentos Smartek somente depois de verificar dados dependentes.
-- [ ] Remover endpoints e clientes desativados de autoclassificacao e bulk-vincular.
-- [ ] Remover mocks e telas locais legadas se nao tiverem uso confirmado.
-- [ ] Corrigir textos/encoding visiveis e revisar responsividade.
-- [ ] Atualizar `PROJECT_CONTEXT.md`, arquitetura, API, deploy e README.
-- [ ] Marcar roadmaps antigos explicitamente como historicos.
-
-**Saida:** uma unica documentacao coerente com o produto publicado.
-
-### Etapa 8 - Homologacao e encerramento
-
-- [x] Adicionar Playwright ao CI com banco isolado e cobrir login, importacao com
-      preview, classificacao/bloqueio e conciliacao/desfazimento.
-- [ ] Executar suite completa em SQLite e PostgreSQL limpo.
-- [ ] Restaurar backup em ambiente de teste e validar migrations.
-- [ ] Importar os seis documentos oficiais em homologacao e conferir manualmente.
-- [ ] Validar login de admin e colaborador, permissoes e auditoria.
-- [ ] Validar classificacao, parcelas, sugestoes, vinculos, cofre e relatorios.
-- [ ] Fazer teste de fumaca na Vercel, Render e Supabase com autenticacao real.
-- [ ] Revisar diff, dependencias e variaveis de ambiente.
-- [ ] Obter autorizacao explicita para commit e push.
-- [ ] Publicar, validar novamente e registrar commit/schema da versao final.
-
-**Saida:** versao final homologada, publicada e rastreavel.
-
-## Verificacoes realizadas nesta revisao
-
-- 53 testes Python aprovados.
-- 3 jornadas Playwright aprovadas em Chromium com SQLite isolado.
-- Compilacao Python aprovada.
-- TypeScript sem erros.
-- Build de producao Next.js aprovado.
-- `pip check` sem dependencias quebradas.
-- `npm audit --omit=dev`: nenhuma vulnerabilidade conhecida depois da atualizacao
-  do Next.js e do override seguro de PostCSS.
+A versao so pode ser chamada de final quando migrations estiverem versionadas,
+worker/PostgreSQL e regressao financeira forem homologados, staging/producao
+estiverem validados e o commit/schema implantados estiverem registrados.

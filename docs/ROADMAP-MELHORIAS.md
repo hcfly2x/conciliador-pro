@@ -1,7 +1,10 @@
-# Roadmap de Melhorias
+# Roadmap de Melhorias - HISTORICO
 
-> Documento historico. O checklist consolidado vigente esta em
-> `docs/ROADMAP-FINALIZACAO.md`.
+> Documento historico e supersedido. O checklist vigente esta em
+> `docs/ROADMAP-FINALIZACAO.md`; regras de produto estao em `PROJECT_CONTEXT.md`.
+> Nao executar itens deste arquivo quando conflitarem com essas fontes. Em
+> especial, competencia de cartao usa pagamento/vencimento da fatura, e nao a
+> ultima data de lancamento.
 
 Este documento e o checklist oficial das proximas entregas do Conciliador Pro.
 

@@ -22,11 +22,14 @@ from __future__ import annotations
 
 import csv
 import datetime as dt
+import logging
 import re
 import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 try:
     import openpyxl
@@ -48,40 +51,43 @@ except ImportError:
 #  DATACLASSES
 # ─────────────────────────────────────────────────────────────
 
+
 @dataclass
 class RawTx:
     """Linha extraída do arquivo, ainda sem enriquecimento."""
-    date: str                           # ISO: 2025-11-01
-    description_raw: str                # descrição original exatamente como no arquivo
-    amount_raw: float                   # valor absoluto (sempre positivo)
-    tx_type_raw: str                    # 'income' | 'expense' — sinal do arquivo
-    installment_raw: str = ""           # conteúdo bruto da coluna Parcela (CSV) ou sufixo (PDF)
-    source_line: str = ""               # linha original para debug
+
+    date: str  # ISO: 2025-11-01
+    description_raw: str  # descrição original exatamente como no arquivo
+    amount_raw: float  # valor absoluto (sempre positivo)
+    tx_type_raw: str  # 'income' | 'expense' — sinal do arquivo
+    installment_raw: str = ""  # conteúdo bruto da coluna Parcela (CSV) ou sufixo (PDF)
+    source_line: str = ""  # linha original para debug
 
 
 @dataclass
 class EnrichedTx:
     """Transação após enriquecimento completo, pronta para persistência."""
+
     date: str
-    description: str                    # descrição limpa (sem sufixo de parcela)
-    description_norm: str               # norm_text(description)
-    amount_signed: float                # negativo=expense, positivo=income
-    tx_type: str                        # 'income' | 'expense'
+    description: str  # descrição limpa (sem sufixo de parcela)
+    description_norm: str  # norm_text(description)
+    amount_signed: float  # negativo=expense, positivo=income
+    tx_type: str  # 'income' | 'expense'
     installment_current: int | None
     installment_total: int | None
-    installment_label: str | None       # ex: "Parcela 3 de 12"
+    installment_label: str | None  # ex: "Parcela 3 de 12"
     is_installment: bool
-    flags: list[str]                    # ['INTER_ACCOUNT', 'CASHBACK', 'TAX', ...]
+    flags: list[str]  # ['INTER_ACCOUNT', 'CASHBACK', 'TAX', ...]
     source_line: str = ""
 
 
 @dataclass
 class FormatDetection:
-    bank: str                           # 'SANTANDER' | 'XP' | 'NUBANK' | 'GENERIC'
-    doc_type: str                       # 'EXTRATO_CORRENTE' | 'FATURA_CARTAO' | 'COMPROVANTE'
-    file_format: str                    # 'csv' | 'xlsx' | 'xls' | 'pdf'
-    encoding: str                       # 'utf-8-sig' | 'latin-1' | ...
-    confidence: float                   # 0.0 – 1.0
+    bank: str  # 'SANTANDER' | 'XP' | 'NUBANK' | 'GENERIC'
+    doc_type: str  # 'EXTRATO_CORRENTE' | 'FATURA_CARTAO' | 'COMPROVANTE'
+    file_format: str  # 'csv' | 'xlsx' | 'xls' | 'pdf'
+    encoding: str  # 'utf-8-sig' | 'latin-1' | ...
+    confidence: float  # 0.0 – 1.0
 
 
 @dataclass
@@ -97,12 +103,15 @@ class BalanceCheck:
 @dataclass
 class ImportResult:
     """Resultado completo do pipeline — retornado pelo endpoint."""
+
     txs: list[EnrichedTx]
     format_detection: FormatDetection
     balance_check: BalanceCheck
     warnings: list[str]
-    rejected_lines: list[str]           # linhas com data mas sem match (debug)
-    discarded_lines: list[str]          # linhas reconhecidas mas descartadas por regra de produto
+    rejected_lines: list[str]  # linhas com data mas sem match (debug)
+    discarded_lines: list[
+        str
+    ]  # linhas reconhecidas mas descartadas por regra de produto
     total_parsed: int = 0
     total_installments: int = 0
     total_inter_account: int = 0
@@ -114,9 +123,11 @@ class ImportResult:
 #  NORMALIZAÇÃO
 # ─────────────────────────────────────────────────────────────
 
+
 def strip_accents(text: str) -> str:
     return "".join(
-        c for c in unicodedata.normalize("NFKD", text or "")
+        c
+        for c in unicodedata.normalize("NFKD", text or "")
         if not unicodedata.combining(c)
     )
 
@@ -141,6 +152,7 @@ def norm_text_keep_slash(text: str) -> str:
 #  PARCELAS
 # ─────────────────────────────────────────────────────────────
 
+
 def parse_installment(raw: Any) -> tuple[int | None, int | None]:
     """
     Detecta parcela em string bruta (ANTES de norm_text).
@@ -163,9 +175,9 @@ def parse_installment(raw: Any) -> tuple[int | None, int | None]:
 
     patterns = [
         r"parcela\s+(\d{1,2})\s+de\s+(\d{1,2})",  # parcela 2 de 5
-        r"\((\d{1,2})\s*/\s*(\d{1,2})\)",           # (3/12)
-        r"\b(\d{1,2})\s+de\s+(\d{1,2})\b",          # 2 de 5
-        r"\b(\d{1,2})\s*/\s*(\d{1,2})\b",           # 3/12, 01/03
+        r"\((\d{1,2})\s*/\s*(\d{1,2})\)",  # (3/12)
+        r"\b(\d{1,2})\s+de\s+(\d{1,2})\b",  # 2 de 5
+        r"\b(\d{1,2})\s*/\s*(\d{1,2})\b",  # 3/12, 01/03
     ]
     for pattern in patterns:
         m = re.search(pattern, text)
@@ -177,7 +189,9 @@ def parse_installment(raw: Any) -> tuple[int | None, int | None]:
     return None, None
 
 
-def is_likely_installment(current: int | None, total: int | None, account_type: str = "") -> bool:
+def is_likely_installment(
+    current: int | None, total: int | None, account_type: str = ""
+) -> bool:
     """
     Desambigua N/M entre parcela e data (ex: LOCALIZA 01/03 — é parcela 1/3 ou dia 1 de março?).
     Regra: se total > 12 → definitivamente parcela.
@@ -193,7 +207,9 @@ def is_likely_installment(current: int | None, total: int | None, account_type: 
     return False
 
 
-def clean_description_of_installment(desc: str, current: int | None, total: int | None) -> str:
+def clean_description_of_installment(
+    desc: str, current: int | None, total: int | None
+) -> str:
     """Remove sufixo de parcela da descrição, deixando o nome do estabelecimento limpo."""
     if not (current and total):
         return desc
@@ -259,13 +275,9 @@ INVESTMENT_MARKERS = (
     "resgate rdb",
 )
 
-YIELD_MARKERS = (
-    "remuneracao aplicacao automatica",
-)
+YIELD_MARKERS = ("remuneracao aplicacao automatica",)
 
-DEBIT_CARD_MARKERS = (
-    "debito visa electron brasil",
-)
+DEBIT_CARD_MARKERS = ("debito visa electron brasil",)
 
 # Marcadores de receita para cartão de crédito
 # Mais específicos que antes — "credito" isolado foi removido
@@ -340,7 +352,19 @@ def detect_transaction_flags(description: str) -> list[str]:
     if any(m in dn for m in DEBIT_CARD_MARKERS):
         flags.append("cartao_debito")
 
-    if any(m in dn for m in ("cashback", "bonus", "rewards", "pontos resgatados", "livelo", "smiles", "esfera", "desconto do mes")):
+    if any(
+        m in dn
+        for m in (
+            "cashback",
+            "bonus",
+            "rewards",
+            "pontos resgatados",
+            "livelo",
+            "smiles",
+            "esfera",
+            "desconto do mes",
+        )
+    ):
         flags.append("CASHBACK")
 
     if any(m in dn for m in TAX_MARKERS):
@@ -366,7 +390,7 @@ def classify_credit_card_type(description: str, raw_type: str, file_format: str)
 
     # Para CSV: quando parser marca como expense (valor negativo), o sinal foi invertido
     # corretamente pelo banco — é de fato income (storno, devolução)
-    inferred_from_sign = (file_format == "csv" and raw_type == "expense")
+    inferred_from_sign = file_format == "csv" and raw_type == "expense"
 
     is_income = inferred_from_sign or any(m in dn for m in CREDIT_CARD_INCOME_MARKERS)
     return "income" if is_income else "expense"
@@ -375,6 +399,7 @@ def classify_credit_card_type(description: str, raw_type: str, file_format: str)
 # ─────────────────────────────────────────────────────────────
 #  PARSE DE DATAS E VALORES
 # ─────────────────────────────────────────────────────────────
+
 
 def parse_date(raw: Any) -> str:
     """Converte qualquer representação de data para ISO YYYY-MM-DD."""
@@ -388,7 +413,7 @@ def parse_date(raw: Any) -> str:
         try:
             d = dt.datetime(1899, 12, 30) + dt.timedelta(days=float(raw))
             return d.date().isoformat()
-        except Exception:
+        except (OverflowError, TypeError, ValueError):
             return ""
     text = str(raw).strip()
     for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d/%m/%y"):
@@ -437,6 +462,7 @@ def parse_money(raw: Any) -> float | None:
 # ─────────────────────────────────────────────────────────────
 #  DETECÇÃO DE FORMATO
 # ─────────────────────────────────────────────────────────────
+
 
 def detect_format(path: Path, account_name: str) -> FormatDetection:
     """
@@ -512,6 +538,7 @@ def _detect_csv_encoding(path: Path) -> str:
 #  PARSERS
 # ─────────────────────────────────────────────────────────────
 
+
 def _row_display(row: list[Any]) -> str:
     return " | ".join(str(c).strip() for c in row if c is not None and str(c).strip())
 
@@ -531,7 +558,9 @@ def _looks_like_transaction_row(row: list[Any]) -> bool:
     return has_date and has_amount and has_text
 
 
-def _tabular_rejected_candidates(path: Path, file_format: str, encoding: str, parsed: list[RawTx]) -> list[str]:
+def _tabular_rejected_candidates(
+    path: Path, file_format: str, encoding: str, parsed: list[RawTx]
+) -> list[str]:
     parsed_lines = {tx.source_line for tx in parsed if tx.source_line}
     rows: list[list[Any]] = []
     if file_format == "csv":
@@ -578,8 +607,7 @@ def parse_csv(path: Path, encoding: str = "utf-8-sig") -> list[RawTx]:
             delim = ";" if sample.count(";") >= sample.count(",") else ","
             reader = csv.DictReader(f, delimiter=delim)
             headers = {
-                norm_text(h).replace(" ", "_"): h
-                for h in (reader.fieldnames or [])
+                norm_text(h).replace(" ", "_"): h for h in (reader.fieldnames or [])
             }
 
             h_date = (
@@ -596,7 +624,9 @@ def parse_csv(path: Path, encoding: str = "utf-8-sig") -> list[RawTx]:
                 or headers.get("lancamento")
                 or headers.get("title")
             )
-            h_val = headers.get("valor") or headers.get("value") or headers.get("amount")
+            h_val = (
+                headers.get("valor") or headers.get("value") or headers.get("amount")
+            )
             h_type = headers.get("tipo")
             h_cred = headers.get("credito")
             h_deb = headers.get("debito")
@@ -608,7 +638,9 @@ def parse_csv(path: Path, encoding: str = "utf-8-sig") -> list[RawTx]:
             )
 
             for row in reader:
-                source_line = _row_display([row.get(h, "") for h in (reader.fieldnames or [])])
+                source_line = _row_display(
+                    [row.get(h, "") for h in (reader.fieldnames or [])]
+                )
                 d = parse_date(row.get(h_date, "")) if h_date else ""
                 desc = (row.get(h_desc, "") or "").strip() if h_desc else ""
                 if not (d and desc):
@@ -622,9 +654,13 @@ def parse_csv(path: Path, encoding: str = "utf-8-sig") -> list[RawTx]:
                     cred = parse_money(row.get(h_cred, "")) if h_cred else None
                     deb = parse_money(row.get(h_deb, "")) if h_deb else None
                     if cred not in (None, 0.0):
-                        out.append(RawTx(d, desc, abs(cred), "income", inst_raw, source_line))
+                        out.append(
+                            RawTx(d, desc, abs(cred), "income", inst_raw, source_line)
+                        )
                     if deb not in (None, 0.0):
-                        out.append(RawTx(d, desc, abs(deb), "expense", inst_raw, source_line))
+                        out.append(
+                            RawTx(d, desc, abs(deb), "expense", inst_raw, source_line)
+                        )
                     continue
 
                 v = parse_money(row.get(h_val, "")) if h_val else None
@@ -668,9 +704,21 @@ def _parse_tabular_rows(rows: list[list[Any]]) -> list[RawTx]:
     if not rows:
         return []
     keys = {
-        "data", "dia", "date", "descricao", "historico", "estabelecimento",
-        "lancamento", "valor", "credito", "debito", "tipo",
-        "parcela", "parcelas", "parcelamento", "parc",
+        "data",
+        "dia",
+        "date",
+        "descricao",
+        "historico",
+        "estabelecimento",
+        "lancamento",
+        "valor",
+        "credito",
+        "debito",
+        "tipo",
+        "parcela",
+        "parcelas",
+        "parcelamento",
+        "parc",
     }
     # Encontrar linha de header
     best, score = 0, -1
@@ -692,15 +740,19 @@ def _parse_tabular_rows(rows: list[list[Any]]) -> list[RawTx]:
         return None
 
     out: list[RawTx] = []
-    for row in rows[best + 1:]:
+    for row in rows[best + 1 :]:
         source_line = _row_display(row)
         d = parse_date(get(row, "data", "dia", "date"))
-        desc = str(get(row, "descricao", "historico", "estabelecimento", "lancamento") or "").strip()
+        desc = str(
+            get(row, "descricao", "historico", "estabelecimento", "lancamento") or ""
+        ).strip()
         if not (d and desc):
             continue
 
         # Parcela bruta — NÃO normalizar
-        inst_raw = str(get(row, "parcela", "parcelas", "parcelamento", "parc") or "").strip()
+        inst_raw = str(
+            get(row, "parcela", "parcelas", "parcelamento", "parc") or ""
+        ).strip()
 
         # Crédito/débito separados
         cred = parse_money(get(row, "credito"))
@@ -726,7 +778,9 @@ def _parse_tabular_rows(rows: list[list[Any]]) -> list[RawTx]:
     return out
 
 
-def parse_pdf_statement(path: Path, account_name: str = "") -> tuple[list[RawTx], BalanceCheck]:
+def parse_pdf_statement(
+    path: Path, account_name: str = ""
+) -> tuple[list[RawTx], BalanceCheck]:
     """
     Parser de extrato corrente (Santander e genérico).
     Formato: DD/MM  DESCRIÇÃO  VALOR
@@ -742,10 +796,17 @@ def parse_pdf_statement(path: Path, account_name: str = "") -> tuple[list[RawTx]
         try:
             page_texts.append(pg.extract_text() or "")
         except Exception:
+            logger.warning(
+                "Falha ao extrair pagina de PDF durante importacao de %s",
+                path,
+                exc_info=True,
+            )
             continue
     text = "\n".join(page_texts)
     if not text.strip():
-        return [], BalanceCheck(None, None, None, None, False, "PDF sem texto extraível")
+        return [], BalanceCheck(
+            None, None, None, None, False, "PDF sem texto extraível"
+        )
 
     if "SANTANDER" in account_name.upper():
         santander = _parse_santander_movement_statement(text, path.name)
@@ -831,7 +892,10 @@ def parse_pdf_statement(path: Path, account_name: str = "") -> tuple[list[RawTx]
         ln_norm = norm_text(ln)
 
         # Parar no bloco de comprovantes (Santander)
-        if "comprovantes de lancamento" in ln_norm or "comprovante de lancamento" in ln_norm:
+        if (
+            "comprovantes de lancamento" in ln_norm
+            or "comprovante de lancamento" in ln_norm
+        ):
             commit()
             break
 
@@ -873,7 +937,9 @@ def parse_pdf_statement(path: Path, account_name: str = "") -> tuple[list[RawTx]
             desc = ln.replace(m.group(1), "").replace(m.group(2), "").strip(" -")
             if not desc:
                 desc = "LANCAMENTO PDF"
-            out.append(RawTx(d, desc, abs(v), "income" if v > 0 else "expense", source_line=ln))
+            out.append(
+                RawTx(d, desc, abs(v), "income" if v > 0 else "expense", source_line=ln)
+            )
 
     # Remover espelhos (Santander)
     if "SANTANDER" in account_name.upper():
@@ -902,7 +968,10 @@ def parse_pdf_credit_card(path: Path, account_name: str = "") -> list[RawTx]:
     # Inferir mês/ano de referência pelo nome do arquivo: "Cartao - 03-26"
     ref_year = _infer_statement_year(text, path.name)
     ref_month = _infer_statement_month(text, path.name)
-    due = re.search(r"vencimento\s+(\d{2})/(\d{2})/(20\d{2})", re.sub(r"\s+", " ", strip_accents(text).lower()))
+    due = re.search(
+        r"vencimento\s+(\d{2})/(\d{2})/(20\d{2})",
+        re.sub(r"\s+", " ", strip_accents(text).lower()),
+    )
     if due:
         ref_month = int(due.group(2))
         ref_year = int(due.group(3))
@@ -964,7 +1033,9 @@ def parse_pdf_credit_card(path: Path, account_name: str = "") -> list[RawTx]:
             continue
 
         t = "income" if v > 0 else "expense"
-        out.append(RawTx(d, raw_desc_with_installment, abs(v), t, inst_raw, source_line=ln))
+        out.append(
+            RawTx(d, raw_desc_with_installment, abs(v), t, inst_raw, source_line=ln)
+        )
 
     return out
 
@@ -972,6 +1043,7 @@ def parse_pdf_credit_card(path: Path, account_name: str = "") -> list[RawTx]:
 # ─────────────────────────────────────────────────────────────
 #  ENRIQUECIMENTO
 # ─────────────────────────────────────────────────────────────
+
 
 def enrich_transaction(
     raw: RawTx,
@@ -999,20 +1071,22 @@ def enrich_transaction(
         inst_total = None
 
     # 2. Limpar descrição — remover sufixo de parcela
-    desc_clean = clean_description_of_installment(raw.description_raw, inst_current, inst_total)
+    desc_clean = clean_description_of_installment(
+        raw.description_raw, inst_current, inst_total
+    )
 
     # 3. Classificar tipo para cartão de crédito
     if account_type == "credit_card":
-        tx_type = classify_credit_card_type(raw.description_raw, raw.tx_type_raw, file_format)
+        tx_type = classify_credit_card_type(
+            raw.description_raw, raw.tx_type_raw, file_format
+        )
     else:
         tx_type = raw.tx_type_raw
 
     # 4. Calcular valor com sinal. Cada linha representa exatamente a parcela
     # cobrada nesta fatura; nunca multiplicar pelo total de parcelas.
     raw_amount = raw.amount_raw
-    amount_signed = round(
-        raw_amount if tx_type == "income" else -raw_amount, 2
-    )
+    amount_signed = round(raw_amount if tx_type == "income" else -raw_amount, 2)
 
     # 5. Detectar flags
     flags = detect_transaction_flags(raw.description_raw)
@@ -1041,6 +1115,7 @@ def enrich_transaction(
 #  VALIDAÇÃO DE QUALIDADE
 # ─────────────────────────────────────────────────────────────
 
+
 def _validate_balance(
     txs: list[RawTx],
     saldo_anterior: float | None,
@@ -1050,18 +1125,23 @@ def _validate_balance(
         return BalanceCheck(None, None, None, None, True, "Saldo não extraído do PDF")
 
     total = sum(
-        t.amount_raw if t.tx_type_raw == "income" else -t.amount_raw
-        for t in txs
+        t.amount_raw if t.tx_type_raw == "income" else -t.amount_raw for t in txs
     )
     calculated = round(saldo_anterior + total, 2)
     diff = abs(calculated - saldo_final)
     ok = diff < 0.10  # tolerância de R$ 0,10
 
-    msg = "OK" if ok else (
-        f"Diferença de R$ {diff:.2f} entre saldo calculado ({calculated:.2f}) "
-        f"e declarado ({saldo_final:.2f}). Verifique se há lançamentos perdidos."
+    msg = (
+        "OK"
+        if ok
+        else (
+            f"Diferença de R$ {diff:.2f} entre saldo calculado ({calculated:.2f}) "
+            f"e declarado ({saldo_final:.2f}). Verifique se há lançamentos perdidos."
+        )
     )
-    return BalanceCheck(saldo_anterior, saldo_final, calculated, round(diff, 2), ok, msg)
+    return BalanceCheck(
+        saldo_anterior, saldo_final, calculated, round(diff, 2), ok, msg
+    )
 
 
 def _extract_saldo(text: str, tipo: str) -> float | None:
@@ -1128,6 +1208,7 @@ def _infer_statement_year(text: str, filename: str) -> int:
     years = re.findall(r"\b(20[0-9]{2})\b", text)
     if years:
         from collections import Counter
+
         return int(Counter(years).most_common(1)[0][0])
     return dt.datetime.now().year
 
@@ -1162,6 +1243,7 @@ def _infer_statement_month(text: str, filename: str = "") -> int:
     months = re.findall(r"\d{2}/(\d{2})(?:/\d{4})?", text[:5000])
     if months:
         from collections import Counter
+
         return int(Counter(months).most_common(1)[0][0])
     return dt.datetime.now().month
 
@@ -1194,7 +1276,9 @@ def _nubank_summary_value(text: str, label: str) -> float | None:
     return None
 
 
-def _nubank_summary_values_from_header(text: str) -> tuple[float | None, float | None, float | None]:
+def _nubank_summary_values_from_header(
+    text: str,
+) -> tuple[float | None, float | None, float | None]:
     header = text.split("Movimentações", 1)[0].split("Movimentacoes", 1)[0]
     values = re.findall(r"[+-]?\d{1,3}(?:\.\d{3})*,\d{2}|[+-]?\d+,\d{2}", header)
     parsed = [parse_money(v) for v in values]
@@ -1231,16 +1315,24 @@ def _nubank_type_for_description(description: str) -> str:
     return "expense"
 
 
-def _parse_nubank_statement(text: str, filename: str) -> tuple[list[RawTx], BalanceCheck] | None:
+def _parse_nubank_statement(
+    text: str, filename: str
+) -> tuple[list[RawTx], BalanceCheck] | None:
     if "movimentacoes" not in norm_text(text):
         return None
 
     saldo_inicial = _nubank_summary_value(text, "Saldo inicial")
-    saldo_final = _nubank_summary_value(text, "Saldo final do periodo") or _nubank_summary_value(text, "Saldo final")
+    saldo_final = _nubank_summary_value(
+        text, "Saldo final do periodo"
+    ) or _nubank_summary_value(text, "Saldo final")
     rendimento = _nubank_summary_value(text, "Rendimento liquido")
     if saldo_inicial is None or saldo_final is None or rendimento is None:
-        header_saldo_inicial, header_rendimento, header_saldo_final = _nubank_summary_values_from_header(text)
-        saldo_inicial = saldo_inicial if saldo_inicial is not None else header_saldo_inicial
+        header_saldo_inicial, header_rendimento, header_saldo_final = (
+            _nubank_summary_values_from_header(text)
+        )
+        saldo_inicial = (
+            saldo_inicial if saldo_inicial is not None else header_saldo_inicial
+        )
         saldo_final = saldo_final if saldo_final is not None else header_saldo_final
         rendimento = rendimento if rendimento is not None else header_rendimento
 
@@ -1260,7 +1352,15 @@ def _parse_nubank_statement(text: str, filename: str) -> tuple[list[RawTx], Bala
             return
         if norm_text(clean_desc).startswith("total de "):
             return
-        out.append(RawTx(date, clean_desc, abs(value), _nubank_type_for_description(clean_desc), source_line=source_line))
+        out.append(
+            RawTx(
+                date,
+                clean_desc,
+                abs(value),
+                _nubank_type_for_description(clean_desc),
+                source_line=source_line,
+            )
+        )
 
     for ln in lines:
         ln_norm = norm_text(ln)
@@ -1280,7 +1380,9 @@ def _parse_nubank_statement(text: str, filename: str) -> tuple[list[RawTx], Bala
         ):
             break
 
-        date_match = re.match(r"^(\d{2})\s+([A-Z]{3})\s+(20\d{2})\b", strip_accents(ln).upper())
+        date_match = re.match(
+            r"^(\d{2})\s+([A-Z]{3})\s+(20\d{2})\b", strip_accents(ln).upper()
+        )
         if date_match:
             day = int(date_match.group(1))
             month = PT_MONTH_ABBR.get(date_match.group(2)[:3])
@@ -1305,7 +1407,7 @@ def _parse_nubank_statement(text: str, filename: str) -> tuple[list[RawTx], Bala
         m = amount_re.search(ln)
         if m:
             amount_text = m.group(1)
-            desc = ln[:m.start()].strip()
+            desc = ln[: m.start()].strip()
             if pending_desc:
                 desc = " ".join(pending_desc + [desc])
             add_tx(current_date, desc, amount_text, ln)
@@ -1321,8 +1423,19 @@ def _parse_nubank_statement(text: str, filename: str) -> tuple[list[RawTx], Bala
         if ref:
             month, year = ref
         else:
-            month, year = _infer_statement_month(text, filename), _infer_statement_year(text, filename)
-        out.append(RawTx(f"{year:04d}-{month:02d}-01", "Rendimento liquido", abs(float(rendimento)), "income", source_line="Rendimento liquido"))
+            month, year = (
+                _infer_statement_month(text, filename),
+                _infer_statement_year(text, filename),
+            )
+        out.append(
+            RawTx(
+                f"{year:04d}-{month:02d}-01",
+                "Rendimento liquido",
+                abs(float(rendimento)),
+                "income",
+                source_line="Rendimento liquido",
+            )
+        )
 
     balance = _validate_balance(out, saldo_inicial, saldo_final)
     return out, balance
@@ -1341,7 +1454,11 @@ def _statement_date_from_ddmm(ddmm: str, ref_year: int, ref_month: int) -> str |
 def _santander_statement_type(description: str, amount_text: str) -> str:
     desc = norm_text(description)
     if desc.startswith("pix devolvido"):
-        return "expense" if amount_text.strip().endswith("-") or amount_text.strip().startswith("-") else "income"
+        return (
+            "expense"
+            if amount_text.strip().endswith("-") or amount_text.strip().startswith("-")
+            else "income"
+        )
     if desc.startswith("pix recebido") or desc.startswith("remuneracao"):
         return "income"
     if desc.startswith("resgate cdb") or desc.startswith("resgate rdb"):
@@ -1349,27 +1466,40 @@ def _santander_statement_type(description: str, amount_text: str) -> str:
     if desc.startswith("aplicacao cdb") or desc.startswith("aplicacao rdb"):
         return "expense"
     positive = ("recebido", "devolvido", "remuneracao", "credito")
-    if re.search(r"\b(enviado|pagamento|pgto|debito|tarifa|iof|contribuicao|juros|aplicacao)\b", desc):
+    if re.search(
+        r"\b(enviado|pagamento|pgto|debito|tarifa|iof|contribuicao|juros|aplicacao)\b",
+        desc,
+    ):
         return "expense"
     if "visa electron" in desc or "cartao credito" in desc:
         return "expense"
     if any(word in desc for word in positive):
         return "income"
-    return "expense" if amount_text.strip().endswith("-") or amount_text.strip().startswith("-") else "income"
+    return (
+        "expense"
+        if amount_text.strip().endswith("-") or amount_text.strip().startswith("-")
+        else "income"
+    )
 
 
 def _clean_santander_statement_desc(description: str) -> str:
     desc = re.sub(r"\s+", " ", description or "").strip(" -")
-    starter = re.search(r"\b(PIX|IOF|TARIFA|DEBITO|CREDITO|PAGAMENTO|PGTO|REMUNERACAO|JUROS|APLICACAO|RESGATE)\b", desc, re.IGNORECASE)
+    starter = re.search(
+        r"\b(PIX|IOF|TARIFA|DEBITO|CREDITO|PAGAMENTO|PGTO|REMUNERACAO|JUROS|APLICACAO|RESGATE)\b",
+        desc,
+        re.IGNORECASE,
+    )
     if starter:
-        desc = desc[starter.start():]
+        desc = desc[starter.start() :]
     # Remove numero de documento no fim da descricao, preservando datas internas
     # como "07/01 01:11 CARTAO VISA".
     desc = re.sub(r"\s+\d{5,12}$", "", desc).strip(" -")
     return desc
 
 
-def _parse_santander_movement_statement(text: str, filename: str) -> tuple[list[RawTx], BalanceCheck] | None:
+def _parse_santander_movement_statement(
+    text: str, filename: str
+) -> tuple[list[RawTx], BalanceCheck] | None:
     """
     Extrai o bloco canonico de movimentacao do extrato Santander.
 
@@ -1394,14 +1524,16 @@ def _parse_santander_movement_statement(text: str, filename: str) -> tuple[list[
     saldo_anterior = parse_money(lines[start_idx].split()[-1])
     block: list[str] = []
     saldo_final = None
-    for line in lines[start_idx + 1:]:
+    for line in lines[start_idx + 1 :]:
         line_norm = norm_text(line)
         if end_re.match(line):
             saldo_final = parse_money(line.split()[-1])
             break
         if "data descricao" in line_norm or "pagina" in line_norm:
             continue
-        if line_norm.startswith("extrato consolidado") or line_norm.startswith("conta corrente"):
+        if line_norm.startswith("extrato consolidado") or line_norm.startswith(
+            "conta corrente"
+        ):
             continue
         block.append(line)
 
@@ -1453,10 +1585,10 @@ def _parse_santander_movement_statement(text: str, filename: str) -> tuple[list[
                 cursor = match.end()
                 continue
             next_match = matches[idx + 1] if idx + 1 < len(matches) else None
-            if next_match and not joined[match.end():next_match.start()].strip():
+            if next_match and not joined[match.end() : next_match.start()].strip():
                 skip_next = True
 
-            segment = joined[cursor:match.start()]
+            segment = joined[cursor : match.start()]
             cursor = match.end()
             if next_match and skip_next:
                 cursor = next_match.end()
@@ -1470,7 +1602,9 @@ def _parse_santander_movement_statement(text: str, filename: str) -> tuple[list[
             if amount is None:
                 continue
             tx_type = _santander_statement_type(desc, match.group(0))
-            out.append(RawTx(tx_date, desc, abs(amount), tx_type, source_line=segment.strip()))
+            out.append(
+                RawTx(tx_date, desc, abs(amount), tx_type, source_line=segment.strip())
+            )
         group_parts = []
 
     for line in block:
@@ -1478,7 +1612,9 @@ def _parse_santander_movement_statement(text: str, filename: str) -> tuple[list[
         starts_transaction = False
         if m:
             rest_norm = norm_text(m.group(2))
-            starts_transaction = any(rest_norm.startswith(norm_text(s)) for s in tx_starters)
+            starts_transaction = any(
+                rest_norm.startswith(norm_text(s)) for s in tx_starters
+            )
         if m and starts_transaction:
             flush_group()
             current_date = m.group(1)
@@ -1512,9 +1648,8 @@ def _remove_statement_mirrors(txs: list[RawTx]) -> list[RawTx]:
         except ValueError:
             continue
 
-        is_proof = (
-            inc_desc.startswith("internet banking pix")
-            or inc_desc.startswith("cartao de credito")
+        is_proof = inc_desc.startswith("internet banking pix") or inc_desc.startswith(
+            "cartao de credito"
         )
         if not is_proof:
             continue
@@ -1542,6 +1677,7 @@ def _remove_statement_mirrors(txs: list[RawTx]) -> list[RawTx]:
 #  PIPELINE PRINCIPAL
 # ─────────────────────────────────────────────────────────────
 
+
 def _is_explicit_empty_nubank_text(text: str) -> bool:
     normalized = norm_text(text)
     return (
@@ -1562,27 +1698,38 @@ def is_explicit_empty_statement(
 
     if fmt.file_format == "pdf" and fmt.bank == "NUBANK" and PdfReader is not None:
         try:
-            text = "\n".join((page.extract_text() or "") for page in PdfReader(str(path)).pages)
+            text = "\n".join(
+                (page.extract_text() or "") for page in PdfReader(str(path)).pages
+            )
         except Exception:
+            logger.warning(
+                "Falha ao verificar se PDF Nubank esta vazio: %s", path, exc_info=True
+            )
             return False
         return _is_explicit_empty_nubank_text(text)
 
     if fmt.file_format == "csv" and fmt.bank == "XP":
         try:
-            text = path.read_text(encoding=fmt.encoding or "utf-8-sig", errors="replace")
+            text = path.read_text(
+                encoding=fmt.encoding or "utf-8-sig", errors="replace"
+            )
             non_empty_lines = [line for line in text.splitlines() if line.strip()]
             if len(non_empty_lines) != 1:
                 return False
             dialect = csv.Sniffer().sniff(non_empty_lines[0], delimiters=",;\t|")
-            headers = {norm_text(cell) for cell in next(csv.reader(non_empty_lines, dialect))}
-        except Exception:
+            headers = {
+                norm_text(cell) for cell in next(csv.reader(non_empty_lines, dialect))
+            }
+        except (csv.Error, StopIteration):
             return False
         return {"data", "descricao", "valor", "saldo"}.issubset(headers)
 
     return False
 
 
-def run_import_pipeline(path: Path, account_name: str, account_type: str) -> ImportResult:
+def run_import_pipeline(
+    path: Path, account_name: str, account_type: str
+) -> ImportResult:
     """
     Pipeline completo de importação.
     Entrada: arquivo + nome da conta + tipo (checking | credit_card)
@@ -1627,7 +1774,9 @@ def run_import_pipeline(path: Path, account_name: str, account_type: str) -> Imp
         raise ValueError(f"Formato não suportado: {fmt.file_format}")
 
     if fmt.file_format in {"csv", "xlsx", "xls"}:
-        rejected.extend(_tabular_rejected_candidates(path, fmt.file_format, fmt.encoding, raw_txs))
+        rejected.extend(
+            _tabular_rejected_candidates(path, fmt.file_format, fmt.encoding, raw_txs)
+        )
 
     empty_statement_confirmed = False
     if not raw_txs:
@@ -1651,6 +1800,11 @@ def run_import_pipeline(path: Path, account_name: str, account_type: str) -> Imp
             tx = enrich_transaction(raw, account_type, fmt.file_format)
             enriched.append(tx)
         except Exception:
+            logger.warning(
+                "Linha rejeitada durante enriquecimento do extrato: %s",
+                raw.source_line[:150],
+                exc_info=True,
+            )
             rejected.append(raw.source_line[:150])
             continue
 
@@ -1658,7 +1812,11 @@ def run_import_pipeline(path: Path, account_name: str, account_type: str) -> Imp
     enriched = _filter_contamination(enriched)
 
     # Validação de volume
-    if account_type != "credit_card" and len(enriched) < 5 and not empty_statement_confirmed:
+    if (
+        account_type != "credit_card"
+        and len(enriched) < 5
+        and not empty_statement_confirmed
+    ):
         warnings.append(
             f"Arquivo com apenas {len(enriched)} lançamentos. "
             "Extratos normalmente têm mais de 15 lançamentos. Verifique se importou o arquivo correto."
@@ -1708,7 +1866,4 @@ def _filter_contamination(txs: list[EnrichedTx]) -> list[EnrichedTx]:
         "total a pagar",
         "saldo devedor",
     )
-    return [
-        t for t in txs
-        if not any(c in t.description_norm for c in CONTAMINATION)
-    ]
+    return [t for t in txs if not any(c in t.description_norm for c in CONTAMINATION)]

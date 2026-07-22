@@ -2,10 +2,14 @@ import { defineConfig, devices } from '@playwright/test'
 import path from 'node:path'
 
 const root = path.resolve(__dirname, '..')
-const e2eData = path.join(root, 'tmp', 'playwright', 'data')
+// Cada execucao recebe banco, uploads e cofre proprios. O reset do produto
+// preserva usuarios e tentativas de login por desenho, portanto reutilizar um
+// diretorio entre suites faria o rate limit acumular estado de rodadas antigas.
+const e2eData = path.join(root, 'tmp', 'playwright', `data-${process.pid}`)
 
 export default defineConfig({
   testDir: './e2e',
+  timeout: 90_000,
   fullyParallel: false,
   workers: 1,
   retries: process.env.CI ? 1 : 0,
@@ -32,10 +36,13 @@ export default defineConfig({
       },
     },
     {
-      command: 'npm run dev -- --hostname 127.0.0.1 --port 3000',
+      // E2E deve exercitar o mesmo runtime usado no deploy. O servidor de
+      // desenvolvimento pode disparar Fast Refresh durante uma acao e deixar
+      // o Playwright aguardando uma navegacao que nao pertence ao produto.
+      command: 'npm run build && npm run start -- --hostname 127.0.0.1 --port 3000',
       url: 'http://127.0.0.1:3000/login',
       reuseExistingServer: false,
-      timeout: 120_000,
+      timeout: 240_000,
       env: { ...process.env, API_PROXY_TARGET: 'http://127.0.0.1:5061' },
     },
   ],

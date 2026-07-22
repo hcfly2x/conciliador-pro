@@ -1,1 +1,2 @@
 web: gunicorn -b 0.0.0.0:$PORT -w 2 --threads 8 --timeout 300 app:app
+worker: WORKER_MODE=process WORKER_PROCESS=1 python worker.py
