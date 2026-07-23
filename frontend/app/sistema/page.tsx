@@ -1,7 +1,7 @@
 'use client'
 import { useState } from 'react'
-import { AlertTriangle, Download, Trash2 } from 'lucide-react'
-import { downloadAuditExport, systemReset, isAdmin } from '@/lib/api'
+import { AlertTriangle, Download, FileUp, Trash2 } from 'lucide-react'
+import { backfillDocument, downloadAuditExport, systemReset, isAdmin } from '@/lib/api'
 import { useStore } from '@/store/app'
 
 export default function SistemaPage() {
@@ -11,6 +11,8 @@ export default function SistemaPage() {
   const [loading, setLoading] = useState<'transactions' | 'all' | null>(null)
   const [result, setResult] = useState<string>('')
   const [exporting, setExporting] = useState(false)
+  const [restoring, setRestoring] = useState(false)
+  const [restoreResult, setRestoreResult] = useState<string>('')
 
   const admin = isAdmin()
 
@@ -64,6 +66,33 @@ export default function SistemaPage() {
     }
   }
 
+  async function handleDocumentBackfill(files: FileList | null) {
+    if (!files?.length) return
+    setRestoring(true)
+    setRestoreResult('')
+    try {
+      let restored = 0
+      let alreadyPresent = 0
+      let transactions = 0
+      for (const file of Array.from(files)) {
+        const response = await backfillDocument(file)
+        if (response.status === 'already_present') alreadyPresent += 1
+        else restored += 1
+        transactions += response.transactions
+      }
+      setRestoreResult(
+        `${restored} documento(s) restaurado(s), ${alreadyPresent} já presente(s); ` +
+        `${transactions} lançamento(s) vinculados sem reimportação.`
+      )
+      addToast('Documentos conferidos e vinculados ao cofre')
+    } catch (e: unknown) {
+      const err = e as { detail?: string }
+      addToast(err?.detail || 'Erro ao restaurar documento', 'err')
+    } finally {
+      setRestoring(false)
+    }
+  }
+
   if (!admin) {
     return <p className="text-sm text-[#8b90a4]">Apenas o administrador pode acessar esta página.</p>
   }
@@ -91,6 +120,35 @@ export default function SistemaPage() {
           <Download size={14} />
           {exporting ? 'Gerando planilha...' : 'Exportar auditoria em Excel'}
         </button>
+      </div>
+
+      <div className="rounded-xl p-5 mb-5" style={{ background: '#13161d', border: '1px solid rgba(255,255,255,0.08)' }}>
+        <h3 className="font-display font-bold text-[14px] text-[#e8eaf0] mb-2">Restaurar originais no cofre</h3>
+        <p className="text-sm text-[#8b90a4] mb-4">
+          Vincula documentos antigos ao lote existente pelo SHA-1. O conteúdo precisa ser exatamente
+          igual ao arquivo importado; nenhum lançamento é criado, removido ou reimportado.
+        </p>
+        <label
+          className="flex items-center justify-center gap-2 h-10 px-4 rounded-lg text-sm font-semibold cursor-pointer"
+          style={{ background: 'rgba(34,197,94,0.12)', color: '#86efac', border: '1px solid rgba(34,197,94,0.3)' }}
+        >
+          <FileUp size={14} />
+          {restoring ? 'Conferindo documentos...' : 'Selecionar documentos para restaurar'}
+          <input
+            type="file"
+            multiple
+            accept=".pdf,.csv,.xls,.xlsx"
+            className="hidden"
+            disabled={restoring}
+            onChange={event => {
+              void handleDocumentBackfill(event.target.files)
+              event.target.value = ''
+            }}
+          />
+        </label>
+        {restoreResult && (
+          <p className="mt-4 text-sm text-[#3ecf8e]">{restoreResult}</p>
+        )}
       </div>
 
       <div className="rounded-xl p-5" style={{ background: 'rgba(248,113,113,0.05)', border: '1px solid rgba(248,113,113,0.25)' }}>

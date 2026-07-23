@@ -72,6 +72,11 @@ class AuditWorkbookTests(unittest.TestCase):
         self.assertEqual(transactions.freeze_panes, "D2")
         self.assertEqual(workbook["Resumo"]["B3"].value, 1)
         self.assertEqual(workbook["Resumo"]["B7"].value, -123.45)
+        self.assertEqual(
+            workbook["Resumo"]["C7"].value,
+            "Original preservado no cofre",
+        )
+        self.assertEqual(workbook["Resumo"]["D7"].value, 1)
         self.assertEqual(workbook["Legenda"]["A2"].value, "Despesa")
         self.assertEqual(workbook["Dicionário"]["B2"].value, "date")
 
