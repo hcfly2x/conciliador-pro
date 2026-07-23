@@ -1,6 +1,6 @@
 # PROJECT_CONTEXT.md — Conciliador Pro
 
-Atualizado em 22/07/2026.
+Atualizado em 23/07/2026.
 
 O código atual é a fonte principal da verdade. Documentos marcados como
 históricos não definem requisitos. Ideias antigas só voltam ao projeto mediante
@@ -19,13 +19,14 @@ lançamentos financeiros reais.
 ## Estado atual
 
 - Branch oficial: `main`.
-- Head do repositório e frontend publicado: `aad7e47`.
-- Backend publicado: `f356caa`; o commit posterior altera somente o frontend.
+- A `main`, a Vercel e o Render acompanham o mesmo fluxo de release. A última
+  correção funcional homologada em produção é `fabafb6`; o health do backend
+  é a fonte operacional para confirmar o commit ativo.
 - Banco de produção: PostgreSQL/Supabase, schema 2.
 - Backend: Render com `WORKER_MODE=inline`.
 - Frontend: Vercel.
-- CI atual aprovada: testes Python, PostgreSQL 16, TypeScript, build e 8 E2E.
-- O código contém 100 métodos de teste Python.
+- CI atual aprovada: testes Python, PostgreSQL 16, TypeScript, build e 9 E2E.
+- O código contém 103 métodos de teste Python.
 - Existem 64 rotas: 51 implementadas nos blueprints e 13 ainda no núcleo.
 - O repositório está em uso com dados reais; mudanças devem preservar
   classificações, vínculos, conciliações, auditoria e documentos.
@@ -66,6 +67,8 @@ lançamentos financeiros reais.
 - Conciliação reversível de entradas e saídas.
 - Relatórios por competência e categoria.
 - Exportação administrativa de auditoria financeira em Excel.
+- Exportação de auditoria homologada em produção com geração XLSX em
+  streaming, sanitização de valores e compatibilidade do cursor PostgreSQL.
 - Snapshot técnico de auditoria e reset administrativo protegido.
 - Importação por pasta e importação direta permanecem desativadas com HTTP 410.
 
@@ -114,9 +117,12 @@ lançamentos financeiros reais.
 
 1. Medir performance de vínculos e consultas com o volume atual.
 2. Prefiltrar candidatos no SQL somente se a medição confirmar o gargalo.
-3. Concluir os 13 handlers restantes do backend.
-4. Reduzir novamente os componentes frontend acima de 400 linhas.
-5. Corrigir documentação de arquitetura, API, releases e roadmap.
+3. Concluir os 13 handlers restantes do backend que ainda têm corpo no núcleo.
+4. Reduzir novamente os componentes frontend acima de 400 linhas; atualmente
+   `arquivos/page.tsx`, `ImportPage.tsx` e `useTransactionTable.tsx` excedem o
+   limite.
+5. Manter contexto, arquitetura, API, releases e roadmap sincronizados com cada
+   marco homologado.
 6. Homologar os seis documentos privados originais em ambiente seguro.
 7. Validar admin, colaborador, auditoria, logs e Sentry no ambiente hospedado.
 8. Usar migration versionada para qualquer nova mudança de schema.

@@ -1,4 +1,4 @@
-# Homologacao de ambientes - 22/07/2026
+# Homologacao de ambientes - atualizada em 23/07/2026
 
 Registro cumulativo de validacao. Os testes automatizados e de infraestrutura
 nao alteraram dados financeiros; importacao e vinculo em lote foram executados e
@@ -6,12 +6,13 @@ confirmados pelo proprietario no uso normal do produto.
 
 ## Ambiente local homologado
 
-- 95 testes Python locais aprovados na rodada atual, incluindo migrations,
+- 103 testes Python locais aprovados na rodada atual, incluindo migrations,
   seguranca, tradutor SQL, propriedade do pool e worker em processo separado.
 - TypeScript e build Next.js aprovados.
-- 8 jornadas Playwright aprovadas contra `next build` + `next start`: CSP,
+- 9 jornadas Playwright aprovadas contra `next build` + `next start`: CSP,
   autenticacao admin, importacao/classificacao, conciliacao/desfazer, cofre,
-  RBAC/auditoria, vinculo em lote e ciclo completo de revisao de vinculos.
+  RBAC/auditoria, download real da planilha, vinculo em lote e ciclo completo de
+  revisao de vinculos.
 - Auditoria de 8 fixtures: zero erros e cinco avisos esperados.
 - No SQLite, eventos auxiliares de progresso produzidos durante a transacao
   financeira sao acumulados e persistidos ao fim, evitando falsos avisos de lock.
@@ -32,6 +33,8 @@ confirmados pelo proprietario no uso normal do produto.
 - `/api/v1/auth/me` sem token respondeu 401, conforme esperado.
 - `/api/v1/health` respondeu 200 com banco `postgres`.
 - O proprietario confirmou importacao de extrato e vinculo selecionado em lote.
+- O proprietario confirmou o download da planilha administrativa de auditoria
+  depois da correcao de streaming e da interface do cursor PostgreSQL.
 - Uma rajada de 40 requisicoes concorrentes terminou sem HTTP 500 depois do
   hotfix de propriedade do pool PostgreSQL.
 - Render possui somente o web service; `WORKER_MODE=inline` foi configurado e
@@ -39,8 +42,8 @@ confirmados pelo proprietario no uso normal do produto.
 
 ## Versoes observadas
 
-- Deploy Vercel/GitHub: `c853b14`.
-- Commit informado pelo health do Render: `c853b142aa9f`.
+- Ultima correcao funcional homologada na Vercel/GitHub: `fabafb6`.
+- Commit informado pelo health do Render nessa homologacao: `fabafb6e47cc`.
 - Migration informada pelo health publicado: versao 2; executor de jobs:
   `WORKER_MODE=inline` no processo web.
 
