@@ -86,7 +86,9 @@ lançamentos financeiros reais.
   nome do arquivo. Datas dos lançamentos nunca definem competência de cartão.
 - Preview é obrigatório.
 - Repetições internas do arquivo são preservadas.
-- Qualquer duplicado já existente no banco bloqueia o lote inteiro.
+- Arquivo integralmente já importado continua bloqueado pelo hash.
+- Sobreposição parcial exige confirmação explícita; duplicados existentes são
+  preservados e somente as ocorrências novas são inseridas.
 - Classificação exige categoria compatível com receita/despesa.
 - Lançamento classificado fica protegido até desbloqueio administrativo.
 - Confirmar vínculo replica categoria/subcategoria sem alterar os dados reais.

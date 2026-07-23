@@ -144,6 +144,13 @@ export default function ImportPage() {
       setError('Selecione o mês e o ano de competência antes de confirmar a importação.')
       return
     }
+    if (
+      preview.duplicates_db > 0
+      && !window.confirm(
+        `${preview.duplicates_db} lançamento(s) já existem no banco. ` +
+        `Importar somente os ${preview.new_records} lançamento(s) novo(s), sem duplicar os existentes?`
+      )
+    ) return
     setLoading(true)
     setError(null)
     try {
@@ -322,6 +329,15 @@ export default function ImportPage() {
             </div>
           )}
 
+          {preview.duplicates_db > 0 && preview.new_records > 0 && (
+            <div className="mb-4 rounded-lg p-3" style={{ background: 'rgba(251,191,36,0.08)', border: '1px solid rgba(251,191,36,0.25)' }}>
+              <p className="text-sm font-semibold text-[#fbbf24]">Sobreposição com documento anterior</p>
+              <p className="mt-1 text-sm text-[#fde68a]">
+                {preview.duplicates_db} lançamento(s) existente(s) serão preservados e somente os {preview.new_records} novos serão inseridos após sua confirmação.
+              </p>
+            </div>
+          )}
+
           {preview.warnings && preview.warnings.length > 0 && (
             <div className="mb-4 rounded-lg p-3" style={{ background: 'rgba(251,191,36,0.08)', border: '1px solid rgba(251,191,36,0.25)' }}>
               {preview.warnings.map((w, i) => <p key={i} className="text-sm text-[#fbbf24]">{w}</p>)}
@@ -403,7 +419,7 @@ export default function ImportPage() {
                     <td className={`px-3 py-2 font-medium ${r.amount >= 0 ? 'text-[#3ecf8e]' : 'text-[#f87171]'}`}>{fmtCurrency(r.amount)}</td>
                     <td className="px-3 py-2 text-[#8b90a4]">{r.type === 'income' ? 'Entrada' : 'Saída'}</td>
                     <td className="px-3 py-2">
-                      {r.duplicate_db ? <span className="text-[#f87171]">Já existe no banco — arquivo bloqueado</span> : r.duplicate_internal ? <span className="text-[#3ecf8e]">Repetição válida</span> : <span className="text-[#3ecf8e]">Novo</span>}
+                      {r.duplicate_db ? <span className="text-[#fbbf24]">Já existe no banco — será preservado</span> : r.duplicate_internal ? <span className="text-[#3ecf8e]">Repetição válida</span> : <span className="text-[#3ecf8e]">Novo</span>}
                     </td>
                     <td className="px-3 py-2 text-[#93c5fd]">{r.match_probability ? `${r.match_probability.toFixed(0)}%` : '-'}</td>
                   </tr>
@@ -415,7 +431,13 @@ export default function ImportPage() {
           <div className="mt-4 flex justify-end">
             <button onClick={handleCommit} disabled={loading || !/^\d{4}-\d{2}$/.test(competenceMonth) || (preview.new_records <= 0 && !preview.import_meta?.empty_statement_confirmed) || preview.quality_gate?.can_commit === false} className="h-10 px-5 rounded-md font-semibold text-sm disabled:opacity-40 flex items-center gap-2" style={{ background: '#3ecf8e', color: '#0b1218' }}>
               <Database size={16} />
-              {loading ? 'Salvando...' : preview.import_meta?.empty_statement_confirmed ? 'Registrar extrato vazio' : 'Confirmar importação'}
+              {loading
+                ? 'Salvando...'
+                : preview.import_meta?.empty_statement_confirmed
+                  ? 'Registrar extrato vazio'
+                  : preview.duplicates_db > 0
+                    ? `Importar ${preview.new_records} novos`
+                    : 'Confirmar importação'}
             </button>
           </div>
         </div>
