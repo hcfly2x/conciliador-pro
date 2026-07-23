@@ -1593,6 +1593,7 @@ def _parse_santander_movement_statement(
         summary_labels = {
             "depositos transferencias": "credit_transfers",
             "outros creditos": "other_credits",
+            "compras com cartao de debito": "debit_card_purchases",
             "pagamentos transferencias": "debit_transfers",
             "outros debitos": "other_debits",
         }
@@ -1608,9 +1609,19 @@ def _parse_santander_movement_statement(
                     if value is not None:
                         summary[key] = abs(value)
                 break
-        if len(summary) == len(summary_labels):
+        required_summary = {
+            "credit_transfers",
+            "other_credits",
+            "debit_transfers",
+            "other_debits",
+        }
+        if required_summary.issubset(summary):
             total_credits = summary["credit_transfers"] + summary["other_credits"]
-            total_debits = summary["debit_transfers"] + summary["other_debits"]
+            total_debits = (
+                summary["debit_transfers"]
+                + summary["other_debits"]
+                + summary.get("debit_card_purchases", 0.0)
+            )
             saldo_anterior = round(saldo_final - total_credits + total_debits, 2)
 
     ref_year = _infer_statement_year(text, filename)
