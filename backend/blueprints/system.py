@@ -10,13 +10,15 @@ import logging
 import os
 import shutil
 import zipfile
+from collections.abc import Iterable, Iterator
 from pathlib import Path
 
 from flask import Blueprint, jsonify, request, send_file, send_from_directory
 from openpyxl import Workbook
+from openpyxl.cell import WriteOnlyCell
 from openpyxl.formatting.rule import FormulaRule
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
-from openpyxl.worksheet.table import Table, TableStyleInfo
+from openpyxl.utils import get_column_letter
 
 from auth import record_audit
 from db import IS_POSTGRES
@@ -181,7 +183,7 @@ AUDIT_COLUMNS = [
 ]
 
 
-def _audit_transaction_rows(conn) -> list[dict]:
+def _audit_transaction_rows(conn) -> Iterator[dict]:
     cursor = conn.execute(
         """
         SELECT
@@ -242,15 +244,14 @@ def _audit_transaction_rows(conn) -> list[dict]:
         """
     )
     columns = [item[0] for item in cursor.description]
-    result: list[dict] = []
     seen: set[str] = set()
-    for raw in cursor.fetchall():
-        row = dict(zip(columns, tuple(raw)))
-        if row["transaction_id"] in seen:
-            continue
-        seen.add(row["transaction_id"])
-        result.append(row)
-    return result
+    while batch := cursor.fetchmany(500):
+        for raw in batch:
+            row = dict(zip(columns, tuple(raw)))
+            if row["transaction_id"] in seen:
+                continue
+            seen.add(row["transaction_id"])
+            yield row
 
 
 def _excel_audit_value(key: str, value):
@@ -272,39 +273,25 @@ def _excel_audit_value(key: str, value):
     return value
 
 
-def _audit_workbook(rows: list[dict], created_at: str) -> io.BytesIO:
-    workbook = Workbook()
-    sheet = workbook.active
-    sheet.title = "Lançamentos"
+def _audit_workbook(rows: Iterable[dict], created_at: str) -> io.BytesIO:
+    workbook = Workbook(write_only=True)
+    sheet = workbook.create_sheet("Lançamentos")
     sheet.sheet_view.showGridLines = False
     headers = [label for label, _ in AUDIT_COLUMNS]
-    sheet.append(headers)
-    for row in rows:
-        values = []
-        for _, key in AUDIT_COLUMNS:
-            values.append(_excel_audit_value(key, row.get(key)))
-        sheet.append(values)
-
     dark = "172033"
     light = "DCE6F1"
     white = "FFFFFF"
     thin = Side(style="thin", color="D7DCE5")
-    header = sheet[1]
-    for cell in header:
+    header = []
+    for label in headers:
+        cell = WriteOnlyCell(sheet, value=label)
         cell.fill = PatternFill("solid", fgColor=dark)
         cell.font = Font(color=white, bold=True)
         cell.alignment = Alignment(vertical="center", wrap_text=True)
         cell.border = Border(bottom=thin)
+        header.append(cell)
     sheet.row_dimensions[1].height = 34
     sheet.freeze_panes = "E2"
-    sheet.auto_filter.ref = sheet.dimensions
-    if rows:
-        table = Table(displayName="LancamentosAuditoria", ref=sheet.dimensions)
-        table.tableStyleInfo = TableStyleInfo(
-            name="TableStyleMedium2", showFirstColumn=False, showLastColumn=False,
-            showRowStripes=True, showColumnStripes=False,
-        )
-        sheet.add_table(table)
 
     widths = {
         "Data": 12, "Competência": 13, "Descrição": 38, "Descrição normalizada": 32,
@@ -313,26 +300,58 @@ def _audit_workbook(rows: list[dict], created_at: str) -> io.BytesIO:
         "Descrição contraparte": 34, "Arquivo de origem": 36, "Documento no cofre": 36,
     }
     for index, label in enumerate(headers, start=1):
-        sheet.column_dimensions[sheet.cell(1, index).column_letter].width = widths.get(label, 20)
-    currency_headers = {"Valor", "Valor do plano", "Valor histórico", "Valor conciliado", "Valor contraparte"}
-    date_headers = {"Data", "Data histórica", "Data contraparte"}
-    datetime_headers = {"Classificado em", "Conciliado em", "Importado em", "Documento guardado em"}
-    for index, label in enumerate(headers, start=1):
-        column = sheet.cell(1, index).column_letter
-        if label in currency_headers:
-            for cell in sheet[column][1:]:
+        sheet.column_dimensions[get_column_letter(index)].width = widths.get(label, 20)
+    sheet.append(header)
+
+    currency_keys = {
+        "amount", "installment_plan_amount", "history_amount",
+        "reconciliation_amount", "counterpart_amount",
+    }
+    date_keys = {"date", "history_date", "counterpart_date"}
+    datetime_keys = {
+        "classified_at", "reconciliation_created_at", "imported_at",
+        "stored_document_created_at",
+    }
+    summary_values = {
+        "total": 0,
+        "income": 0.0,
+        "expense": 0.0,
+        "pending": 0,
+        "category": 0,
+        "history": 0,
+        "document": 0,
+    }
+    for row in rows:
+        summary_values["total"] += 1
+        amount = float(row.get("amount") or 0)
+        if row.get("type") == "income":
+            summary_values["income"] += amount
+        elif row.get("type") == "expense":
+            summary_values["expense"] += amount
+        summary_values["pending"] += row.get("status") == "pending"
+        summary_values["category"] += bool(row.get("category_id"))
+        summary_values["history"] += bool(row.get("history_match_id"))
+        summary_values["document"] += bool(row.get("stored_document_id"))
+
+        values = []
+        for _, key in AUDIT_COLUMNS:
+            cell = WriteOnlyCell(sheet, value=_excel_audit_value(key, row.get(key)))
+            if key in currency_keys:
                 cell.number_format = 'R$ #,##0.00;[Red]-R$ #,##0.00'
-        elif label in date_headers:
-            for cell in sheet[column][1:]:
+            elif key in date_keys:
                 cell.number_format = "dd/mm/yyyy"
-        elif label in datetime_headers:
-            for cell in sheet[column][1:]:
+            elif key in datetime_keys:
                 cell.number_format = "dd/mm/yyyy hh:mm:ss"
+            values.append(cell)
+        sheet.append(values)
+
+    final_row = int(summary_values["total"]) + 1
+    sheet.auto_filter.ref = f"A1:{get_column_letter(len(headers))}{final_row}"
 
     status_col = headers.index("Status") + 1
-    status_letter = sheet.cell(1, status_col).column_letter
-    if rows:
-        status_range = f"{status_letter}2:{status_letter}{sheet.max_row}"
+    status_letter = get_column_letter(status_col)
+    if summary_values["total"]:
+        status_range = f"{status_letter}2:{status_letter}{final_row}"
         sheet.conditional_formatting.add(
             status_range,
             FormulaRule(formula=[f'{status_letter}2="pending"'], fill=PatternFill("solid", fgColor="FFF2CC")),
@@ -344,30 +363,47 @@ def _audit_workbook(rows: list[dict], created_at: str) -> io.BytesIO:
 
     summary = workbook.create_sheet("Resumo")
     summary.sheet_view.showGridLines = False
-    summary.append(["Auditoria de lançamentos", None])
-    summary.append(["Gerado em (UTC)", created_at])
-    summary.append(["Total de lançamentos", len(rows)])
-    summary.append(["Total de receitas", sum(float(row["amount"] or 0) for row in rows if row["type"] == "income")])
-    summary.append(["Total de despesas", sum(float(row["amount"] or 0) for row in rows if row["type"] == "expense")])
-    summary.append(["Pendentes", sum(row["status"] == "pending" for row in rows)])
-    summary.append(["Com categoria", sum(bool(row.get("category_id")) for row in rows)])
-    summary.append(["Com vínculo histórico", sum(bool(row.get("history_match_id")) for row in rows)])
-    summary.append(["Com documento de origem", sum(bool(row.get("stored_document_id")) for row in rows)])
-    summary.merge_cells("A1:B1")
-    summary["A1"].fill = PatternFill("solid", fgColor=dark)
-    summary["A1"].font = Font(color=white, bold=True, size=14)
-    summary["A1"].alignment = Alignment(horizontal="left")
     summary.column_dimensions["A"].width = 32
     summary.column_dimensions["B"].width = 28
-    for cell in summary["A"][1:]:
-        cell.font = Font(bold=True)
-        cell.fill = PatternFill("solid", fgColor=light)
-    for cell in (summary["B4"], summary["B5"]):
-        cell.number_format = 'R$ #,##0.00;[Red]-R$ #,##0.00'
+    summary_rows = [
+        ("Auditoria de lançamentos", ""),
+        ("Gerado em (UTC)", created_at),
+        ("Total de lançamentos", summary_values["total"]),
+        ("Total de receitas", summary_values["income"]),
+        ("Total de despesas", summary_values["expense"]),
+        ("Pendentes", summary_values["pending"]),
+        ("Com categoria", summary_values["category"]),
+        ("Com vínculo histórico", summary_values["history"]),
+        ("Com documento de origem", summary_values["document"]),
+    ]
+    for index, (label, value) in enumerate(summary_rows, start=1):
+        label_cell = WriteOnlyCell(summary, value=label)
+        value_cell = WriteOnlyCell(summary, value=value)
+        if index == 1:
+            label_cell.fill = PatternFill("solid", fgColor=dark)
+            label_cell.font = Font(color=white, bold=True, size=14)
+            label_cell.alignment = Alignment(horizontal="left")
+            value_cell.fill = PatternFill("solid", fgColor=dark)
+        else:
+            label_cell.font = Font(bold=True)
+            label_cell.fill = PatternFill("solid", fgColor=light)
+        if index in {4, 5}:
+            value_cell.number_format = 'R$ #,##0.00;[Red]-R$ #,##0.00'
+        summary.append([label_cell, value_cell])
 
     dictionary = workbook.create_sheet("Dicionário")
     dictionary.sheet_view.showGridLines = False
-    dictionary.append(["Coluna", "Campo técnico", "Grupo"])
+    dictionary.freeze_panes = "A2"
+    dictionary.column_dimensions["A"].width = 38
+    dictionary.column_dimensions["B"].width = 34
+    dictionary.column_dimensions["C"].width = 30
+    dictionary_header = []
+    for value in ("Coluna", "Campo técnico", "Grupo"):
+        cell = WriteOnlyCell(dictionary, value=value)
+        cell.fill = PatternFill("solid", fgColor=dark)
+        cell.font = Font(color=white, bold=True)
+        dictionary_header.append(cell)
+    dictionary.append(dictionary_header)
     groups = [
         (0, 32, "Lançamento e classificação"),
         (32, 38, "Sugestões"),
@@ -378,14 +414,7 @@ def _audit_workbook(rows: list[dict], created_at: str) -> io.BytesIO:
     for idx, (label, key) in enumerate(AUDIT_COLUMNS):
         group = next(name for start, end, name in groups if start <= idx < end)
         dictionary.append([label, key, group])
-    for cell in dictionary[1]:
-        cell.fill = PatternFill("solid", fgColor=dark)
-        cell.font = Font(color=white, bold=True)
-    dictionary.freeze_panes = "A2"
-    dictionary.auto_filter.ref = dictionary.dimensions
-    dictionary.column_dimensions["A"].width = 38
-    dictionary.column_dimensions["B"].width = 34
-    dictionary.column_dimensions["C"].width = 30
+    dictionary.auto_filter.ref = f"A1:C{len(AUDIT_COLUMNS) + 1}"
     workbook.calculation.fullCalcOnLoad = True
     output = io.BytesIO()
     workbook.save(output)
@@ -401,11 +430,19 @@ def system_audit_export():
     if forbidden:
         return forbidden
     created_at = dt.datetime.now(dt.timezone.utc).isoformat()
-    with application.db_connect() as conn:
-        if IS_POSTGRES:
-            conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
-        rows = _audit_transaction_rows(conn)
-    workbook = _audit_workbook(rows, created_at)
+    try:
+        with application.db_connect() as conn:
+            if IS_POSTGRES:
+                conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+            workbook = _audit_workbook(_audit_transaction_rows(conn), created_at)
+    except Exception:
+        logger.exception("Falha ao gerar planilha de auditoria")
+        return jsonify(
+            {
+                "detail": "Não foi possível gerar a planilha de auditoria",
+                "code": "AUDIT_EXPORT_FAILED",
+            }
+        ), 500
     filename = f"auditoria-lancamentos-{dt.datetime.now().strftime('%Y%m%d-%H%M%S')}.xlsx"
     return send_file(
         workbook,

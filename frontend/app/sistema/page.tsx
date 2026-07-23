@@ -11,7 +11,6 @@ export default function SistemaPage() {
   const [loading, setLoading] = useState<'transactions' | 'all' | null>(null)
   const [result, setResult] = useState<string>('')
   const [exporting, setExporting] = useState(false)
-  const [auditPayload, setAuditPayload] = useState<{ filename: string; dataUrl: string } | null>(null)
 
   const admin = isAdmin()
 
@@ -50,12 +49,16 @@ export default function SistemaPage() {
   async function handleAuditExport() {
     setExporting(true)
     try {
-      const payload = await downloadAuditExport()
-      setAuditPayload(payload)
+      await downloadAuditExport()
       addToast('Exportação de auditoria gerada')
     } catch (e: unknown) {
-      const err = e as { detail?: string }
-      addToast(err?.detail || 'Erro ao exportar auditoria', 'err')
+      const err = e as { detail?: string; status?: number }
+      const message = err?.detail || (
+        err?.status
+          ? 'Erro ao exportar auditoria'
+          : 'Conexão interrompida durante a geração da auditoria'
+      )
+      addToast(message, 'err')
     } finally {
       setExporting(false)
     }
@@ -87,15 +90,6 @@ export default function SistemaPage() {
           <Download size={14} />
           {exporting ? 'Gerando planilha...' : 'Exportar auditoria em Excel'}
         </button>
-        {auditPayload && (
-          <textarea
-            data-testid="audit-export-payload"
-            aria-label="Fotografia de auditoria gerada"
-            className="hidden"
-            readOnly
-            value={`${auditPayload.filename}\n${auditPayload.dataUrl}`}
-          />
-        )}
       </div>
 
       <div className="rounded-xl p-5" style={{ background: 'rgba(248,113,113,0.05)', border: '1px solid rgba(248,113,113,0.25)' }}>

@@ -250,6 +250,16 @@ test('aplica permissoes de colaborador e registra auditoria administrativa', asy
   ]))
 })
 
+test('exporta auditoria administrativa como download real', async ({ page }) => {
+  await login(page)
+  await page.goto('/sistema')
+  const downloadPromise = page.waitForEvent('download')
+  await page.getByRole('button', { name: 'Exportar auditoria em Excel' }).click()
+  const download = await downloadPromise
+  expect(download.suggestedFilename()).toMatch(/^auditoria-lancamentos-\d{8}-\d{6}\.xlsx$/)
+  await expect(page.getByText('Exportação de auditoria gerada')).toBeVisible()
+})
+
 test('vincula selecao grande em blocos e exibe progresso real', async ({ page, request }) => {
   test.setTimeout(180_000)
   await login(page)
