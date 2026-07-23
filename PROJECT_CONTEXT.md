@@ -19,14 +19,13 @@ lançamentos financeiros reais.
 ## Estado atual
 
 - Branch oficial: `main`.
-- A `main`, a Vercel e o Render acompanham o mesmo fluxo de release. A última
-  correção funcional homologada em produção é `fabafb6`; o health do backend
-  é a fonte operacional para confirmar o commit ativo.
+- A `main`, a Vercel e o Render acompanham o mesmo fluxo de release. O health
+  do backend é a fonte operacional para confirmar o commit ativo.
 - Banco de produção: PostgreSQL/Supabase, schema 2.
 - Backend: Render com `WORKER_MODE=inline`.
 - Frontend: Vercel.
 - CI atual aprovada: testes Python, PostgreSQL 16, TypeScript, build e 9 E2E.
-- O código contém 103 métodos de teste Python.
+- O código contém 107 métodos de teste Python.
 - Existem 64 rotas: 51 implementadas nos blueprints e 13 ainda no núcleo.
 - O repositório está em uso com dados reais; mudanças devem preservar
   classificações, vínculos, conciliações, auditoria e documentos.
@@ -152,5 +151,3 @@ lançamentos financeiros reais.
 - Destino do endpoint `/system/audit-snapshot` e do script de auditoria local.
 - Se a restauração do backup volta a ser bloqueio antes da próxima migration.
 - Quando divergência de saldo ou linhas rejeitadas deve bloquear uma importação.
-- Quando remover com segurança os reparos financeiros específicos ainda
-  presentes no bootstrap.

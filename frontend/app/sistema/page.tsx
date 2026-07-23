@@ -1,13 +1,10 @@
 'use client'
 import { useState } from 'react'
-import { AlertTriangle, Download, FileUp, Trash2, Wrench } from 'lucide-react'
+import { AlertTriangle, Download, Trash2 } from 'lucide-react'
 import {
-  backfillDocument,
   downloadAuditExport,
-  repairSantanderCards,
   systemReset,
   isAdmin,
-  type SantanderCardRepairResult,
 } from '@/lib/api'
 import { useStore } from '@/store/app'
 
@@ -18,11 +15,6 @@ export default function SistemaPage() {
   const [loading, setLoading] = useState<'transactions' | 'all' | null>(null)
   const [result, setResult] = useState<string>('')
   const [exporting, setExporting] = useState(false)
-  const [restoring, setRestoring] = useState(false)
-  const [restoreResult, setRestoreResult] = useState<string>('')
-  const [repairing, setRepairing] = useState<'validate' | 'apply' | null>(null)
-  const [repairPreview, setRepairPreview] = useState<SantanderCardRepairResult | null>(null)
-  const [repairResult, setRepairResult] = useState<string>('')
 
   const admin = isAdmin()
 
@@ -76,70 +68,6 @@ export default function SistemaPage() {
     }
   }
 
-  async function handleDocumentBackfill(files: FileList | null) {
-    if (!files?.length) return
-    setRestoring(true)
-    setRestoreResult('')
-    try {
-      let restored = 0
-      let alreadyPresent = 0
-      let transactions = 0
-      for (const file of Array.from(files)) {
-        const response = await backfillDocument(file)
-        if (response.status === 'already_present') alreadyPresent += 1
-        else restored += 1
-        transactions += response.transactions
-      }
-      setRestoreResult(
-        `${restored} documento(s) restaurado(s), ${alreadyPresent} já presente(s); ` +
-        `${transactions} lançamento(s) vinculados sem reimportação.`
-      )
-      addToast('Documentos conferidos e vinculados ao cofre')
-    } catch (e: unknown) {
-      const err = e as { detail?: string }
-      addToast(err?.detail || 'Erro ao restaurar documento', 'err')
-    } finally {
-      setRestoring(false)
-    }
-  }
-
-  async function handleSantanderRepair(dryRun: boolean) {
-    setRepairing(dryRun ? 'validate' : 'apply')
-    setRepairResult('')
-    try {
-      const response = await repairSantanderCards(dryRun)
-      if (dryRun) {
-        setRepairPreview(response)
-        setRepairResult(
-          `Validação concluída: ${response.updates ?? 0} atualização(ões), ` +
-          `${response.inserts ?? 0} inclusão(ões) e ${response.already_applied} já aplicada(s).`
-        )
-        addToast('Correções Santander validadas')
-      } else {
-        setRepairPreview(null)
-        setRepairResult(
-          `Correção concluída: ${response.updated ?? 0} atualização(ões), ` +
-          `${response.inserted ?? 0} inclusão(ões) e ${response.already_applied} já aplicada(s).`
-        )
-        addToast('Faturas Santander corrigidas')
-        bumpRefresh()
-        bumpMonthsRefresh()
-      }
-    } catch (e: unknown) {
-      const err = e as { detail?: string; conflict_count?: number }
-      setRepairPreview(null)
-      addToast(
-        err?.detail || 'Não foi possível corrigir as faturas Santander',
-        'err'
-      )
-      if (err?.conflict_count) {
-        setRepairResult(`${err.conflict_count} conflito(s) detectado(s); nenhuma correção foi aplicada.`)
-      }
-    } finally {
-      setRepairing(null)
-    }
-  }
-
   if (!admin) {
     return <p className="text-sm text-[#8b90a4]">Apenas o administrador pode acessar esta página.</p>
   }
@@ -167,71 +95,6 @@ export default function SistemaPage() {
           <Download size={14} />
           {exporting ? 'Gerando planilha...' : 'Exportar auditoria em Excel'}
         </button>
-      </div>
-
-      <div className="rounded-xl p-5 mb-5" style={{ background: '#13161d', border: '1px solid rgba(255,255,255,0.08)' }}>
-        <h3 className="font-display font-bold text-[14px] text-[#e8eaf0] mb-2">
-          Corrigir histórico das faturas Santander
-        </h3>
-        <p className="text-sm text-[#8b90a4] mb-4">
-          Valida e aplica o reparo auditado de pagamentos ausentes, créditos ou estornos,
-          compras internacionais e IOF. O processo é transacional, idempotente e não
-          sobrescreve lançamentos que tenham mudado desde a auditoria.
-        </p>
-        <div className="flex flex-wrap gap-3">
-          <button
-            onClick={() => void handleSantanderRepair(true)}
-            disabled={repairing !== null}
-            className="flex items-center justify-center gap-2 h-10 px-4 rounded-lg text-sm font-semibold disabled:opacity-40"
-            style={{ background: 'rgba(245,158,11,0.12)', color: '#fcd34d', border: '1px solid rgba(245,158,11,0.3)' }}
-          >
-            <Wrench size={14} />
-            {repairing === 'validate' ? 'Validando...' : 'Validar 150 correções'}
-          </button>
-          {repairPreview && repairPreview.conflicts === 0 && (
-            <button
-              onClick={() => void handleSantanderRepair(false)}
-              disabled={repairing !== null}
-              className="flex items-center justify-center gap-2 h-10 px-4 rounded-lg text-sm font-semibold disabled:opacity-40"
-              style={{ background: 'rgba(34,197,94,0.12)', color: '#86efac', border: '1px solid rgba(34,197,94,0.3)' }}
-            >
-              <Wrench size={14} />
-              {repairing === 'apply' ? 'Aplicando...' : 'Aplicar correções validadas'}
-            </button>
-          )}
-        </div>
-        {repairResult && (
-          <p className="mt-4 text-sm text-[#cbd5e1]">{repairResult}</p>
-        )}
-      </div>
-
-      <div className="rounded-xl p-5 mb-5" style={{ background: '#13161d', border: '1px solid rgba(255,255,255,0.08)' }}>
-        <h3 className="font-display font-bold text-[14px] text-[#e8eaf0] mb-2">Restaurar originais no cofre</h3>
-        <p className="text-sm text-[#8b90a4] mb-4">
-          Vincula documentos antigos ao lote existente pelo SHA-1. O conteúdo precisa ser exatamente
-          igual ao arquivo importado; nenhum lançamento é criado, removido ou reimportado.
-        </p>
-        <label
-          className="flex items-center justify-center gap-2 h-10 px-4 rounded-lg text-sm font-semibold cursor-pointer"
-          style={{ background: 'rgba(34,197,94,0.12)', color: '#86efac', border: '1px solid rgba(34,197,94,0.3)' }}
-        >
-          <FileUp size={14} />
-          {restoring ? 'Conferindo documentos...' : 'Selecionar documentos para restaurar'}
-          <input
-            type="file"
-            multiple
-            accept=".pdf,.csv,.xls,.xlsx"
-            className="hidden"
-            disabled={restoring}
-            onChange={event => {
-              void handleDocumentBackfill(event.target.files)
-              event.target.value = ''
-            }}
-          />
-        </label>
-        {restoreResult && (
-          <p className="mt-4 text-sm text-[#3ecf8e]">{restoreResult}</p>
-        )}
       </div>
 
       <div className="rounded-xl p-5" style={{ background: 'rgba(248,113,113,0.05)', border: '1px solid rgba(248,113,113,0.25)' }}>

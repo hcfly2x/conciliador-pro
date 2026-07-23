@@ -464,61 +464,6 @@ export async function downloadAuditExport(): Promise<void> {
   window.URL.revokeObjectURL(url)
 }
 
-export interface SantanderCardRepairResult {
-  ok: boolean
-  dry_run: boolean
-  manifest_id: string
-  repair_count: number
-  updates?: number
-  inserts?: number
-  updated?: number
-  inserted?: number
-  already_applied: number
-  conflicts: number
-}
-
-export async function repairSantanderCards(dryRun: boolean): Promise<SantanderCardRepairResult> {
-  return http<SantanderCardRepairResult>(
-    'POST',
-    '/system/repair-santander-cards',
-    {
-      dry_run: dryRun,
-      ...(dryRun ? {} : { confirmation: 'CORRIGIR_FATURAS_SANTANDER' }),
-    },
-    120000,
-  )
-}
-
-export interface DocumentBackfillResult {
-  ok: boolean
-  status: 'created' | 'linked_existing' | 'already_present'
-  document_id: string
-  filename: string
-  imported_file_id: string
-  sha1: string
-  size: number
-  transactions: number
-}
-
-export async function backfillDocument(file: File): Promise<DocumentBackfillResult> {
-  const form = new FormData()
-  form.append('file', file)
-  const res = await fetch(`${BASE}/system/documents/backfill`, {
-    method: 'POST',
-    body: form,
-    headers: authHeaders(),
-  })
-  if (res.status === 401) {
-    handleUnauthorized()
-    throw { status: 401, detail: 'Não autenticado', code: 'UNAUTHORIZED' }
-  }
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ detail: res.statusText }))
-    throw { status: res.status, ...err }
-  }
-  return res.json()
-}
-
 export async function getMonths(): Promise<string[]> {
   if (USE_MOCK) { await delay(); return mockMonths }
   return http<string[]>('GET', '/transactions/months')
