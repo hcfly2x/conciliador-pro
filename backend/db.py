@@ -183,6 +183,11 @@ class _PgCursor:
         self._cursor = cursor
         self.rowcount = cursor.rowcount
 
+    @property
+    def description(self):
+        """Expoe os metadados DB-API usados pelos consumidores de cursor."""
+        return self._cursor.description
+
     def _wrap_rows(self, rows):
         if not rows or self._cursor.description is None:
             return rows
