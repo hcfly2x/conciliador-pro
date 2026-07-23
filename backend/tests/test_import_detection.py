@@ -10,6 +10,7 @@ import app
 from parsers.engine import (
     RawTx,
     _is_explicit_empty_nubank_text,
+    _is_explicit_empty_xp_text,
     _parse_credit_card_pdf_text,
     _parse_nubank_statement,
     _parse_santander_movement_statement,
@@ -159,6 +160,22 @@ class EmptyStatementTests(unittest.TestCase):
         self.assertFalse(_is_explicit_empty_nubank_text(
             "Saldo inicial R$ 0,00\nMovimentacoes\nSaldo final do periodo R$ 0,00"
         ))
+
+    def test_xp_pdf_requires_explicit_empty_period_evidence(self) -> None:
+        self.assertTrue(
+            _is_explicit_empty_xp_text(
+                "Conta Digital XP | Extrato Conta Digital\n"
+                "Saldo disponível no final do período filtrado: R$ 0,00\n"
+                "Data Descrição Valor Saldo\n"
+                "Não há lançamentos para o período"
+            )
+        )
+        self.assertFalse(
+            _is_explicit_empty_xp_text(
+                "Conta Digital XP | Extrato Conta Digital\n"
+                "Saldo disponível no final do período filtrado: R$ 0,00"
+            )
+        )
 
     def test_nubank_parser_continues_after_intermediate_page_footer(self) -> None:
         text = """
