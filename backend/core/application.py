@@ -3269,6 +3269,7 @@ def existing_db_duplicate_count(
     account_id: str,
     row: dict[str, Any],
     competence_month: str = "",
+    card_statement: bool = False,
 ) -> int:
     installment_current = int(row.get("installment_current") or 0)
     installment_total = int(row.get("installment_total") or 0)
@@ -3284,6 +3285,35 @@ def existing_db_duplicate_count(
     ]
     if competence_month:
         params.append(competence_month)
+    if card_statement:
+        candidates = conn.execute(
+            f"""
+            SELECT description_norm FROM transactions
+            WHERE account_id=?
+              AND date=?
+              AND ROUND(amount,2)=?
+              AND type=?
+              AND IFNULL(installment_current,0)=?
+              AND IFNULL(installment_total,0)=?
+              {competence_filter}
+            """,
+            tuple(
+                [
+                    account_id,
+                    row["date"],
+                    row["amount_signed"],
+                    row["tx_type"],
+                    installment_current,
+                    installment_total,
+                ]
+                + ([competence_month] if competence_month else [])
+            ),
+        ).fetchall()
+        target_description = import_dedupe_description(row["description_norm"])
+        return sum(
+            import_dedupe_description(candidate[0]) == target_description
+            for candidate in candidates
+        )
     return int(
         conn.execute(
             f"""
@@ -3301,6 +3331,13 @@ def existing_db_duplicate_count(
         ).fetchone()[0]
         or 0
     )
+
+
+def import_dedupe_description(value: str) -> str:
+    """Compara descrições de cartão sem repetir a parcela já estruturada."""
+    normalized = norm_text(value)
+    normalized = re.sub(r"\bparcela\s+\d+\s+(?:de\s+)?\d+\b", " ", normalized)
+    return re.sub(r"\s+", " ", normalized).strip()
 
 
 def existing_db_duplicate_count_for_rows(
@@ -4474,9 +4511,14 @@ def import_document(
             and re.match(r"^\d{4}/\d{2}$", competence_month_override or "")
             else ""
         )
+        is_card_statement = (acc[2] or "").lower() == "credit_card"
         db_counts = {
             r["sig"]: existing_db_duplicate_count(
-                conn, acc[0], r, competence_month=card_competence
+                conn,
+                acc[0],
+                r,
+                competence_month=card_competence,
+                card_statement=is_card_statement,
             )
             for r in parsed_rows
         }
@@ -4844,8 +4886,22 @@ def import_preview():
             historical_matches = 0
             occ: dict[tuple[str, float, str, str], int] = {}
             rows_preview: list[dict[str, Any]] = []
+            preview_competence = ""
+            if (acc[2] or "").lower() == "credit_card":
+                candidate = str(
+                    prep.get("import_meta", {}).get("suggested_competence_month")
+                    or ""
+                )
+                if re.match(r"^\d{4}/\d{2}$", candidate):
+                    preview_competence = candidate
             db_counts = {
-                r["sig"]: existing_db_duplicate_count(conn, acc[0], r)
+                r["sig"]: existing_db_duplicate_count(
+                    conn,
+                    acc[0],
+                    r,
+                    competence_month=preview_competence,
+                    card_statement=(acc[2] or "").lower() == "credit_card",
+                )
                 for r in parsed_rows
             }
             for r in parsed_rows:

@@ -25,7 +25,7 @@ lançamentos financeiros reais.
 - Backend: Render com `WORKER_MODE=inline`.
 - Frontend: Vercel.
 - CI atual aprovada: testes Python, PostgreSQL 16, TypeScript, build e 9 E2E.
-- O código contém 108 métodos de teste Python.
+- O código contém 109 métodos de teste Python.
 - Existem 64 rotas: 51 implementadas nos blueprints e 13 ainda no núcleo.
 - O repositório está em uso com dados reais; mudanças devem preservar
   classificações, vínculos, conciliações, auditoria e documentos.
@@ -90,6 +90,9 @@ lançamentos financeiros reais.
 - Repetições internas do arquivo são preservadas.
 - Em faturas de cartão, a deduplicação é limitada à competência da própria
   fatura; ocorrências iguais em competências diferentes podem ser eventos reais.
+- Na sobreposição da mesma fatura, a parcela registrada no texto é comparada
+  pelos campos estruturados de parcela, evitando reinserção quando o parser
+  normaliza a descrição.
 - Arquivo integralmente já importado continua bloqueado pelo hash.
 - Sobreposição parcial exige confirmação explícita; duplicados existentes são
   preservados e somente as ocorrências novas são inseridas.

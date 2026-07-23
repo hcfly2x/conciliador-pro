@@ -111,6 +111,44 @@ class OfficialImportRegressionTests(unittest.TestCase):
 
 
 class DuplicateDatabaseRegressionTests(unittest.TestCase):
+    def test_card_statement_overlap_ignores_serialized_installment_label(self) -> None:
+        conn = sqlite3.connect(":memory:")
+        self.addCleanup(conn.close)
+        conn.execute(
+            """
+            CREATE TABLE transactions(
+              account_id TEXT,date TEXT,competence_month TEXT,amount REAL,
+              description_norm TEXT,type TEXT,installment_current INTEGER,
+              installment_total INTEGER
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO transactions VALUES
+            ('card','2026-05-16','2026/06',-305.33,
+             'alfa beer eventos parcela 3 de 4','expense',3,4)
+            """
+        )
+        row = {
+            "date": "2026-05-16",
+            "amount_signed": -305.33,
+            "description_norm": "alfa beer eventos",
+            "tx_type": "expense",
+            "installment_current": 3,
+            "installment_total": 4,
+        }
+        self.assertEqual(
+            app.existing_db_duplicate_count(
+                conn,
+                "card",
+                row,
+                competence_month="2026/06",
+                card_statement=True,
+            ),
+            1,
+        )
+
     def test_database_occurrences_only_block_the_same_number_of_rows(self) -> None:
         conn = sqlite3.connect(":memory:")
         self.addCleanup(conn.close)
