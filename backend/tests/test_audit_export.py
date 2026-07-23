@@ -1,5 +1,6 @@
 import datetime as dt
 import io
+import sys
 import unittest
 
 from openpyxl import load_workbook
@@ -51,8 +52,51 @@ class AuditWorkbookTests(unittest.TestCase):
             transactions.cell(2, headers.index("ID vínculo histórico") + 1).value,
             "hist-1",
         )
-        self.assertIn("LancamentosAuditoria", transactions.tables)
+        self.assertEqual(transactions.auto_filter.ref, "A1:CA2")
+        self.assertEqual(transactions.freeze_panes, "E2")
         self.assertEqual(workbook["Resumo"]["B3"].value, 1)
+
+    def test_workbook_streams_production_volume(self):
+        def rows():
+            for index in range(5_000):
+                row = {key: "" for _, key in AUDIT_COLUMNS}
+                row.update(
+                    transaction_id=f"tx-{index}",
+                    tx_key=f"key-{index}",
+                    date="2026-07-22",
+                    competence_month="2026-07",
+                    description=f"Compra de volume {index}",
+                    amount=-10.0,
+                    type="expense",
+                    status="pending",
+                    account_name="CARTAO TESTE",
+                    account_type="credit_card",
+                )
+                yield row
+
+        before_rss = None
+        if sys.platform.startswith("linux"):
+            import resource
+
+            before_rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+
+        output = _audit_workbook(rows(), "2026-07-22T12:00:00+00:00")
+
+        if before_rss is not None:
+            import resource
+
+            after_rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+            self.assertLess(after_rss - before_rss, 50 * 1024)
+
+        workbook = load_workbook(
+            io.BytesIO(output.getvalue()), data_only=False, read_only=True
+        )
+        self.assertEqual(workbook.sheetnames, ["Lançamentos", "Resumo", "Dicionário"])
+        self.assertEqual(
+            sum(1 for _ in workbook["Lançamentos"].iter_rows()),
+            5_001,
+        )
+        self.assertEqual(workbook["Resumo"]["B3"].value, 5_000)
 
 
 if __name__ == "__main__":

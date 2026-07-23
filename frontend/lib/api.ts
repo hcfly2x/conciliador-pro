@@ -440,7 +440,7 @@ export async function bulkClassify(ids: string[], category_id: string, subcatego
   return http<{ updated: number; skipped_locked?: number; skipped_history_links?: number }>('PATCH', '/transactions/bulk-classify', { ids, category_id, subcategory_id })
 }
 
-export async function downloadAuditExport(): Promise<{ filename: string; dataUrl: string }> {
+export async function downloadAuditExport(): Promise<void> {
   const res = await fetch(`${BASE}/system/audit-export`, { headers: authHeaders() })
   if (res.status === 401) {
     handleUnauthorized()
@@ -454,12 +454,6 @@ export async function downloadAuditExport(): Promise<{ filename: string; dataUrl
   const disposition = res.headers.get('content-disposition') || ''
   const match = disposition.match(/filename\*?=(?:UTF-8''|\")?([^\";]+)/i)
   const filename = match ? decodeURIComponent(match[1]) : 'auditoria-lancamentos.xlsx'
-  const dataUrl = await new Promise<string>((resolve, reject) => {
-    const reader = new FileReader()
-    reader.onload = () => resolve(String(reader.result || ''))
-    reader.onerror = () => reject(reader.error)
-    reader.readAsDataURL(blob)
-  })
   const url = window.URL.createObjectURL(blob)
   const anchor = document.createElement('a')
   anchor.href = url
@@ -468,7 +462,6 @@ export async function downloadAuditExport(): Promise<{ filename: string; dataUrl
   anchor.click()
   anchor.remove()
   window.URL.revokeObjectURL(url)
-  return { filename, dataUrl }
 }
 
 export async function getMonths(): Promise<string[]> {
