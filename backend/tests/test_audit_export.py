@@ -39,11 +39,23 @@ class AuditWorkbookTests(unittest.TestCase):
         transactions = workbook.worksheets[0]
         headers = [cell.value for cell in transactions[1]]
 
-        self.assertEqual(workbook.sheetnames, ["Lançamentos", "Resumo", "Dicionário"])
+        self.assertEqual(
+            workbook.sheetnames,
+            ["Lançamentos", "Resumo", "Legenda", "Dicionário"],
+        )
         self.assertEqual(transactions.max_row, 2)
-        self.assertEqual(transactions.max_column, len(AUDIT_COLUMNS))
+        self.assertEqual(transactions.max_column, 81)
         self.assertIsInstance(transactions.cell(2, headers.index("Data") + 1).value, dt.datetime)
         self.assertEqual(transactions.cell(2, headers.index("Valor") + 1).value, -123.45)
+        self.assertEqual(transactions.cell(2, headers.index("Tipo") + 1).value, "Despesa")
+        self.assertEqual(
+            transactions.cell(2, headers.index("Status") + 1).value,
+            "Pendente",
+        )
+        self.assertEqual(
+            transactions.cell(2, headers.index("Tipo de conta") + 1).value,
+            "Cartão de crédito",
+        )
         self.assertEqual(
             transactions.cell(2, headers.index("Arquivo de origem") + 1).value,
             "fatura.pdf",
@@ -52,9 +64,16 @@ class AuditWorkbookTests(unittest.TestCase):
             transactions.cell(2, headers.index("ID vínculo histórico") + 1).value,
             "hist-1",
         )
-        self.assertEqual(transactions.auto_filter.ref, "A1:CA2")
-        self.assertEqual(transactions.freeze_panes, "E2")
+        technical_column = transactions.column_dimensions[
+            transactions.cell(1, headers.index("ID do lançamento") + 1).column_letter
+        ]
+        self.assertTrue(technical_column.hidden)
+        self.assertEqual(transactions.auto_filter.ref, "A1:CC2")
+        self.assertEqual(transactions.freeze_panes, "D2")
         self.assertEqual(workbook["Resumo"]["B3"].value, 1)
+        self.assertEqual(workbook["Resumo"]["B7"].value, -123.45)
+        self.assertEqual(workbook["Legenda"]["A2"].value, "Despesa")
+        self.assertEqual(workbook["Dicionário"]["B2"].value, "date")
 
     def test_workbook_streams_production_volume(self):
         def rows():
@@ -91,12 +110,39 @@ class AuditWorkbookTests(unittest.TestCase):
         workbook = load_workbook(
             io.BytesIO(output.getvalue()), data_only=False, read_only=True
         )
-        self.assertEqual(workbook.sheetnames, ["Lançamentos", "Resumo", "Dicionário"])
+        self.assertEqual(
+            workbook.sheetnames,
+            ["Lançamentos", "Resumo", "Legenda", "Dicionário"],
+        )
         self.assertEqual(
             sum(1 for _ in workbook["Lançamentos"].iter_rows()),
             5_001,
         )
         self.assertEqual(workbook["Resumo"]["B3"].value, 5_000)
+
+    def test_workbook_rounds_binary_float_artifacts_for_human_reading(self):
+        row = {key: "" for _, key in AUDIT_COLUMNS}
+        row.update(
+            transaction_id="tx-round",
+            amount=-93.98999999999999,
+            installment_plan_amount=93.98999999999999,
+            type="expense",
+            status="pending",
+        )
+
+        output = _audit_workbook([row], "2026-07-22T12:00:00+00:00")
+        workbook = load_workbook(io.BytesIO(output.getvalue()), data_only=False)
+        transactions = workbook["Lançamentos"]
+        headers = [cell.value for cell in transactions[1]]
+
+        self.assertEqual(
+            transactions.cell(2, headers.index("Valor") + 1).value,
+            -93.99,
+        )
+        self.assertEqual(
+            transactions.cell(2, headers.index("Valor do plano") + 1).value,
+            93.99,
+        )
 
     def test_workbook_sanitizes_xml_controls_and_timezone_datetimes(self):
         row = {key: "" for _, key in AUDIT_COLUMNS}
