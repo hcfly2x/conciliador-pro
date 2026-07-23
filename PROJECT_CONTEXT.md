@@ -1,6 +1,6 @@
 # PROJECT_CONTEXT.md — Conciliador Pro
 
-Atualizado em 23/07/2026.
+Atualizado em 23/07/2026, após revisão de código e validação operacional.
 
 O código atual é a fonte principal da verdade. Documentos marcados como
 históricos não definem requisitos. Ideias antigas só voltam ao projeto mediante
@@ -21,11 +21,13 @@ lançamentos financeiros reais.
 - Branch oficial: `main`.
 - A `main`, a Vercel e o Render acompanham o mesmo fluxo de release. O health
   do backend é a fonte operacional para confirmar o commit ativo.
+- Última confirmação de health: commit `74a681e`, PostgreSQL, schema 3 e
+  `WORKER_MODE=inline`.
 - Banco de produção: PostgreSQL/Supabase, schema 3.
 - Backend: Render com `WORKER_MODE=inline`.
 - Frontend: Vercel.
 - CI atual aprovada: testes Python, PostgreSQL 16, TypeScript, build e 9 E2E.
-- O código contém 109 métodos de teste Python.
+- O código contém 110 métodos de teste Python.
 - Existem 64 rotas: 51 implementadas nos blueprints e 13 ainda no núcleo.
 - O repositório está em uso com dados reais; mudanças devem preservar
   classificações, vínculos, conciliações, auditoria e documentos.
@@ -37,7 +39,7 @@ lançamentos financeiros reais.
 - Persistência: SQL direto, sem ORM.
 - Banco: PostgreSQL em produção; SQLite em desenvolvimento/testes.
 - Compatibilidade de banco: adaptador próprio em `backend/db.py`.
-- Migrations: runner versionado com nome/checksum; schema atual na versão 2.
+- Migrations: runner versionado com nome/checksum; schema atual na versão 3.
 - Jobs persistidos: importação, base histórica, sugestões e recálculo.
 - Worker separado está implementado/testado, mas não implantado no Render.
 - Documentos: Base64 em `stored_documents`, com cópia local secundária.
@@ -74,6 +76,8 @@ lançamentos financeiros reais.
   streaming, sanitização de valores e compatibilidade do cursor PostgreSQL.
 - Snapshot técnico de auditoria e reset administrativo protegido.
 - Importação por pasta e importação direta permanecem desativadas com HTTP 410.
+- A revisão de sobreposição de fatura XP 06/2026 preserva as ocorrências
+  existentes e permite inserir somente linhas novas após preview confirmado.
 
 ## Regras de negócio vigentes
 
@@ -125,17 +129,17 @@ lançamentos financeiros reais.
 
 ## Tarefas pendentes confirmadas
 
-1. Medir performance de vínculos e consultas com o volume atual.
-2. Prefiltrar candidatos no SQL somente se a medição confirmar o gargalo.
-3. Concluir os 13 handlers restantes do backend que ainda têm corpo no núcleo.
-4. Reduzir novamente os componentes frontend acima de 400 linhas; atualmente
-   `arquivos/page.tsx`, `ImportPage.tsx` e `useTransactionTable.tsx` excedem o
-   limite.
-5. Manter contexto, arquitetura, API, releases e roadmap sincronizados com cada
+Consulte `ROADMAP.md`. As prioridades atuais são:
+
+1. Validar administração, colaborador, auditoria, logs e Sentry no ambiente
+   hospedado.
+2. Medir performance de vínculos e consultas antes de criar otimizações SQL.
+3. Concluir a separação dos 13 handlers ainda mantidos no núcleo do backend.
+4. Reduzir os componentes frontend acima de 400 linhas: `arquivos/page.tsx`,
+   `ImportPage.tsx` e `useTransactionTable.tsx`.
+5. Manter contexto, arquitetura, API, releases e roadmap sincronizados a cada
    marco homologado.
-6. Homologar os seis documentos privados originais em ambiente seguro.
-7. Validar admin, colaborador, auditoria, logs e Sentry no ambiente hospedado.
-8. Usar migration versionada para qualquer nova mudança de schema.
+6. Usar migration versionada para qualquer nova mudança de schema.
 
 ## Itens explicitamente abandonados
 

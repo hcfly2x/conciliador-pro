@@ -23,7 +23,7 @@ frontend usa proxy local para `http://127.0.0.1:5061` quando
 
 - `backend/app.py`: fachada compativel com Flask/Gunicorn e imports legados.
 - `backend/core/application.py`: nucleo compartilhado ainda em separacao.
-- `backend/blueprints/`: 49 dos 62 handlers por dominio. Auth, auditoria, sistema,
+- `backend/blueprints/`: 51 dos 64 handlers por dominio. Auth, auditoria, sistema,
   health/reset, relatorios, contas/razoes/categorias, cobertura/cofre e
   conciliacoes e sugestoes possuem implementacao propria. Leitura, confirmacao
   individual/em lote, rejeicao, desvinculo e recalculo historico tambem estao no

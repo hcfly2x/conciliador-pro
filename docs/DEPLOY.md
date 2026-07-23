@@ -1,6 +1,6 @@
 # Deploy - Conciliador Pro Web
 
-Guia passo a passo para colocar o sistema no ar com banco hosted, sem depender da sua maquina. Ambiente vigente: **Supabase** (PostgreSQL) + **Render** (backend Flask e worker) + **Vercel** (frontend Next.js).
+Guia passo a passo para colocar o sistema no ar com banco hosted, sem depender da sua maquina. Ambiente vigente: **Supabase** (PostgreSQL) + **Render** (backend Flask em modo inline) + **Vercel** (frontend Next.js).
 
 ## 1. Banco de dados hosted (Supabase)
 
@@ -26,13 +26,13 @@ da aplicacao e uma `DATABASE_URL` PostgreSQL acessivel pelo web e pelo worker.
    - `ADMIN_USERNAME` = seu usuario (ex.: `helcio`)
    - `ADMIN_PASSWORD` = uma senha forte (minimo 8 caracteres)
    - `CORS_ORIGINS` = URL do frontend na Vercel (pode preencher depois do passo 3 e salvar de novo)
-   - `WORKER_MODE` = `process`
+   - `WORKER_MODE` = `inline`
    - `TRUSTED_PROXY_COUNT` = `1` no Render/Railway
    - `DB_POOL_FALLBACKS_PER_MINUTE` = `5` (limite de conexoes diretas quando o pool falha)
    - `SENTRY_DSN` = DSN do projeto backend (opcional; sem valor, fica desligado)
-6. Crie tambem um **Background Worker** com o mesmo root/build e comando
-   `WORKER_MODE=process WORKER_PROCESS=1 python worker.py`. Ele consome as filas
-   persistidas de importacao, sugestoes e recalculo sem competir com requests web.
+6. Nao crie um **Background Worker** separado no ambiente vigente. Ele e uma
+   arquitetura futura e so deve ser habilitado apos homologacao e decisao de
+   custo; enquanto isso, o web processa os jobs em modo `inline`.
 7. Deploy. Teste: `https://SEU-SERVICO.onrender.com/api/v1/health` deve responder `{"status": "ok"}`.
 
 O admin e criado automaticamente na primeira subida (somente se ainda nao existir nenhum usuario; depois disso as variaveis ADMIN_* podem ate ser removidas).
@@ -117,5 +117,5 @@ teste deve passar antes de implantar a revisao.
 3. Colaboradora consegue logar, ver lancamentos e classificar; recebe "apenas administrador" ao tentar importar.
 4. Classificar um lancamento e tentar mudar de novo mostra o cadeado; Desbloquear (admin) libera e registra na auditoria (`GET /api/v1/audit?entity_id=...`).
 5. Importacao completa: upload -> preview com totais/duplicados -> confirmar -> lancamentos aparecem como pendentes.
-6. O Background Worker esta ativo e os jobs deixam `queued` para `completed`.
+6. O health informa `worker_mode: inline` e os jobs concluem no web service.
 7. Um erro controlado aparece no projeto Sentry correto, sem dados financeiros no payload.
