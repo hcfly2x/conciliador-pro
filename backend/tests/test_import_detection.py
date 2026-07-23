@@ -580,6 +580,7 @@ class InstallmentTests(unittest.TestCase):
         março/2026
         Depósitos / Transferências 1.500,00
         Outros Créditos 0,10
+        Compras com Cartão de Débito 305,40
         Pagamentos / Transferências 300,00
         Outros Débitos 0,00
         Movimentação
@@ -588,10 +589,12 @@ class InstallmentTests(unittest.TestCase):
         INTERNET SANEAMENTO TESTE
         - 100,00-
         PIX ENVIADO FORNECEDOR TESTE - 200,00-
+        DEBITO VISA ELECTRON BRASIL LOJA TESTE - 5,40-
+        DEBITO VISA ELECTRON BRASIL POSTO TESTE - 300,00-
         PIX RECEBIDO OUTRO CLIENTE - 500,00
-        REMUNERACAO APLICACAO AUTOMATICA - 0,10 2.200,10
+        REMUNERACAO APLICACAO AUTOMATICA - 0,10 1.894,70
         Saldos por Período
-        03 2.200,10 0,00 0,00 0,00 0,00 0,00 2.200,10
+        03 1.894,70 0,00 0,00 0,00 0,00 0,00 1.894,70
         Comprovantes de Pagamento
         03/03 INTERNET BANKING PIX FORNECEDOR TESTE 200,00
         """
@@ -622,6 +625,18 @@ class InstallmentTests(unittest.TestCase):
                         200.0,
                         "PIX ENVIADO FORNECEDOR TESTE",
                     ),
+                    (
+                        "2026-03-03",
+                        "expense",
+                        5.4,
+                        "DEBITO VISA ELECTRON BRASIL LOJA TESTE",
+                    ),
+                    (
+                        "2026-03-03",
+                        "expense",
+                        300.0,
+                        "DEBITO VISA ELECTRON BRASIL POSTO TESTE",
+                    ),
                     ("2026-03-03", "income", 500.0, "PIX RECEBIDO OUTRO CLIENTE"),
                     (
                         "2026-03-03",
@@ -634,7 +649,7 @@ class InstallmentTests(unittest.TestCase):
         )
         self.assertTrue(balance.ok)
         self.assertEqual(balance.saldo_anterior, 1000.0)
-        self.assertEqual(balance.saldo_final_declarado, 2200.1)
+        self.assertEqual(balance.saldo_final_declarado, 1894.7)
 
     def test_santander_pdf_uses_brl_credit_section_and_undated_iof(self) -> None:
         text = """
