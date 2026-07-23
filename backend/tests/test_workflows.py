@@ -820,7 +820,9 @@ class WorkflowIntegrationTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.get_json()["updated"], 1)
+        self.assertEqual(response.get_json()["updated_ids"], ["tx-1"])
         self.assertEqual(response.get_json()["skipped_history_links"], 1)
+        self.assertEqual(response.get_json()["skipped_history_link_ids"], ["tx-link"])
         self.assertIsNone(
             self.conn.execute(
                 "SELECT category_id FROM transactions WHERE id='tx-link'"

@@ -184,8 +184,12 @@ export default function ClassificationCenter() {
     setBusyId(tx.id)
     try {
       const result = await bulkClassify(ids, draft.category_id, draft.subcategory_id || undefined)
-      removeLocally(ids)
-      addToast(`${result.updated} lancamentos classificados`)
+      removeLocally(result.updated_ids)
+      const skipped = [
+        result.skipped_locked ? `${result.skipped_locked} protegido(s)` : '',
+        result.skipped_history_links ? `${result.skipped_history_links} aguardando revisao de vinculo` : '',
+      ].filter(Boolean).join('; ')
+      addToast(`${result.updated} lancamento(s) classificado(s)${skipped ? `; ${skipped}` : ''}`)
       loadSummary()
     } catch { addToast('Erro na classificacao de semelhantes', 'err') }
     finally { setBusyId('') }
@@ -200,8 +204,13 @@ export default function ClassificationCenter() {
     setBusyId('bulk')
     try {
       const result = await bulkClassify(ids, bulkCategory, bulkSubcategory || undefined)
-      removeLocally(ids)
-      addToast(`${result.updated} lancamentos classificados`)
+      removeLocally(result.updated_ids)
+      const skipped = [
+        result.skipped_locked ? `${result.skipped_locked} protegido(s)` : '',
+        result.skipped_history_links ? `${result.skipped_history_links} aguardando revisao de vinculo` : '',
+        result.skipped_missing ? `${result.skipped_missing} indisponivel(is)` : '',
+      ].filter(Boolean).join('; ')
+      addToast(`${result.updated} lancamento(s) classificado(s)${skipped ? `; ${skipped}` : ''}`)
       loadSummary()
     } catch { addToast('Erro na classificacao em lote', 'err') }
     finally { setBusyId('') }

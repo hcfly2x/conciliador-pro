@@ -6859,6 +6859,7 @@ def bulk_classify():
             """,
             ids,
         ).fetchall()
+        available_ids = {r[0] for r in blocked_rows}
         locked_ids = {r[0] for r in blocked_rows if int(r[1] or 0) == 1}
         link_ids = {
             r[0]
@@ -6867,7 +6868,11 @@ def bulk_classify():
             and not bool(r[3])
             and float(r[4] or 0) >= HISTORY_LINK_CANDIDATE_THRESHOLD
         }
-        target_ids = [i for i in ids if i not in locked_ids and i not in link_ids]
+        target_ids = [
+            i
+            for i in ids
+            if i in available_ids and i not in locked_ids and i not in link_ids
+        ]
         updated = 0
         if target_ids:
             qmarks2 = ",".join(["?"] * len(target_ids))
@@ -6902,8 +6907,12 @@ def bulk_classify():
     return jsonify(
         {
             "updated": updated,
+            "updated_ids": target_ids if updated else [],
             "skipped_locked": len(locked_ids),
+            "skipped_locked_ids": sorted(locked_ids),
             "skipped_history_links": len(link_ids),
+            "skipped_history_link_ids": sorted(link_ids),
+            "skipped_missing": len(set(ids) - available_ids),
         }
     )
 

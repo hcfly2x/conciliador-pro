@@ -64,6 +64,8 @@ lançamentos financeiros reais.
 - Sugestões Top 3 e avaliação leave-one-out.
 - Vínculos históricos individuais e em lote com revisão manual.
 - Classificação individual/em lote e proteção pós-classificação.
+- A classificação em lote conserva visíveis os itens protegidos ou aguardando
+  revisão de vínculo e informa separadamente o que não foi aplicado.
 - Planos de parcelas e propagação confirmada de categoria/subcategoria.
 - Conciliação reversível de entradas e saídas.
 - Relatórios por competência e categoria.
