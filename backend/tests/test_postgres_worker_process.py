@@ -28,7 +28,8 @@ class PostgresWorkerProcessIntegrationTests(unittest.TestCase):
         client = app_module.app.test_client()
         response = client.get("/api/v1/system/audit-export")
 
-        self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+        if response.status_code != 200:
+            self.fail(response.get_data(as_text=True))
         self.assertEqual(
             response.mimetype,
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
