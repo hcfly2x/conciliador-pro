@@ -4,6 +4,7 @@ import { Upload, CheckCircle, AlertCircle, FileText, ShieldCheck, Database } fro
 import { useStore } from '@/store/app'
 import { commitImportPreview, getDocumentImportJob, previewImportFile, type DocumentImportJob } from '@/lib/api'
 import type { ImportPreviewResult, ImportResult } from '@/types'
+import BatchImportPanel from './BatchImportPanel'
 
 function fmtCurrency(v: number) {
   return new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(v)
@@ -164,6 +165,8 @@ export default function ImportPage() {
 
   return (
     <div className="max-w-6xl space-y-5">
+      <BatchImportPanel />
+
       <div className="rounded-xl p-5" style={{ background: '#13161d', border: '1px solid rgba(255,255,255,0.08)' }}>
         <h2 className="text-xl font-semibold text-[#e8eaf0] mb-1">Importar extrato ou fatura</h2>
         <p className="text-sm text-[#8b90a4]">Fluxo seguro: detectar tipo, validar lançamentos e só depois salvar no banco.</p>
@@ -181,6 +184,7 @@ export default function ImportPage() {
       >
         <input
           ref={inputRef}
+          data-testid="single-import-file"
           type="file"
           accept=".csv,.xls,.xlsx,.pdf"
           className="hidden"
