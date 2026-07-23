@@ -10,6 +10,7 @@ import logging
 import os
 import re
 import shutil
+import uuid
 import zipfile
 from collections.abc import Iterable, Iterator
 from decimal import Decimal, InvalidOperation
@@ -530,6 +531,175 @@ def _normalize_audit_currency_xml(output: io.BytesIO) -> io.BytesIO:
     return normalized
 
 
+def _backfill_document_content(conn, filename: str, content: bytes) -> dict:
+    """Restaura somente o original de um lote identificado pelo SHA-1."""
+    content_hash = hashlib.sha1(content).hexdigest()
+    matches = conn.execute(
+        """
+        SELECT id,filename,account_name,year,month
+        FROM imported_files
+        WHERE LOWER(file_hash)=?
+        ORDER BY imported_at,id
+        """,
+        (content_hash.lower(),),
+    ).fetchall()
+    if not matches:
+        raise LookupError("Nenhum lote de importação possui o SHA-1 deste arquivo")
+
+    missing = []
+    existing = []
+    for row in matches:
+        document = conn.execute(
+            """
+            SELECT id,filename,size,content_b64
+            FROM stored_documents
+            WHERE imported_file_id=?
+            LIMIT 1
+            """,
+            (row[0],),
+        ).fetchone()
+        if document:
+            existing.append((row, document))
+        else:
+            missing.append(row)
+
+    if not missing:
+        row, document = existing[0]
+        try:
+            stored_hash = hashlib.sha1(base64.b64decode(document[3])).hexdigest()
+        except Exception as exc:
+            raise ValueError("O documento existente no cofre está corrompido") from exc
+        if stored_hash != content_hash:
+            raise ValueError("O lote já possui outro conteúdo vinculado no cofre")
+        return {
+            "ok": True,
+            "status": "already_present",
+            "document_id": document[0],
+            "filename": document[1],
+            "imported_file_id": row[0],
+            "sha1": content_hash,
+            "size": int(document[2] or 0),
+            "transactions": int(
+                conn.execute(
+                    "SELECT COUNT(1) FROM transactions WHERE imported_file_id=?",
+                    (row[0],),
+                ).fetchone()[0]
+            ),
+        }
+    if len(missing) > 1:
+        raise RuntimeError(
+            "Mais de um lote sem documento possui este SHA-1; informe o lote explicitamente"
+        )
+
+    row = missing[0]
+    imported_file_id, _, account_name, year, month = row
+    year_text = str(year or "").strip()
+    month_text = str(month or "").strip().zfill(2)
+    if not re.fullmatch(r"\d{4}", year_text) or not re.fullmatch(
+        r"\d{2}", month_text
+    ):
+        tx_month = conn.execute(
+            """
+            SELECT competence_month
+            FROM transactions
+            WHERE imported_file_id=? AND competence_month IS NOT NULL
+            ORDER BY competence_month
+            LIMIT 1
+            """,
+            (imported_file_id,),
+        ).fetchone()
+        fallback = str(tx_month[0] if tx_month else "").replace("-", "/")
+        if not re.fullmatch(r"\d{4}/\d{2}", fallback):
+            raise ValueError("O lote não possui competência válida para o cofre")
+        year_month = fallback
+    else:
+        year_month = f"{year_text}/{month_text}"
+
+    safe_filename = Path(filename or "documento").name
+    safe_filename = _application().clean_archive_filename(safe_filename)
+    same_name = conn.execute(
+        """
+        SELECT id,content_b64,imported_file_id
+        FROM stored_documents
+        WHERE account_name=? AND year_month=? AND filename=?
+        LIMIT 1
+        """,
+        (account_name, year_month, safe_filename),
+    ).fetchone()
+    if same_name:
+        try:
+            same_hash = hashlib.sha1(base64.b64decode(same_name[1])).hexdigest()
+        except Exception as exc:
+            raise ValueError("O documento homônimo no cofre está corrompido") from exc
+        if same_hash == content_hash and not same_name[2]:
+            conn.execute(
+                "UPDATE stored_documents SET imported_file_id=? WHERE id=?",
+                (imported_file_id, same_name[0]),
+            )
+            document_id = same_name[0]
+            status = "linked_existing"
+        else:
+            path = Path(safe_filename)
+            safe_filename = f"{path.stem}-{content_hash[:8]}{path.suffix}"
+            document_id = str(uuid.uuid4())
+            conn.execute(
+                """
+                INSERT INTO stored_documents(
+                  id,account_name,year_month,filename,size,content_b64,created_at,
+                  imported_file_id
+                ) VALUES (?,?,?,?,?,?,?,?)
+                """,
+                (
+                    document_id,
+                    account_name,
+                    year_month,
+                    safe_filename,
+                    len(content),
+                    base64.b64encode(content).decode("ascii"),
+                    dt.datetime.now(dt.timezone.utc).isoformat(),
+                    imported_file_id,
+                ),
+            )
+            status = "created"
+    else:
+        document_id = str(uuid.uuid4())
+        conn.execute(
+            """
+            INSERT INTO stored_documents(
+              id,account_name,year_month,filename,size,content_b64,created_at,
+              imported_file_id
+            ) VALUES (?,?,?,?,?,?,?,?)
+            """,
+            (
+                document_id,
+                account_name,
+                year_month,
+                safe_filename,
+                len(content),
+                base64.b64encode(content).decode("ascii"),
+                dt.datetime.now(dt.timezone.utc).isoformat(),
+                imported_file_id,
+            ),
+        )
+        status = "created"
+
+    return {
+        "ok": True,
+        "status": status,
+        "document_id": document_id,
+        "filename": safe_filename,
+        "imported_file_id": imported_file_id,
+        "sha1": content_hash,
+        "size": len(content),
+        "transactions": int(
+            conn.execute(
+                "SELECT COUNT(1) FROM transactions WHERE imported_file_id=?",
+                (imported_file_id,),
+            ).fetchone()[0]
+        ),
+    }
+
+
 def _audit_workbook(rows: Iterable[dict], created_at: str) -> io.BytesIO:
     workbook = Workbook(write_only=True)
     sheet = workbook.create_sheet("Lançamentos")
@@ -678,7 +848,12 @@ def _audit_workbook(rows: Iterable[dict], created_at: str) -> io.BytesIO:
         ("Pendentes", summary_values["pending"], "Cobertura de classificação", ratio(summary_values["classified"])),
         ("Total de receitas", income, "Com categoria", ratio(summary_values["category"])),
         ("Total de despesas", expense, "Com vínculo histórico", ratio(summary_values["history"])),
-        ("Saldo líquido", net, "Com documento de origem", ratio(summary_values["document"])),
+        (
+            "Saldo líquido",
+            net,
+            "Original preservado no cofre",
+            ratio(summary_values["document"]),
+        ),
         ("Conciliados", summary_values["reconciled"], "Cobertura de conciliação", ratio(summary_values["reconciled"])),
         (
             "Como usar",
@@ -841,6 +1016,52 @@ def system_audit_export():
         download_name=filename,
         max_age=0,
     )
+
+
+@bp.route("/api/v1/system/documents/backfill", methods=["POST"])
+def system_document_backfill():
+    """Restaura um original ausente sem reimportar ou alterar lançamentos."""
+    application = _application()
+    forbidden = application.require_admin()
+    if forbidden:
+        return forbidden
+    uploaded = request.files.get("file")
+    if not uploaded or not uploaded.filename:
+        return jsonify(
+            {"detail": "Arquivo obrigatório", "code": "VALIDATION_ERROR"}
+        ), 400
+    invalid_file = application.validate_import_filename(uploaded.filename)
+    if invalid_file:
+        return invalid_file
+    content = uploaded.read()
+    if not content:
+        return jsonify(
+            {"detail": "Arquivo vazio", "code": "VALIDATION_ERROR"}
+        ), 400
+    try:
+        with application.db_connect() as conn:
+            result = _backfill_document_content(conn, uploaded.filename, content)
+            record_audit(
+                application.current_user(),
+                "backfill_document",
+                "document",
+                result["document_id"],
+                "imported_file_id",
+                "",
+                result["imported_file_id"],
+                detail=(
+                    f"status={result['status']};sha1={result['sha1']};"
+                    f"transactions={result['transactions']}"
+                ),
+                conn=conn,
+            )
+        return jsonify(result)
+    except LookupError as exc:
+        return jsonify({"detail": str(exc), "code": "IMPORT_BATCH_NOT_FOUND"}), 404
+    except RuntimeError as exc:
+        return jsonify({"detail": str(exc), "code": "AMBIGUOUS_IMPORT_BATCH"}), 409
+    except ValueError as exc:
+        return jsonify({"detail": str(exc), "code": "DOCUMENT_CONFLICT"}), 409
 
 
 @bp.route("/api/v1/system/audit-snapshot")
