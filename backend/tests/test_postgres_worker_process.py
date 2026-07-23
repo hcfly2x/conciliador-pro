@@ -35,7 +35,10 @@ class PostgresWorkerProcessIntegrationTests(unittest.TestCase):
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
         workbook = load_workbook(io.BytesIO(response.data), read_only=True)
-        self.assertEqual(workbook.sheetnames, ["Lançamentos", "Resumo", "Dicionário"])
+        self.assertEqual(
+            workbook.sheetnames,
+            ["Lançamentos", "Resumo", "Legenda", "Dicionário"],
+        )
         self.assertEqual(workbook["Resumo"]["B3"].value, 0)
 
     def test_worker_survives_web_restart_with_persisted_job(self) -> None:

@@ -78,8 +78,9 @@ export default function SistemaPage() {
       <div className="rounded-xl p-5 mb-5" style={{ background: '#13161d', border: '1px solid rgba(255,255,255,0.08)' }}>
         <h3 className="font-display font-bold text-[14px] text-[#e8eaf0] mb-2">Auditoria financeira</h3>
         <p className="text-sm text-[#8b90a4] mb-4">
-          Gera uma planilha com uma linha por lançamento, incluindo classificação, parcelamento,
-          vínculos com a base histórica, conciliações e documento de origem.
+          Gera uma planilha legível com resumo, filtros, legenda e uma linha por lançamento.
+          Classificação, parcelas, vínculos, conciliações e documentos ficam visíveis; IDs técnicos
+          permanecem disponíveis em colunas ocultas.
         </p>
         <button
           onClick={handleAuditExport}

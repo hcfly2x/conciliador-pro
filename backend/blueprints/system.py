@@ -12,6 +12,7 @@ import re
 import shutil
 import zipfile
 from collections.abc import Iterable, Iterator
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 from flask import Blueprint, jsonify, request, send_file, send_from_directory
@@ -183,9 +184,171 @@ AUDIT_COLUMNS = [
     ("Documento guardado em", "stored_document_created_at"),
 ]
 
+AUDIT_VISIBLE_COLUMNS = [
+    ("Data", "date", 12),
+    ("Competência", "competence_month", 13),
+    ("Descrição", "description", 38),
+    ("Valor", "amount", 15),
+    ("Tipo", "type", 14),
+    ("Status", "status", 16),
+    ("Conta", "account_name", 22),
+    ("Tipo de conta", "account_type", 18),
+    ("Método", "transaction_method", 18),
+    ("Categoria", "category_name", 22),
+    ("Subcategoria", "subcategory_name", 24),
+    ("Livro/Centro", "ledger_name", 20),
+    ("Parcela", "installment_label", 14),
+    ("Valor do plano", "installment_plan_amount", 16),
+    ("Sinalizadores", "flags", 26),
+    ("Observações", "notes", 32),
+    ("Bloqueado", "locked", 12),
+    ("Classificado por", "classified_by", 18),
+    ("Classificado em", "classified_at", 20),
+    ("Categoria sugerida", "suggested_category_name", 22),
+    ("Subcategoria sugerida", "suggested_subcategory_name", 24),
+    ("Probabilidade da sugestão", "match_probability", 18),
+    ("Notas da sugestão", "match_notes", 34),
+    ("Vínculo histórico confirmado", "history_match_confirmed", 18),
+    ("Pontuação do vínculo", "identity_score", 18),
+    ("Data histórica", "history_date", 14),
+    ("Descrição histórica", "history_description", 34),
+    ("Valor histórico", "history_amount", 16),
+    ("Tipo histórico", "history_type", 14),
+    ("Origem do histórico", "history_source_display", 22),
+    ("Conta histórica", "history_account_name", 22),
+    ("Categoria histórica", "history_category_name", 22),
+    ("Subcategoria histórica", "history_subcategory_name", 24),
+    ("Papel na conciliação", "reconciliation_role", 18),
+    ("Valor conciliado", "reconciliation_amount", 16),
+    ("Conciliado por", "reconciliation_created_by", 18),
+    ("Conciliado em", "reconciliation_created_at", 20),
+    ("Data contraparte", "counterpart_date", 14),
+    ("Descrição contraparte", "counterpart_description", 34),
+    ("Valor contraparte", "counterpart_amount", 16),
+    ("Tipo contraparte", "counterpart_type", 14),
+    ("Conta contraparte", "counterpart_account_name", 22),
+    ("Arquivo de origem", "source_filename", 36),
+    ("Natureza da fonte", "source_kind", 18),
+    ("Banco detectado", "source_bank", 18),
+    ("Importado em", "imported_at", 20),
+    ("Documento no cofre", "stored_document_filename", 36),
+]
+
+AUDIT_TECHNICAL_COLUMNS = [
+    ("ID do lançamento", "transaction_id", 18),
+    ("Chave técnica", "tx_key", 44),
+    ("Descrição normalizada", "description_norm", 32),
+    ("Estabelecimento normalizado", "merchant_norm", 30),
+    ("Contraparte (texto bruto)", "counterparty_name", 30),
+    ("Referência bancária", "bank_reference", 24),
+    ("Parcela atual", "installment_current", 14),
+    ("Total de parcelas", "installment_total", 14),
+    ("ID da conta", "account_id", 18),
+    ("ID livro/centro", "ledger_id", 18),
+    ("ID categoria", "category_id", 18),
+    ("ID subcategoria", "subcategory_id", 18),
+    ("ID plano de parcelas", "installment_plan_id", 18),
+    ("Parcelas no plano", "installment_plan_members", 16),
+    ("ID categoria sugerida", "suggested_category_id", 18),
+    ("ID subcategoria sugerida", "suggested_subcategory_id", 18),
+    ("ID vínculo histórico", "history_match_id", 18),
+    ("ID histórico rejeitado", "history_match_rejected_id", 18),
+    ("Fonte histórica (bruta)", "history_source_file_id", 30),
+    ("ID conciliação", "reconciliation_id", 18),
+    ("ID contraparte conciliada", "counterpart_id", 18),
+    ("ID lote de importação", "imported_file_id", 18),
+    ("Tipo do arquivo", "source_file_type", 16),
+    ("Hash SHA-1 do arquivo", "source_file_hash", 42),
+    ("Ano do arquivo", "source_year", 14),
+    ("Mês do arquivo", "source_month", 14),
+    ("Linhas interpretadas", "source_total_parsed", 16),
+    ("Linhas inseridas", "source_total_inserted", 16),
+    ("Duplicadas no lote", "source_total_duplicates", 16),
+    ("Erros no lote", "source_total_errors", 14),
+    ("ID documento no cofre", "stored_document_id", 18),
+    ("Competência no cofre", "stored_document_year_month", 18),
+    ("Tamanho do documento (bytes)", "stored_document_size", 18),
+    ("Documento guardado em", "stored_document_created_at", 20),
+]
+
+AUDIT_EXPORT_COLUMNS = AUDIT_VISIBLE_COLUMNS + AUDIT_TECHNICAL_COLUMNS
+
+AUDIT_CURRENCY_KEYS = {
+    "amount",
+    "installment_plan_amount",
+    "history_amount",
+    "reconciliation_amount",
+    "counterpart_amount",
+}
+AUDIT_DATE_KEYS = {"date", "history_date", "counterpart_date"}
+AUDIT_DATETIME_KEYS = {
+    "classified_at",
+    "reconciliation_created_at",
+    "imported_at",
+    "stored_document_created_at",
+}
+AUDIT_PERCENT_KEYS = {"match_probability", "identity_score"}
+
+AUDIT_TRANSLATIONS = {
+    "type": {"income": "Receita", "expense": "Despesa"},
+    "status": {"pending": "Pendente", "reconciled": "Classificado"},
+    "account_type": {
+        "credit_card": "Cartão de crédito",
+        "checking": "Conta corrente",
+        "savings": "Poupança",
+        "investment": "Investimento",
+        "cash": "Dinheiro",
+    },
+    "transaction_method": {
+        "credit_card": "Cartão de crédito",
+        "debit_card": "Cartão de débito",
+        "pix": "Pix",
+        "ted": "TED",
+        "boleto": "Boleto",
+        "bank_transfer": "Transferência",
+        "automatic_debit": "Débito automático",
+        "fee": "Tarifa",
+        "refund": "Estorno",
+        "other": "Outro",
+    },
+    "source_kind": {
+        "cartao": "Fatura de cartão",
+        "extrato": "Extrato bancário",
+    },
+    "reconciliation_role": {
+        "income": "Receita",
+        "receita": "Receita",
+        "expense": "Despesa",
+        "despesa": "Despesa",
+    },
+}
+
+AUDIT_FLAG_TRANSLATIONS = {
+    "installment": "Parcelado",
+    "inter_account": "Entre contas",
+    "non_count": "Não contabilizado",
+    "tax": "Imposto/Taxa",
+    "cartao_debito": "Cartão de débito",
+    "rendimento": "Rendimento",
+    "fatura": "Pagamento de fatura",
+    "card_payment": "Pagamento de fatura",
+    "investment": "Investimento",
+    "cashback": "Cashback",
+}
+
 # XML 1.0 nao permite estes controles dentro de uma celula. Eles podem chegar
 # de textos extraidos de PDF e fariam o openpyxl abortar toda a exportacao.
 _ILLEGAL_EXCEL_CHARACTERS = re.compile(r"[\x00-\x08\x0B\x0C\x0E-\x1F]")
+_AUDIT_CURRENCY_COLUMN_PATTERN = "|".join(
+    get_column_letter(index)
+    for index, (_, key, _) in enumerate(AUDIT_EXPORT_COLUMNS, start=1)
+    if key in AUDIT_CURRENCY_KEYS
+).encode("ascii")
+_AUDIT_CURRENCY_XML = re.compile(
+    rb'(<c r="(?:'
+    + _AUDIT_CURRENCY_COLUMN_PATTERN
+    + rb')\d+"[^>]*><v>)(-?\d+(?:\.\d+)?)(</v></c>)'
+)
 
 
 def _audit_transaction_rows(conn) -> Iterator[dict]:
@@ -264,7 +427,17 @@ def _excel_audit_value(key: str, value):
         return ""
     if key in {"locked", "history_match_confirmed"}:
         return "Sim" if value else "Não"
-    if key in {"date", "history_date", "counterpart_date"}:
+    if key in AUDIT_CURRENCY_KEYS:
+        try:
+            return Decimal(str(value)).quantize(Decimal("0.01"))
+        except (InvalidOperation, TypeError, ValueError):
+            pass
+    if key in AUDIT_PERCENT_KEYS:
+        try:
+            return round(float(value), 2)
+        except (TypeError, ValueError):
+            pass
+    if key in AUDIT_DATE_KEYS:
         if isinstance(value, dt.datetime):
             return value.date()
         if isinstance(value, str):
@@ -272,7 +445,7 @@ def _excel_audit_value(key: str, value):
                 return dt.date.fromisoformat(value[:10])
             except ValueError:
                 pass
-    if key in {"classified_at", "reconciliation_created_at", "imported_at", "stored_document_created_at"}:
+    if key in AUDIT_DATETIME_KEYS:
         if isinstance(value, str):
             try:
                 value = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
@@ -285,75 +458,161 @@ def _excel_audit_value(key: str, value):
     return value
 
 
+def _audit_history_source(value) -> str:
+    text = str(value or "").strip()
+    lowered = text.lower()
+    if ":sheet:entradas" in lowered:
+        return "Planilha Entradas"
+    if ":sheet:saidas" in lowered:
+        return "Planilha Saídas"
+    if lowered.startswith("manual:"):
+        return "Lançamento manual"
+    return text
+
+
+def _audit_flags(value) -> str:
+    translated = []
+    for item in re.split(r"[,;]", str(value or "")):
+        clean = item.strip().strip("[]'\"")
+        if not clean:
+            continue
+        translated.append(AUDIT_FLAG_TRANSLATIONS.get(clean.lower(), clean))
+    return "; ".join(translated)
+
+
+def _audit_display_value(key: str, row: dict):
+    if key == "installment_label":
+        current = row.get("installment_current")
+        total = row.get("installment_total")
+        value = f"{current} de {total}" if current and total else ""
+    elif key == "history_source_display":
+        value = _audit_history_source(row.get("history_source_file_id"))
+    else:
+        value = row.get(key)
+
+    if key == "flags":
+        value = _audit_flags(value)
+    translation_key = (
+        "type" if key in {"history_type", "counterpart_type"} else key
+    )
+    translations = AUDIT_TRANSLATIONS.get(translation_key)
+    if translations and value not in (None, ""):
+        value = translations.get(str(value).strip().lower(), value)
+    return _excel_audit_value(key, value)
+
+
+def _normalize_audit_currency_xml(output: io.BytesIO) -> io.BytesIO:
+    """Mantem valores monetarios numericos e exatos em qualquer leitor XLSX."""
+
+    def replace(match: re.Match[bytes]) -> bytes:
+        value = Decimal(match.group(2).decode("ascii")).quantize(Decimal("0.01"))
+        return match.group(1) + format(value, "f").encode("ascii") + match.group(3)
+
+    normalized = io.BytesIO()
+    output.seek(0)
+    with zipfile.ZipFile(output, "r") as source, zipfile.ZipFile(
+        normalized, "w", compression=zipfile.ZIP_DEFLATED
+    ) as target:
+        for item in source.infolist():
+            if item.filename == "xl/worksheets/sheet1.xml":
+                target.writestr(
+                    item,
+                    _AUDIT_CURRENCY_XML.sub(replace, source.read(item)),
+                )
+                continue
+            with (
+                source.open(item) as source_file,
+                target.open(item, "w") as target_file,
+            ):
+                shutil.copyfileobj(source_file, target_file)
+    output.close()
+    normalized.seek(0)
+    return normalized
+
+
 def _audit_workbook(rows: Iterable[dict], created_at: str) -> io.BytesIO:
     workbook = Workbook(write_only=True)
     sheet = workbook.create_sheet("Lançamentos")
     sheet.sheet_view.showGridLines = False
-    headers = [label for label, _ in AUDIT_COLUMNS]
+    sheet.sheet_view.zoomScale = 85
+    sheet.sheet_properties.tabColor = "2563EB"
+    headers = [label for label, _, _ in AUDIT_EXPORT_COLUMNS]
     dark = "172033"
+    technical_dark = "3A4358"
     light = "DCE6F1"
+    lighter = "F6F8FC"
+    banded = "F8FAFC"
     white = "FFFFFF"
     thin = Side(style="thin", color="D7DCE5")
+    banded_fill = PatternFill("solid", fgColor=banded)
     header = []
-    for label in headers:
+    for index, label in enumerate(headers):
         cell = WriteOnlyCell(sheet, value=label)
-        cell.fill = PatternFill("solid", fgColor=dark)
+        cell.fill = PatternFill(
+            "solid",
+            fgColor=dark if index < len(AUDIT_VISIBLE_COLUMNS) else technical_dark,
+        )
         cell.font = Font(color=white, bold=True)
-        cell.alignment = Alignment(vertical="center", wrap_text=True)
+        cell.alignment = Alignment(
+            horizontal="center", vertical="center", wrap_text=True
+        )
         cell.border = Border(bottom=thin)
         header.append(cell)
     sheet.row_dimensions[1].height = 34
-    sheet.freeze_panes = "E2"
+    sheet.freeze_panes = "D2"
 
-    widths = {
-        "Data": 12, "Competência": 13, "Descrição": 38, "Descrição normalizada": 32,
-        "Valor": 15, "Conta": 22, "Categoria": 22, "Subcategoria": 24,
-        "Observações": 32, "Notas da sugestão": 34, "Descrição histórica": 34,
-        "Descrição contraparte": 34, "Arquivo de origem": 36, "Documento no cofre": 36,
-    }
-    for index, label in enumerate(headers, start=1):
-        sheet.column_dimensions[get_column_letter(index)].width = widths.get(label, 20)
+    for index, (_, _, width) in enumerate(AUDIT_EXPORT_COLUMNS, start=1):
+        dimension = sheet.column_dimensions[get_column_letter(index)]
+        dimension.width = width
+        if index > len(AUDIT_VISIBLE_COLUMNS):
+            dimension.hidden = True
+            dimension.outlineLevel = 1
+    sheet.sheet_properties.outlinePr.summaryRight = True
     sheet.append(header)
 
-    currency_keys = {
-        "amount", "installment_plan_amount", "history_amount",
-        "reconciliation_amount", "counterpart_amount",
-    }
-    date_keys = {"date", "history_date", "counterpart_date"}
-    datetime_keys = {
-        "classified_at", "reconciliation_created_at", "imported_at",
-        "stored_document_created_at",
-    }
     summary_values = {
         "total": 0,
         "income": 0.0,
         "expense": 0.0,
         "pending": 0,
+        "classified": 0,
         "category": 0,
         "history": 0,
+        "reconciled": 0,
         "document": 0,
     }
     for row in rows:
         summary_values["total"] += 1
         amount = float(row.get("amount") or 0)
         if row.get("type") == "income":
-            summary_values["income"] += amount
+            summary_values["income"] += abs(amount)
         elif row.get("type") == "expense":
-            summary_values["expense"] += amount
-        summary_values["pending"] += row.get("status") == "pending"
+            summary_values["expense"] -= abs(amount)
+        is_pending = row.get("status") == "pending"
+        is_classified = row.get("status") == "reconciled"
+        summary_values["pending"] += is_pending
+        summary_values["classified"] += is_classified
         summary_values["category"] += bool(row.get("category_id"))
         summary_values["history"] += bool(row.get("history_match_id"))
+        summary_values["reconciled"] += bool(row.get("reconciliation_id"))
         summary_values["document"] += bool(row.get("stored_document_id"))
 
         values = []
-        for _, key in AUDIT_COLUMNS:
-            cell = WriteOnlyCell(sheet, value=_excel_audit_value(key, row.get(key)))
-            if key in currency_keys:
+        for column_index, (_, key, _) in enumerate(AUDIT_EXPORT_COLUMNS):
+            cell = WriteOnlyCell(sheet, value=_audit_display_value(key, row))
+            if key in AUDIT_CURRENCY_KEYS:
                 cell.number_format = 'R$ #,##0.00;[Red]-R$ #,##0.00'
-            elif key in date_keys:
+            elif key in AUDIT_DATE_KEYS:
                 cell.number_format = "dd/mm/yyyy"
-            elif key in datetime_keys:
+            elif key in AUDIT_DATETIME_KEYS:
                 cell.number_format = "dd/mm/yyyy hh:mm:ss"
+            elif key in AUDIT_PERCENT_KEYS:
+                cell.number_format = '0.0"%"'
+            if (
+                summary_values["total"] % 2 == 0
+                and column_index < len(AUDIT_VISIBLE_COLUMNS)
+            ):
+                cell.fill = banded_fill
             values.append(cell)
         sheet.append(values)
 
@@ -366,72 +625,191 @@ def _audit_workbook(rows: Iterable[dict], created_at: str) -> io.BytesIO:
         status_range = f"{status_letter}2:{status_letter}{final_row}"
         sheet.conditional_formatting.add(
             status_range,
-            FormulaRule(formula=[f'{status_letter}2="pending"'], fill=PatternFill("solid", fgColor="FFF2CC")),
+            FormulaRule(
+                formula=[f'{status_letter}2="Pendente"'],
+                fill=PatternFill("solid", fgColor="FFF2CC"),
+            ),
         )
         sheet.conditional_formatting.add(
             status_range,
-            FormulaRule(formula=[f'{status_letter}2="reconciled"'], fill=PatternFill("solid", fgColor="E2F0D9")),
+            FormulaRule(
+                formula=[f'{status_letter}2="Classificado"'],
+                fill=PatternFill("solid", fgColor="E2F0D9"),
+            ),
+        )
+        value_letter = get_column_letter(headers.index("Valor") + 1)
+        value_range = f"{value_letter}2:{value_letter}{final_row}"
+        sheet.conditional_formatting.add(
+            value_range,
+            FormulaRule(
+                formula=[f"{value_letter}2<0"],
+                font=Font(color="C62828"),
+            ),
+        )
+        sheet.conditional_formatting.add(
+            value_range,
+            FormulaRule(
+                formula=[f"{value_letter}2>0"],
+                font=Font(color="16803A"),
+            ),
         )
 
     summary = workbook.create_sheet("Resumo")
     summary.sheet_view.showGridLines = False
+    summary.sheet_view.zoomScale = 100
+    summary.sheet_properties.tabColor = "16A34A"
     summary.column_dimensions["A"].width = 32
-    summary.column_dimensions["B"].width = 28
+    summary.column_dimensions["B"].width = 30
+    summary.column_dimensions["C"].width = 34
+    summary.column_dimensions["D"].width = 20
+    total = int(summary_values["total"])
+    income_raw = round(float(summary_values["income"]), 2)
+    expense_raw = round(float(summary_values["expense"]), 2)
+    net_raw = round(income_raw + expense_raw, 2)
+    income = _excel_audit_value("amount", income_raw)
+    expense = _excel_audit_value("amount", expense_raw)
+    net = _excel_audit_value("amount", net_raw)
+    ratio = lambda value: (float(value) / total) if total else 0.0
+    generated_at = _excel_audit_value("imported_at", created_at)
     summary_rows = [
-        ("Auditoria de lançamentos", ""),
-        ("Gerado em (UTC)", created_at),
-        ("Total de lançamentos", summary_values["total"]),
-        ("Total de receitas", summary_values["income"]),
-        ("Total de despesas", summary_values["expense"]),
-        ("Pendentes", summary_values["pending"]),
-        ("Com categoria", summary_values["category"]),
-        ("Com vínculo histórico", summary_values["history"]),
-        ("Com documento de origem", summary_values["document"]),
+        ("Auditoria de lançamentos", "", "", ""),
+        ("Gerado em (UTC)", generated_at, "Escopo", "Snapshot completo"),
+        ("Total de lançamentos", total, "Classificados", summary_values["classified"]),
+        ("Pendentes", summary_values["pending"], "Cobertura de classificação", ratio(summary_values["classified"])),
+        ("Total de receitas", income, "Com categoria", ratio(summary_values["category"])),
+        ("Total de despesas", expense, "Com vínculo histórico", ratio(summary_values["history"])),
+        ("Saldo líquido", net, "Com documento de origem", ratio(summary_values["document"])),
+        ("Conciliados", summary_values["reconciled"], "Cobertura de conciliação", ratio(summary_values["reconciled"])),
+        (
+            "Como usar",
+            "Filtre a aba Lançamentos. As colunas técnicas ficam ocultas à direita e podem ser reexibidas.",
+            "",
+            "",
+        ),
     ]
-    for index, (label, value) in enumerate(summary_rows, start=1):
-        label_cell = WriteOnlyCell(summary, value=label)
-        value_cell = WriteOnlyCell(summary, value=value)
+    for index, row_values in enumerate(summary_rows, start=1):
+        cells = [WriteOnlyCell(summary, value=value) for value in row_values]
         if index == 1:
-            label_cell.fill = PatternFill("solid", fgColor=dark)
-            label_cell.font = Font(color=white, bold=True, size=14)
-            label_cell.alignment = Alignment(horizontal="left")
-            value_cell.fill = PatternFill("solid", fgColor=dark)
+            for cell in cells:
+                cell.fill = PatternFill("solid", fgColor=dark)
+                cell.font = Font(color=white, bold=True, size=14)
+            summary.row_dimensions[1].height = 26
         else:
-            label_cell.font = Font(bold=True)
-            label_cell.fill = PatternFill("solid", fgColor=light)
-        if index in {4, 5}:
-            value_cell.number_format = 'R$ #,##0.00;[Red]-R$ #,##0.00'
-        summary.append([label_cell, value_cell])
+            for label_cell in (cells[0], cells[2]):
+                label_cell.font = Font(bold=True)
+                label_cell.fill = PatternFill("solid", fgColor=light)
+            cells[1].fill = PatternFill("solid", fgColor=lighter)
+            cells[3].fill = PatternFill("solid", fgColor=lighter)
+        if index == 2:
+            cells[1].number_format = "dd/mm/yyyy hh:mm:ss"
+        if index in {5, 6, 7}:
+            cells[1].number_format = 'R$ #,##0.00;[Red]-R$ #,##0.00'
+        if index in {4, 5, 6, 7, 8}:
+            cells[3].number_format = "0.0%"
+        if index == 9:
+            cells[0].alignment = Alignment(vertical="top")
+            cells[1].alignment = Alignment(wrap_text=True, vertical="top")
+            summary.row_dimensions[9].height = 42
+        summary.append(cells)
+
+    legend = workbook.create_sheet("Legenda")
+    legend.sheet_view.showGridLines = False
+    legend.sheet_properties.tabColor = "F59E0B"
+    legend.freeze_panes = "A2"
+    legend.column_dimensions["A"].width = 28
+    legend.column_dimensions["B"].width = 26
+    legend.column_dimensions["C"].width = 24
+    legend_header = []
+    for value in ("Valor exibido", "Valor interno", "Campo"):
+        cell = WriteOnlyCell(legend, value=value)
+        cell.fill = PatternFill("solid", fgColor=dark)
+        cell.font = Font(color=white, bold=True)
+        legend_header.append(cell)
+    legend.append(legend_header)
+    legend_rows = [
+        ("Despesa", "expense", "Tipo"),
+        ("Receita", "income", "Tipo"),
+        ("Pendente", "pending", "Status"),
+        ("Classificado", "reconciled", "Status"),
+        ("Cartão de crédito", "credit_card", "Tipo de conta / método"),
+        ("Conta corrente", "checking", "Tipo de conta"),
+        ("Pix", "pix", "Método"),
+        ("TED", "ted", "Método"),
+        ("Boleto", "boleto", "Método"),
+        ("Transferência", "bank_transfer", "Método"),
+        ("Débito automático", "automatic_debit", "Método"),
+        ("Tarifa", "fee", "Método"),
+        ("Estorno", "refund", "Método"),
+        ("Parcelado", "INSTALLMENT", "Sinalizadores"),
+        ("Entre contas", "INTER_ACCOUNT", "Sinalizadores"),
+        ("Não contabilizado", "non_count", "Sinalizadores"),
+        ("Imposto/Taxa", "tax", "Sinalizadores"),
+        ("Rendimento", "rendimento", "Sinalizadores"),
+        ("Pagamento de fatura", "fatura", "Sinalizadores"),
+        ("Fatura de cartão", "cartao", "Natureza da fonte"),
+        ("Extrato bancário", "extrato", "Natureza da fonte"),
+    ]
+    for index, row_values in enumerate(legend_rows, start=2):
+        cells = [WriteOnlyCell(legend, value=value) for value in row_values]
+        if index % 2 == 0:
+            for cell in cells:
+                cell.fill = banded_fill
+        legend.append(cells)
+    legend.auto_filter.ref = f"A1:C{len(legend_rows) + 1}"
 
     dictionary = workbook.create_sheet("Dicionário")
     dictionary.sheet_view.showGridLines = False
+    dictionary.sheet_properties.tabColor = "64748B"
     dictionary.freeze_panes = "A2"
     dictionary.column_dimensions["A"].width = 38
     dictionary.column_dimensions["B"].width = 34
-    dictionary.column_dimensions["C"].width = 30
+    dictionary.column_dimensions["C"].width = 24
+    dictionary.column_dimensions["D"].width = 44
     dictionary_header = []
-    for value in ("Coluna", "Campo técnico", "Grupo"):
+    for value in ("Coluna", "Campo técnico", "Bloco", "Observação"):
         cell = WriteOnlyCell(dictionary, value=value)
         cell.fill = PatternFill("solid", fgColor=dark)
         cell.font = Font(color=white, bold=True)
         dictionary_header.append(cell)
     dictionary.append(dictionary_header)
-    groups = [
-        (0, 32, "Lançamento e classificação"),
-        (32, 38, "Sugestões"),
-        (38, 50, "Base histórica"),
-        (50, 61, "Conciliação"),
-        (61, 79, "Documento e lote de origem"),
-    ]
-    for idx, (label, key) in enumerate(AUDIT_COLUMNS):
-        group = next(name for start, end, name in groups if start <= idx < end)
-        dictionary.append([label, key, group])
-    dictionary.auto_filter.ref = f"A1:C{len(AUDIT_COLUMNS) + 1}"
+    translated_keys = set(AUDIT_TRANSLATIONS) | {
+        "flags",
+        "installment_label",
+        "history_source_display",
+        "history_type",
+        "counterpart_type",
+    }
+    for index, (label, key, _) in enumerate(AUDIT_EXPORT_COLUMNS, start=2):
+        visible = index - 2 < len(AUDIT_VISIBLE_COLUMNS)
+        source_key = {
+            "installment_label": "installment_current + installment_total",
+            "history_source_display": "history_source_file_id",
+        }.get(key, key)
+        if visible:
+            observation = (
+                "Valor traduzido/derivado para leitura."
+                if key in translated_keys
+                else ""
+            )
+            block = "Negócio (visível)"
+        else:
+            observation = "Oculta por padrão; reexiba o grupo para consultar."
+            block = "Técnica (oculta)"
+        cells = [
+            WriteOnlyCell(dictionary, value=label),
+            WriteOnlyCell(dictionary, value=source_key),
+            WriteOnlyCell(dictionary, value=block),
+            WriteOnlyCell(dictionary, value=observation),
+        ]
+        if index % 2 == 0:
+            for cell in cells:
+                cell.fill = banded_fill
+        dictionary.append(cells)
+    dictionary.auto_filter.ref = f"A1:D{len(AUDIT_EXPORT_COLUMNS) + 1}"
     workbook.calculation.fullCalcOnLoad = True
     output = io.BytesIO()
     workbook.save(output)
-    output.seek(0)
-    return output
+    return _normalize_audit_currency_xml(output)
 
 
 @bp.route("/api/v1/system/audit-export")
