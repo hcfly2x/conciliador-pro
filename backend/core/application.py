@@ -3265,13 +3265,28 @@ def detect_competence(
 
 
 def existing_db_duplicate_count(
-    conn: sqlite3.Connection, account_id: str, row: dict[str, Any]
+    conn: sqlite3.Connection,
+    account_id: str,
+    row: dict[str, Any],
+    competence_month: str = "",
 ) -> int:
     installment_current = int(row.get("installment_current") or 0)
     installment_total = int(row.get("installment_total") or 0)
+    competence_filter = " AND competence_month=?" if competence_month else ""
+    params = [
+        account_id,
+        row["date"],
+        row["amount_signed"],
+        row["description_norm"],
+        row["tx_type"],
+        installment_current,
+        installment_total,
+    ]
+    if competence_month:
+        params.append(competence_month)
     return int(
         conn.execute(
-            """
+            f"""
         SELECT COUNT(1) FROM transactions
         WHERE account_id=?
           AND date=?
@@ -3280,16 +3295,9 @@ def existing_db_duplicate_count(
           AND type=?
           AND IFNULL(installment_current,0)=?
           AND IFNULL(installment_total,0)=?
+          {competence_filter}
         """,
-            (
-                account_id,
-                row["date"],
-                row["amount_signed"],
-                row["description_norm"],
-                row["tx_type"],
-                installment_current,
-                installment_total,
-            ),
+            tuple(params),
         ).fetchone()[0]
         or 0
     )
@@ -4460,8 +4468,17 @@ def import_document(
         # Repeticoes internas representam ocorrencias reais distintas e sao preservadas.
         # Sobreposicoes com documentos anteriores so podem ser ignoradas mediante
         # confirmacao explicita. O hash integral continua bloqueando reimportacoes.
+        card_competence = (
+            competence_month_override
+            if (acc[2] or "").lower() == "credit_card"
+            and re.match(r"^\d{4}/\d{2}$", competence_month_override or "")
+            else ""
+        )
         db_counts = {
-            r["sig"]: existing_db_duplicate_count(conn, acc[0], r) for r in parsed_rows
+            r["sig"]: existing_db_duplicate_count(
+                conn, acc[0], r, competence_month=card_competence
+            )
+            for r in parsed_rows
         }
         preview_occ: dict[tuple[Any, ...], int] = {}
         existing_db_duplicates = 0
@@ -4526,7 +4543,7 @@ def import_document(
             key = (
                 f"{acc[0]}|{r['date']}|{r['amount_signed']:.2f}|{r['description_norm']}|"
                 f"{r['tx_type']}|{int(r['installment_current'] or 0)}|{int(r['installment_total'] or 0)}"
-                f"#{occ[r['sig']]}"
+                f"|{h[:12]}#{occ[r['sig']]}"
             )
             installment_plan_id, installment_plan = find_or_create_installment_plan(
                 conn, acc[0], r

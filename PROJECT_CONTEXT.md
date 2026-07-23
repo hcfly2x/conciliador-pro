@@ -21,11 +21,11 @@ lançamentos financeiros reais.
 - Branch oficial: `main`.
 - A `main`, a Vercel e o Render acompanham o mesmo fluxo de release. O health
   do backend é a fonte operacional para confirmar o commit ativo.
-- Banco de produção: PostgreSQL/Supabase, schema 2.
+- Banco de produção: PostgreSQL/Supabase, schema 3.
 - Backend: Render com `WORKER_MODE=inline`.
 - Frontend: Vercel.
 - CI atual aprovada: testes Python, PostgreSQL 16, TypeScript, build e 9 E2E.
-- O código contém 107 métodos de teste Python.
+- O código contém 108 métodos de teste Python.
 - Existem 64 rotas: 51 implementadas nos blueprints e 13 ainda no núcleo.
 - O repositório está em uso com dados reais; mudanças devem preservar
   classificações, vínculos, conciliações, auditoria e documentos.
@@ -86,6 +86,8 @@ lançamentos financeiros reais.
   nome do arquivo. Datas dos lançamentos nunca definem competência de cartão.
 - Preview é obrigatório.
 - Repetições internas do arquivo são preservadas.
+- Em faturas de cartão, a deduplicação é limitada à competência da própria
+  fatura; ocorrências iguais em competências diferentes podem ser eventos reais.
 - Arquivo integralmente já importado continua bloqueado pelo hash.
 - Sobreposição parcial exige confirmação explícita; duplicados existentes são
   preservados e somente as ocorrências novas são inseridas.

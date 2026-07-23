@@ -169,6 +169,54 @@ class DuplicateDatabaseRegressionTests(unittest.TestCase):
         self.assertEqual(partial["total_duplicates_db"], 1)
         self.assertEqual(conn.execute("SELECT COUNT(1) FROM transactions").fetchone()[0], 4)
 
+    def test_card_statements_keep_equal_occurrences_in_distinct_competences(self) -> None:
+        conn = sqlite3.connect(":memory:")
+        original_db_connect = app.db_connect
+        original_docs = app.DOCS
+        self.addCleanup(setattr, app, "db_connect", original_db_connect)
+        self.addCleanup(setattr, app, "DOCS", original_docs)
+        self.addCleanup(conn.close)
+        app.db_connect = lambda *args, **kwargs: conn
+        app.init_db()
+        account_id = "card-xp"
+        conn.execute(
+            "INSERT INTO accounts(id,name,type,color,is_active,created_at) VALUES (?,?,?,?,1,?)",
+            (account_id, "CARTAO XP", "credit_card", "#000000", "2026-03-01"),
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            app.DOCS = Path(tmp) / "documents"
+            july_path = Path(tmp) / "Cartao - 07-24 - XP.csv"
+            august_path = Path(tmp) / "Cartao - 08-24 - XP.csv"
+            content = (FIXTURES / "xp_card.csv").read_text(encoding="utf-8")
+            july_path.write_text(content, encoding="utf-8")
+            august_path.write_text(content + "\n", encoding="utf-8")
+            july, july_status = app.import_document(
+                july_path,
+                account_id,
+                confirm_duplicates=True,
+                competence_month_override="2024/07",
+            )
+            august, august_status = app.import_document(
+                august_path,
+                account_id,
+                confirm_duplicates=True,
+                competence_month_override="2024/08",
+            )
+
+        self.assertEqual(july_status, 201)
+        self.assertEqual(august_status, 201)
+        self.assertEqual(july["total_inserted"], 3)
+        self.assertEqual(august["total_inserted"], 3)
+        self.assertEqual(august["total_duplicates_db"], 0)
+        self.assertEqual(
+            conn.execute("SELECT COUNT(1) FROM transactions").fetchone()[0], 6
+        )
+        self.assertEqual(
+            conn.execute("SELECT COUNT(DISTINCT tx_key) FROM transactions").fetchone()[0],
+            6,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
