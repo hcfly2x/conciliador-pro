@@ -184,6 +184,7 @@ export default function ImportPage() {
       >
         <input
           ref={inputRef}
+          data-testid="single-import-file"
           type="file"
           accept=".csv,.xls,.xlsx,.pdf"
           className="hidden"

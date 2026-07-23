@@ -83,7 +83,7 @@ async function login(page: Page) {
 
 async function importThroughUi(page: Page, fixture: string, accountName?: string, competenceMonth?: string) {
   await page.goto('/importar')
-  await page.locator('input[type=file]').setInputFiles(fixture)
+  await page.getByTestId('single-import-file').setInputFiles(fixture)
   if (accountName) await page.getByText('Conta / Cartão (opcional)').locator('..').getByRole('combobox').selectOption({ label: accountName })
   await page.getByRole('button', { name: 'Analisar arquivo' }).click()
   await expect(page.getByText('Pré-validação concluída')).toBeVisible()

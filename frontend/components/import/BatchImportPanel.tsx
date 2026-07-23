@@ -167,6 +167,7 @@ export default function BatchImportPanel() {
 
       <input
         ref={inputRef}
+        data-testid="batch-import-files"
         type="file"
         multiple
         accept=".csv,.xls,.xlsx,.pdf"
