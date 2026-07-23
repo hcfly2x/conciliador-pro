@@ -21,7 +21,7 @@ lançamentos financeiros reais.
 - Branch oficial: `main`.
 - A `main`, a Vercel e o Render acompanham o mesmo fluxo de release. O health
   do backend é a fonte operacional para confirmar o commit ativo.
-- Última confirmação de health: commit `74a681e`, PostgreSQL, schema 3 e
+- Última confirmação de health: commit `a71e446`, PostgreSQL, schema 3 e
   `WORKER_MODE=inline`.
 - Banco de produção: PostgreSQL/Supabase, schema 3.
 - Backend: Render com `WORKER_MODE=inline`.

@@ -1,6 +1,6 @@
 # Matriz de variaveis de ambiente
 
-Atualizado em 22/07/2026. Segredos nunca devem ser adicionados ao repositorio.
+Atualizado em 23/07/2026. Segredos nunca devem ser adicionados ao repositorio.
 
 ## Backend web e worker
 
@@ -10,7 +10,7 @@ Atualizado em 22/07/2026. Segredos nunca devem ser adicionados ao repositorio.
 | `ADMIN_USERNAME` | primeiro deploy | vazio | cria o primeiro administrador se nao houver usuarios |
 | `ADMIN_PASSWORD` | primeiro deploy | vazio | senha inicial, minimo de 8 caracteres |
 | `CORS_ORIGINS` | PostgreSQL hosted | nenhum | origens permitidas, separadas por virgula; `*` e recusado |
-| `WORKER_MODE` | hosted | `process` em PostgreSQL, `inline` em SQLite | separa filas do processo web |
+| `WORKER_MODE` | hosted | `process` em PostgreSQL, `inline` em SQLite | modo de execucao dos jobs; producao atual fixa `inline` |
 | `WORKER_PROCESS` | worker | vazio | identifica inicializacao do processo worker |
 | `WORKER_POLL_SECONDS` | nao | `1` | intervalo de polling do worker |
 | `WORKER_RUN_ONCE` | somente teste | falso | processa no maximo um job e encerra |
@@ -46,20 +46,18 @@ Atualizado em 22/07/2026. Segredos nunca devem ser adicionados ao repositorio.
 | `SENTRY_TRACES_SAMPLE_RATE` | nao | `0` | amostragem servidor/edge |
 | `SENTRY_ORG`, `SENTRY_PROJECT`, `SENTRY_AUTH_TOKEN` | source maps | vazio | upload de source maps durante build |
 
-## Configuracao minima recomendada
+## Configuracao minima recomendada para a producao atual
 
-- Render web: `DATABASE_URL`, `CORS_ORIGINS`, `WORKER_MODE=process`,
+- Render web: `DATABASE_URL`, `CORS_ORIGINS`, `WORKER_MODE=inline`,
   `TRUSTED_PROXY_COUNT=1` e os DSNs opcionais.
-- Render worker: mesma `DATABASE_URL`, `WORKER_MODE=process` e
-  `WORKER_PROCESS=1`.
 - Vercel: `NEXT_PUBLIC_API_URL` e, se habilitado, Sentry.
 - Credenciais administrativas iniciais devem ser removidas ou rotacionadas
   depois de confirmar o primeiro usuario.
 
 ## Producao atual
 
-Em 22/07/2026 o Render possui somente o web service e esta configurado com
-`WORKER_MODE=inline`. Essa configuracao e funcional e evita jobs parados, mas e
-uma mitigacao temporaria. Ao criar o Background Worker, alterar o web para
-`WORKER_MODE=process` somente depois de confirmar que o worker esta ativo e
-consumindo a mesma `DATABASE_URL`.
+O Render possui somente o web service e esta configurado com
+`WORKER_MODE=inline`. Esta e a configuracao vigente; o processo web executa os
+jobs. Ao criar um Background Worker, alterar o web para `WORKER_MODE=process`
+somente depois de homologar o worker, confirmar que consome a mesma
+`DATABASE_URL` e atualizar o runbook.

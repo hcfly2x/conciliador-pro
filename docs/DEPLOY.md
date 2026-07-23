@@ -10,7 +10,8 @@ Guia passo a passo para colocar o sistema no ar com banco hosted, sem depender d
    migrations versionadas na inicializacao.
 
 Neon e Railway sao alternativas equivalentes. Em qualquer provedor, o contrato
-da aplicacao e uma `DATABASE_URL` PostgreSQL acessivel pelo web e pelo worker.
+da aplicacao e uma `DATABASE_URL` PostgreSQL acessivel pelo processo web. O
+worker separado existe no codigo, mas nao esta ativo na producao vigente.
 
 ## 2. Backend (Render)
 
@@ -22,7 +23,7 @@ da aplicacao e uma `DATABASE_URL` PostgreSQL acessivel pelo web e pelo worker.
    - Build Command: `pip install -r requirements.txt`
    - Start Command: `gunicorn -b 0.0.0.0:$PORT -w 2 --threads 8 --timeout 300 app:app`
 4. Em Environment, adicione:
-   - `DATABASE_URL` = connection string do Neon
+   - `DATABASE_URL` = connection string PostgreSQL do Supabase
    - `ADMIN_USERNAME` = seu usuario (ex.: `helcio`)
    - `ADMIN_PASSWORD` = uma senha forte (minimo 8 caracteres)
    - `CORS_ORIGINS` = URL do frontend na Vercel (pode preencher depois do passo 3 e salvar de novo)
@@ -33,7 +34,9 @@ da aplicacao e uma `DATABASE_URL` PostgreSQL acessivel pelo web e pelo worker.
 6. Nao crie um **Background Worker** separado no ambiente vigente. Ele e uma
    arquitetura futura e so deve ser habilitado apos homologacao e decisao de
    custo; enquanto isso, o web processa os jobs em modo `inline`.
-7. Deploy. Teste: `https://SEU-SERVICO.onrender.com/api/v1/health` deve responder `{"status": "ok"}`.
+7. Deploy. Teste: `https://SEU-SERVICO.onrender.com/api/v1/health` deve
+   responder `{"status": "ok"}` e informar `schema_version`, `commit` e
+   `worker_mode: "inline"` esperados para o release.
 
 O admin e criado automaticamente na primeira subida (somente se ainda nao existir nenhum usuario; depois disso as variaveis ADMIN_* podem ate ser removidas).
 
@@ -86,7 +89,52 @@ O que cada perfil pode fazer:
   lote financeiro. A copia no disco do Render e secundaria e pode desaparecer
   entre deploys. Mantenha tambem uma copia externa como contingencia operacional.
 
-## 6. Desenvolvimento local (opcional)
+### Rotina minima e prova de restauracao
+
+1. Gere um dump completo diario pelo mecanismo do provedor ou por uma rotina
+   externa autenticada. Guarde-o em local privado e separado do banco.
+2. Registre a data, tamanho e checksum do dump. Nunca registre a senha ou a
+   `DATABASE_URL` no log.
+3. Antes de uma migration, restaure o dump mais recente em um PostgreSQL
+   descartavel, execute `GET /api/v1/health` nesse ambiente e confira ao menos
+   contagem de lancamentos, documentos e usuarios.
+4. Registre o resultado e descarte o banco de teste. Um dump sem restauracao
+   comprovada nao e considerado backup validado.
+
+## 6. Runbook de operacao e incidentes
+
+### Confirmar um release
+
+1. Confirme a branch/commit no GitHub.
+2. Abra `GET /api/v1/health` no Render e confira commit, `schema_version: 3`,
+   PostgreSQL e `worker_mode: inline`.
+3. Faça login no frontend e execute um fluxo nao destrutivo: abrir
+   lancamentos, auditoria e conciliacao.
+4. Para releases que alteram importacao, use um arquivo de teste e valide a
+   previa antes de confirmar. Depois, exporte a auditoria e confira totais e
+   documento de origem.
+
+### Quando um job parecer parado
+
+No ambiente atual nao existe processo Worker separado para reiniciar: o web
+service executa os jobs em modo `inline`. Primeiro use a tela que iniciou a
+acao e atualize a pagina; os jobs persistem status e log. Se nao concluir:
+
+1. Consulte o log do Web Service no Render pelo horario e identificador do job.
+2. Confirme o health e se houve deploy/reinicio durante a operacao.
+3. Nao envie novamente o mesmo arquivo sem revisar a previa: a deduplicacao e
+   o hash protegem, mas a confirmacao deve continuar intencional.
+4. Registre a mensagem de erro, horario e arquivo afetado; so entao escale para
+   correcao no codigo. Nao altere diretamente lancamentos no banco.
+
+### Rollback
+
+Se um release falhar, no Render redeploye o ultimo commit saudavel e na Vercel
+promova o deployment anterior. Confirme o health apos o rollback. Nao restaure
+o banco para desfazer somente codigo; restauracao de banco exige a prova do
+procedimento acima e aprovacao explicita, pois pode descartar dados recentes.
+
+## 7. Desenvolvimento local (opcional)
 
 Sem `DATABASE_URL` o backend volta a usar o SQLite local:
 
@@ -109,7 +157,7 @@ O CI possui o job `backend-postgres`, que cria PostgreSQL 16 descartavel, aplica
 as migrations e testa web/worker em processos separados com reinicio do web. Esse
 teste deve passar antes de implantar a revisao.
 
-## 7. Checklist final
+## 8. Checklist final
 
 1. `GET /api/v1/health` responde ok e informa o commit, `schema_version` e o
    `worker_mode` esperados para o release.

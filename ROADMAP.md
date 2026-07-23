@@ -1,44 +1,82 @@
-# Roadmap - Conciliador Pro
+# Roadmap — Conciliador Pro
 
-Atualizado em 23/07/2026. Este roadmap segue o código atual e o
-`PROJECT_CONTEXT.md`; não reativa itens abandonados.
+Atualizado em 23/07/2026. Este plano consolida o roadmap revisado com o
+`PROJECT_CONTEXT.md` e o código da `main`. Aplicamos Pareto: primeiro a
+integridade financeira e a capacidade de operar/restaurar; depois evidência de
+desempenho; só então refatorações grandes ou novos módulos.
 
 ## Concluído recentemente
 
 - Exportação de auditoria em Excel homologada em produção.
-- Ajuste de classificação em lote publicado.
-- Correção de deduplicação de faturas sobrepostas publicada.
+- Classificação em lote, deduplicação de sobreposição de faturas e importação
+  XP 06/2026 corrigidas e validadas pelo usuário.
+- Candidatos de conciliação passaram a ser completos e paginados, sem o corte
+  anterior que escondia pares válidos.
 - Base financeira revisada pelo usuário, incluindo XP 06/2026 e Santander
   10/2025.
 
-## Prioridade 1 - Confiabilidade operacional
+## P0 — Confiabilidade operacional (maior retorno imediato)
 
-1. Validar no ambiente hospedado os perfis admin e colaborador, o registro de
-   auditoria, logs e Sentry, usando dados de teste controlados.
-2. Definir e testar uma rotina de backup e restauração do PostgreSQL antes de
-   qualquer próxima migration.
-3. Após cada importação relevante, usar a exportação de auditoria como prova de
-   quantidade, totais, origem no cofre e conciliações.
+1. **Runbook de produção e jobs — em implementação.** Manter o deploy real
+   documentado: Supabase + Render web em `WORKER_MODE=inline` + Vercel; incluir
+   health check, diagnóstico de jobs, rollback e validação pós-release.
+2. **Backups e restauração comprovada.** Definir backup diário do PostgreSQL e
+   executar uma restauração em banco descartável antes da próxima migration ou
+   mudança estrutural. Registrar data, checksum e resultado.
+3. **Segurança de acesso.** O proprietário deve rotacionar credenciais de banco
+   e administrativas quando houver suspeita de exposição, garantir GitHub
+   privado e manter segredos somente nos provedores. Esta tarefa requer acesso
+   externo e não é feita pelo código.
+4. **Homologação hospedada controlada.** Validar admin e colaborador, auditoria,
+   logs e Sentry com dados de teste. Após cada importação relevante, usar a
+   auditoria Excel como prova de quantidades, totais, origem no cofre e
+   conciliações.
 
-## Prioridade 2 - Medir antes de otimizar
+## P1 — Medir antes de otimizar
 
-1. Medir tempo e volume das consultas de vínculos, sugestões e tabela de
-   lançamentos na base atual.
-2. Somente se houver gargalo comprovado, prefiltrar candidatos no SQL ou criar
-   índices adicionais, acompanhados de migration e teste.
+1. Ativar/confirmar Sentry e coletar, por período limitado, tempos p95 das
+   consultas de lançamentos, vínculos, sugestões e relatórios, sem enviar
+   conteúdo financeiro.
+2. Medir volume e plano das consultas lentas na base atual.
+3. Apenas com gargalo comprovado, propor índices ou filtros SQL acompanhados de
+   migration, teste e medição antes/depois.
+4. Migração de região do banco fica **adiada**: é operação de alto risco e não
+   deve preceder dados de latência/indisponibilidade que a justifiquem.
 
-## Prioridade 3 - Reduzir risco de manutenção
+## P2 — Reduzir risco de manutenção
 
-1. Migrar, em etapas pequenas, os 13 handlers remanescentes de importação e
-   transações de `backend/core/application.py` para blueprints.
-2. Dividir os componentes frontend acima de 400 linhas, preservando a cobertura
-   E2E atual.
-3. Consolidar a documentação operacional a cada release: contexto, arquitetura,
-   deploy e changelog de decisão.
+1. Migrar em etapas pequenas os 13 handlers de importação e transações ainda em
+   `backend/core/application.py` para blueprints, sem alterar contrato ou dados.
+2. Definir contratos de resposta das rotas críticas e testes de compatibilidade.
+3. Dividir os componentes frontend acima de 400 linhas, preservando cobertura
+   E2E: `arquivos/page.tsx`, `ImportPage.tsx` e `useTransactionTable.tsx`.
+4. Consolidar a documentação operacional nos documentos vivos: contexto,
+   arquitetura, deploy/runbook e changelog de decisão. Arquivos históricos
+   permanecem identificados como históricos, sem apagamento sem revisão.
 
-## Posterior - Somente mediante decisão explícita
+## P3 — Evolução de produto após P0/P1
 
-- Homologar e custear um Background Worker separado no Render. Até então,
-  `WORKER_MODE=inline` permanece o modo de produção.
-- Avaliar `NUMERIC`, foreign keys ou object storage somente após medição e
-  auditoria de dados.
+1. Validar fluxo de colaboração (admin e colaborador) e decidir se uma tela de
+   usuários/auditoria é necessária além da API atual.
+2. Auditar categorias/subcategorias com acentos e duplicidades antes de qualquer
+   migration de normalização; não corrigir nomes por suposição.
+3. Avaliar filtros por tipo e seleção de subcategoria em massa com dados de uso;
+   classificação em lote já existe e deve ser preservada.
+4. Evoluir relatórios mensais por categoria/subcategoria somente se o relatório
+   atual não responder à necessidade operacional.
+5. Avaliar painel operacional do sistema após haver métricas e runbook estáveis.
+
+## Fora da prioridade atual / requer decisão explícita
+
+- Indicador de "worker parado" não é apropriado na produção atual: os jobs
+  operam em `inline`; reavaliar apenas ao homologar um worker separado.
+- Homologar e custear Background Worker separado no Render.
+- `NUMERIC`, foreign keys, object storage ou nova migração de região do banco.
+- Exclusão de rotas/UI legadas e ferramentas de auditoria: primeiro mapear uso
+  e dependências; não remover como parte de uma refatoração genérica.
+
+## Critério de avanço
+
+Cada item que altera código deve ter teste proporcional, não modificar
+lançamentos existentes sem regra aprovada e ser publicado somente após validação
+da `main` e do health de produção.
