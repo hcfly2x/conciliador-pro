@@ -1,172 +1,150 @@
-# PROJECT_CONTEXT.md - Conciliador Pro
+# PROJECT_CONTEXT.md — Conciliador Pro
 
-Atualizado em 22/07/2026. Este arquivo consolida o contexto de produto. O codigo
-continua sendo a fonte principal da verdade; `docs/ROADMAP-FINALIZACAO.md` e o
-checklist operacional vigente. Roadmaps anteriores sao apenas historicos.
+Atualizado em 22/07/2026.
 
-## Lema de engenharia
-
-**Principio de Pareto: buscar 80% do resultado com 20% do esforco.**
-
-O projeto prioriza melhorias de maior impacto percebido e operacional, com
-baixo risco para a integridade financeira. Nao faremos esforcos grandes em
-problemas pequenos, nem adotaremos complexidade preventiva sem medicao. Entre
-alternativas equivalentes, vence a solucao mais simples, testavel, reversivel e
-facil de operar.
+O código atual é a fonte principal da verdade. Documentos marcados como
+históricos não definem requisitos. Ideias antigas só voltam ao projeto mediante
+confirmação explícita.
 
 ## Objetivo do produto
 
-Aplicativo web de controle financeiro pessoal que importa extratos e faturas,
-preserva os lancamentos exatamente como constam nos documentos, permite
-classificacao humana e usa uma base historica como evidencia para acelerar o
-trabalho.
+Aplicação web de controle financeiro para o proprietário e um colaborador.
+Importa extratos e faturas, preserva os lançamentos conforme os documentos,
+permite classificação humana, vínculos com uma base histórica, organização de
+parcelas, conciliação de transferências internas, auditoria e relatórios.
 
-Fluxo principal:
+A base histórica acelera a classificação, mas não substitui nem cria
+lançamentos financeiros reais.
 
-1. Importar ou substituir, com confirmacao administrativa, a base historica.
-2. Importar extratos e faturas com deteccao, preview e confirmacao.
-3. Revisar vinculos diretos com a base historica.
-4. Calcular sugestoes em job separado.
-5. Classificar manualmente o restante.
-6. Conciliar transferencias internas quando aplicavel.
+## Estado atual
 
-## Estado em 22/07/2026
+- Branch oficial: `main`.
+- Head do repositório e frontend publicado: `aad7e47`.
+- Backend publicado: `f356caa`; o commit posterior altera somente o frontend.
+- Banco de produção: PostgreSQL/Supabase, schema 2.
+- Backend: Render com `WORKER_MODE=inline`.
+- Frontend: Vercel.
+- CI atual aprovada: testes Python, PostgreSQL 16, TypeScript, build e 8 E2E.
+- O código contém 100 métodos de teste Python.
+- Existem 64 rotas: 51 implementadas nos blueprints e 13 ainda no núcleo.
+- O repositório está em uso com dados reais; mudanças devem preservar
+  classificações, vínculos, conciliações, auditoria e documentos.
 
-O produto possui fluxo funcional de autenticacao, importacao com preview,
-deduplicacao, base historica, vinculos revisaveis, sugestoes assincronas,
-classificacao, parcelas, conciliacao, relatorios, cofre e reset administrativo.
+## Arquitetura e stack
 
-A branch oficial e `main`. O commit `c853b14` esta em `origin/main`, Vercel e
-Render. O Render usa PostgreSQL e, por possuir apenas o web service no plano
-atual, executa jobs com `WORKER_MODE=inline`. O Background Worker separado
-continua sendo a arquitetura alvo, mas nao esta ativo em producao.
-
-Validacao da versao publicada e da rodada local seguinte:
-
-- O health de `c853b14` informa commit, schema 2 e executor de jobs inline.
-- Na rodada local seguinte, 95 testes Python e 8 jornadas Playwright foram
-  aprovados; essa rodada ainda nao foi publicada.
-- A integracao PostgreSQL do CI passou com banco descartavel, web e worker em
-  processos separados e reinicio do web durante um job.
-- As jornadas Playwright incluem vinculo em lote e o ciclo de
-  rejeitar, confirmar, desvincular e recalcular vinculos pela interface.
-- TypeScript e build de producao Next.js aprovados.
-- `npm audit --omit=dev` sem vulnerabilidades conhecidas.
-- `pip check` sem dependencias quebradas.
-
-## Arquitetura atual
-
-- Frontend: Next.js 15.5.20, React 19, TypeScript, Tailwind CSS, Zustand e
-  Playwright.
+- Frontend: Next.js 15.5.21, React 19, TypeScript, Tailwind CSS 4 e Zustand.
 - Backend: Flask, Python e Gunicorn.
-- Banco: PostgreSQL quando `DATABASE_URL` esta configurada; SQLite local/testes.
-- Persistencia: SQL direto com adaptador de compatibilidade SQLite/PostgreSQL.
-- Jobs: tabelas persistentes. O worker separado possui lease PostgreSQL
-  exclusivo e esta homologado no CI; a producao atual usa o fallback inline no
-  web service ate a criacao de um Background Worker no Render.
-- Arquivos: documentos originais em Base64 no banco, com fallback local.
-- Observabilidade: logs estruturados e Sentry opcional por DSN.
-- CI: testes Python, typecheck/build e Playwright.
-
-`backend/app.py` e uma fachada pequena. Dos 62 endpoints de blueprint, 49 ja
-possuem handlers nos modulos de dominio, incluindo auth/auditoria, sistema,
-relatorios, contas/razoes/categorias, cobertura/cofre, conciliacoes e sugestoes.
-Leitura, confirmacao individual/em lote, rejeicao, desvinculo e recalculo de
-vinculos historicos tambem estao no dominio. Os 13 endpoints restantes de
-importacao e transacoes ainda dependem de `backend/core/application.py`. O
-bootstrap legado continua idempotente para compatibilidade; novos schemas
-passam obrigatoriamente por migrations versionadas.
+- Persistência: SQL direto, sem ORM.
+- Banco: PostgreSQL em produção; SQLite em desenvolvimento/testes.
+- Compatibilidade de banco: adaptador próprio em `backend/db.py`.
+- Migrations: runner versionado com nome/checksum; schema atual na versão 2.
+- Jobs persistidos: importação, base histórica, sugestões e recálculo.
+- Worker separado está implementado/testado, mas não implantado no Render.
+- Documentos: Base64 em `stored_documents`, com cópia local secundária.
+- Autenticação: Bearer token, digest no banco, token em `sessionStorage`,
+  PBKDF2-SHA256 e perfis `admin`/`colaborador`.
+- Observabilidade: logs de requests e jobs; Sentry opcional.
+- Infraestrutura: Vercel + Render + Supabase.
+- Lema: aplicar Pareto — buscar 80% do resultado com 20% do esforço, priorizando
+  integridade financeira, impacto percebido e soluções simples/reversíveis.
 
 ## Funcionalidades existentes
 
-- Login, sessoes, perfis `admin` e `colaborador`, auditoria e rate limit.
-- Importacao de CSV, XLS/XLSX e PDF com preview, validacoes, totais, avisos e
-  deduplicacao.
-- Competencia de cartao baseada na data de pagamento da fatura, com vencimento
-  como fallback; datas dos lancamentos nunca definem a competencia do cartao.
-- Confirmacao da importacao em job persistente, com progresso, logs, retomada
-  apos refresh e protecao contra confirmacao duplicada.
-- Deteccao automatica de conta com correcao manual.
-- Parsers Santander, Nubank e XP para conta e cartao.
-- Contas, categorias, subcategorias e contas correntes (`ledgers`).
-- Base historica unica e substituicao administrativa segura.
-- Vinculos historicos individuais e em lote, com fila de revisao manual.
-- Sugestoes persistidas de categoria/subcategoria, calculadas manualmente.
-- Central de classificacao, classificacao em lote e planos de parcelas.
-- Conciliacao manual e reversivel de entrada e saida do mesmo valor.
-- Relatorios de resumo, categorias e evolucao mensal.
-- Cofre de documentos, cobertura de arquivos e exclusao auditada.
-- Release `c853b14` homologado em producao; o proprietario confirmou importacao
-  de extrato, vinculo em lote e persistencia das classificacoes com dados reais.
+- Login, logout, usuários via API, RBAC, auditoria e rate limit.
+- Importação de CSV, XLS, XLSX e PDF com detecção, preview e confirmação.
+- Parsers Santander, Nubank e XP para conta e cartão.
+- Detecção/correção de conta e competência.
+- Jobs com progresso, logs e retomada visual após refresh.
+- Deduplicação contra o banco e preservação de repetições internas.
+- Cofre de documentos, download, cobertura mensal e exclusão auditada.
+- Contas, categorias, subcategorias e `ledgers`.
+- Base histórica substituível mediante confirmação.
+- Sugestões Top 3 e avaliação leave-one-out.
+- Vínculos históricos individuais e em lote com revisão manual.
+- Classificação individual/em lote e proteção pós-classificação.
+- Planos de parcelas e propagação confirmada de categoria/subcategoria.
+- Conciliação reversível de entradas e saídas.
+- Relatórios por competência e categoria.
+- Exportação administrativa de auditoria financeira em Excel.
+- Snapshot técnico de auditoria e reset administrativo protegido.
+- Importação por pasta e importação direta permanecem desativadas com HTTP 410.
 
-## Regras de negocio vigentes
+## Regras de negócio vigentes
 
-- Extratos e faturas sao a fonte de verdade dos lancamentos reais.
-- A base historica nunca cria nem altera data, valor, descricao ou conta de um
-  lancamento real; ela fornece evidencia de categoria e subcategoria.
-- Nao existe autoclassificacao. Toda classificacao depende de acao humana.
-- Qualquer duplicado ja existente no banco bloqueia o lote inteiro. Repeticoes
-  internas do mesmo arquivo sao preservadas como lancamentos legitimos.
-- Despesas sao negativas; receitas sao positivas.
-- Confirmar vinculo replica categoria/subcategoria, protege o lancamento e nunca
-  substitui a conta vinda do documento.
-- Rejeitar vinculo impede o mesmo candidato de reaparecer para o lancamento.
-- Lancamentos com vinculo pendente nao recebem sugestao/classificacao antes da
-  revisao.
-- O botao `Vincular selecionados` exige similaridade de descricao de no minimo
-  75%, mesma data e valor exato.
-- Para parcelas, o total estimado (`parcela x quantidade`) pode diferir ate R$ 1
-  do historico, com descricao a partir de 50%. Ambiguidade abre revisao manual.
-- Todas as parcelas do documento sao preservadas; plano de parcelas serve apenas
-  para relacionamento e propagacao confirmada de classificacao.
-- Conciliacao exige entrada e saida com mesmo valor absoluto, e pode ser desfeita.
-- Pares conciliados nao entram nos totais dos relatorios.
+- Lançamentos reais só vêm de extratos e faturas importados.
+- Extratos/faturas são a fonte de verdade para data, valor, descrição e conta.
+- A base histórica só fornece evidência de categoria/subcategoria.
+- Não existe autoclassificação sem ação humana.
+- Despesas são negativas e receitas são positivas.
+- Em cartão, compras são despesas; créditos, estornos, cashback, reembolsos e
+  devoluções podem ser receitas.
+- Competência de cartão usa data de pagamento; vencimento é fallback; depois,
+  nome do arquivo. Datas dos lançamentos nunca definem competência de cartão.
+- Preview é obrigatório.
+- Repetições internas do arquivo são preservadas.
+- Qualquer duplicado já existente no banco bloqueia o lote inteiro.
+- Classificação exige categoria compatível com receita/despesa.
+- Lançamento classificado fica protegido até desbloqueio administrativo.
+- Confirmar vínculo replica categoria/subcategoria sem alterar os dados reais.
+- Rejeitar vínculo impede a repetição do mesmo candidato.
+- Lote padrão exige mesma data, mesmo valor em centavos e descrição >= 75%.
+- Parcelamento compara parcela × total com o histórico, tolerância de R$ 1 e
+  descrição >= 50%; múltiplos candidatos exigem revisão.
+- Parcelas do documento nunca são substituídas pelo total da compra.
+- Conciliação exige uma entrada e uma saída de mesmo valor em centavos.
+- Pares conciliados não entram nos totais dos relatórios.
+- `Antigo`, `Planilha Passada` e `Primeira Planilha` significam histórico sem
+  conta.
+- `Cartao Sulivan` é alias de `CARTAO SANTANDER` somente na base histórica.
 
-## Normalizacoes historicas confirmadas
+## Decisões confirmadas
 
-- `Antigo`, `Planilha Passada` e `Primeira Planilha` significam origem sem conta;
-  seus registros permanecem com `account_id` nulo.
-- `Cartao Sulivan` e alias historico de `CARTAO SANTANDER` apenas na base
-  historica.
-- Formatos `Parcela 1 de 3`, `1/3` e `01/03` sao equivalentes apenas para
-  comparacao. O texto original e preservado.
+- Usar o código como fonte principal da verdade.
+- Preservar dados financeiros existentes durante qualquer evolução.
+- Manter PostgreSQL; não trocar banco sem evidência.
+- Novos schemas devem usar migrations versionadas.
+- Manter fallback inline até existir worker separado homologado.
+- Medir performance antes de criar índices, cache ou novas estruturas.
+- Usar ação humana para classificações e vínculos.
+- Manter Sentry opcional e logs sem payload financeiro.
+- NUMERIC, foreign keys, object storage, calibração estatística e Pluggy não
+  estão autorizados para implementação imediata.
 
-## Itens abandonados
+## Tarefas pendentes confirmadas
 
-- Aplicacao desktop Tkinter/PyInstaller como arquitetura principal.
-- Importacao automatica por pasta ou importacao direta sem preview.
-- Descartar parcelas 2+ ou substituir parcelas pelo total da compra.
-- Autoclassificacao por historico/correspondencia exata.
-- Vinculo automatico sem acao humana.
-- Reinsercao forcada de duplicados existentes no banco.
-- Arquitetura FastAPI, SQLAlchemy e Alembic planejada anteriormente.
+1. Medir performance de vínculos e consultas com o volume atual.
+2. Prefiltrar candidatos no SQL somente se a medição confirmar o gargalo.
+3. Concluir os 13 handlers restantes do backend.
+4. Reduzir novamente os componentes frontend acima de 400 linhas.
+5. Corrigir documentação de arquitetura, API, releases e roadmap.
+6. Homologar os seis documentos privados originais em ambiente seguro.
+7. Validar admin, colaborador, auditoria, logs e Sentry no ambiente hospedado.
+8. Usar migration versionada para qualquer nova mudança de schema.
 
-## Pendencias confirmadas
+## Itens explicitamente abandonados
 
-- Medir e reduzir a lentidao causada pelo crescimento de transacoes e da base
-  historica, seguindo a prioridade Pareto registrada no roadmap.
-- Concluir a separacao real dos handlers/regras por dominio.
-- Manter migrations versionadas obrigatorias para qualquer novo schema.
-- Criar e homologar o Background Worker no Render; web e worker separados ja
-  estao cobertos no CI com PostgreSQL e reinicio do web.
-- Validar Sentry, Vercel, Render e Supabase em staging/producao.
-- Executar regressao manual dos seis formatos oficiais.
-- Ampliar a cobertura E2E alem dos fluxos ja cobertos de vinculos, cofre,
-  colaborador e auditoria.
-- Medir falsos positivos de vinculo e calibracao das sugestoes.
-- Definir o caso de uso futuro de `ledgers`.
-- Backup local consistente do PostgreSQL de producao criado e validado em
-  22/07/2026: 24 tabelas, 17.004 registros, manifesto e SHA-256. O projeto
-  Supabase esta no plano Free e nao inclui backups gerenciados; ainda falta
-  homologar a restauracao desse pacote em um banco descartavel antes da proxima
-  mudanca de schema.
+- Aplicação desktop Tkinter/PyInstaller.
+- FastAPI, SQLAlchemy, Alembic e Docker Compose como arquitetura vigente.
+- SQLite como banco de produção.
+- Importação automática por pasta.
+- Importação direta sem preview.
+- Competência de cartão pelas datas dos lançamentos.
+- Descartar parcelas posteriores ou substituí-las pelo total.
+- Autoclassificação sem ação humana.
+- Vinculação global automática sem seleção/revisão.
+- Reinserção forçada de duplicados existentes.
+- Base histórica obrigatoriamente importada uma única vez.
+- Contas históricas antigas como contas válidas para documentos atuais.
 
-## Avaliacoes depois da estabilizacao
+## Pontos que precisam de confirmação
 
-- Migrar valores monetarios para `NUMERIC` e adicionar testes de arredondamento.
-- Adicionar chaves estrangeiras depois de auditar dados existentes.
-- Migrar documentos para `bytea` ou object storage quando a tabela ultrapassar
-  aproximadamente 200 MB.
-- Remover suporte a token legado em texto puro depois da janela de 30 dias.
-- Avaliar probabilidade estatisticamente calibrada.
-- Avaliar Pluggy/Open Finance somente em uma fase futura confirmada.
+- Regra de data do vínculo parcelado em lote: o código estrito atual não exige
+  proximidade de data, enquanto o vínculo individual exige até 7 dias.
+- Se `ledgers/Contas Correntes` é funcionalidade permanente.
+- Aprovação de custo para Background Worker separado no Render.
+- Necessidade de telas próprias para usuários e auditoria.
+- Destino do endpoint `/system/audit-snapshot` e do script de auditoria local.
+- Se a restauração do backup volta a ser bloqueio antes da próxima migration.
+- Quando divergência de saldo ou linhas rejeitadas deve bloquear uma importação.
+- Quando remover com segurança os reparos financeiros específicos ainda
+  presentes no bootstrap.
