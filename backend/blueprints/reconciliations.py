@@ -45,6 +45,18 @@ def _reconciliation_tx_payload(row: Any, offset: int) -> dict[str, Any]:
     }
 
 
+def _candidate_pagination() -> tuple[int, int]:
+    try:
+        page = int(request.args.get("page") or 1)
+    except (TypeError, ValueError):
+        page = 1
+    try:
+        page_size = int(request.args.get("page_size") or 100)
+    except (TypeError, ValueError):
+        page_size = 100
+    return max(1, page), min(100, max(1, page_size))
+
+
 @bp.route("/api/v1/reconciliations")
 def reconciliations():
     view = (request.args.get("view") or "candidates").strip().lower()
@@ -89,6 +101,7 @@ def reconciliations():
                 }
             )
 
+        page, page_size = _candidate_pagination()
         params = []
         search_sql = ""
         if search:
@@ -113,8 +126,6 @@ def reconciliations():
                    OR r.expense_transaction_id=i.id OR r.income_transaction_id=i.id
               )
               {search_sql}
-            ORDER BY e.date DESC,i.date DESC
-            LIMIT 500
             """,
             params,
         ).fetchall()
@@ -139,8 +150,27 @@ def reconciliations():
                 "date_difference_days": date_difference,
             }
         )
-    candidates.sort(key=lambda item: (item["date_difference_days"], -item["amount"]))
-    return jsonify({"items": candidates[:100]})
+    candidates.sort(
+        key=lambda item: (
+            item["date_difference_days"],
+            -item["amount"],
+            item["expense"]["date"],
+            item["income"]["date"],
+            item["expense"]["id"],
+            item["income"]["id"],
+        )
+    )
+    total = len(candidates)
+    start = (page - 1) * page_size
+    return jsonify(
+        {
+            "items": candidates[start : start + page_size],
+            "page": page,
+            "page_size": page_size,
+            "total": total,
+            "has_more": start + page_size < total,
+        }
+    )
 
 
 @bp.route("/api/v1/reconciliations", methods=["POST"])

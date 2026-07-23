@@ -27,7 +27,7 @@ lançamentos financeiros reais.
 - Backend: Render com `WORKER_MODE=inline`.
 - Frontend: Vercel.
 - CI atual aprovada: testes Python, PostgreSQL 16, TypeScript, build e 9 E2E.
-- O código contém 110 métodos de teste Python.
+- O código contém 111 métodos de teste Python.
 - Existem 64 rotas: 51 implementadas nos blueprints e 13 ainda no núcleo.
 - O repositório está em uso com dados reais; mudanças devem preservar
   classificações, vínculos, conciliações, auditoria e documentos.
@@ -70,6 +70,8 @@ lançamentos financeiros reais.
   revisão de vínculo e informa separadamente o que não foi aplicado.
 - Planos de parcelas e propagação confirmada de categoria/subcategoria.
 - Conciliação reversível de entradas e saídas.
+- Lista completa e paginada de candidatos à conciliação, ordenada por
+  proximidade de data.
 - Relatórios por competência e categoria.
 - Exportação administrativa de auditoria financeira em Excel.
 - Exportação de auditoria homologada em produção com geração XLSX em

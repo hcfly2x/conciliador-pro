@@ -506,10 +506,22 @@ export interface ReconciliationRecord {
   created_at: string
 }
 
-export async function getReconciliations(view: 'candidates' | 'completed', search = ''): Promise<{ items: Array<ReconciliationCandidate | ReconciliationRecord> }> {
+export interface ReconciliationsResponse {
+  items: Array<ReconciliationCandidate | ReconciliationRecord>
+  page?: number
+  page_size?: number
+  total?: number
+  has_more?: boolean
+}
+
+export async function getReconciliations(view: 'candidates' | 'completed', search = '', page = 1): Promise<ReconciliationsResponse> {
   if (USE_MOCK) { await delay(); return { items: [] } }
   const params = new URLSearchParams({ view })
   if (search) params.set('search', search)
+  if (view === 'candidates') {
+    params.set('page', String(page))
+    params.set('page_size', '100')
+  }
   return http('GET', `/reconciliations?${params}`)
 }
 

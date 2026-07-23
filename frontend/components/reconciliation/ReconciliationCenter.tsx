@@ -34,23 +34,36 @@ export default function ReconciliationCenter() {
   const { addToast, bumpRefresh } = useStore()
   const [view, setView] = useState<View>('candidates')
   const [search, setSearch] = useState('')
+  const [page, setPage] = useState(1)
   const [items, setItems] = useState<Array<ReconciliationCandidate | ReconciliationRecord>>([])
+  const [totalCandidates, setTotalCandidates] = useState(0)
   const [loading, setLoading] = useState(false)
   const [busyId, setBusyId] = useState('')
 
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      const response = await getReconciliations(view, search)
+      const response = await getReconciliations(view, search, page)
       setItems(response.items)
+      setTotalCandidates(response.total || 0)
     } catch {
       addToast('Nao foi possivel carregar as conciliacoes', 'err')
     } finally {
       setLoading(false)
     }
-  }, [addToast, search, view])
+  }, [addToast, page, search, view])
 
   useEffect(() => { load() }, [load])
+
+  function selectView(nextView: View) {
+    setView(nextView)
+    setPage(1)
+  }
+
+  function changeSearch(value: string) {
+    setSearch(value)
+    setPage(1)
+  }
 
   async function reconcile(item: ReconciliationCandidate) {
     const key = `${item.expense.id}:${item.income.id}`
@@ -98,12 +111,12 @@ export default function ReconciliationCenter() {
       </div>
 
       <div className="flex flex-wrap items-center gap-2">
-        <button onClick={() => setView('candidates')} className="rounded-lg px-4 py-2 text-sm font-semibold" style={{ background: view === 'candidates' ? 'rgba(201,168,76,.17)' : '#1a1e28', color: view === 'candidates' ? '#e8c96e' : '#8b90a4', border: `1px solid ${view === 'candidates' ? 'rgba(201,168,76,.4)' : 'rgba(255,255,255,.07)'}` }}>Para conciliar</button>
-        <button onClick={() => setView('completed')} className="rounded-lg px-4 py-2 text-sm font-semibold" style={{ background: view === 'completed' ? 'rgba(62,207,142,.12)' : '#1a1e28', color: view === 'completed' ? '#6ee7b7' : '#8b90a4', border: `1px solid ${view === 'completed' ? 'rgba(62,207,142,.3)' : 'rgba(255,255,255,.07)'}` }}>Ja conciliados</button>
-        <div className="relative ml-auto w-full sm:w-72"><Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-[#5a5f73]" /><input value={search} onChange={event => setSearch(event.target.value)} placeholder="Buscar descricao ou conta..." className="h-10 w-full rounded-lg pl-9 pr-3 text-sm text-[#e8eaf0] outline-none" style={{ background: '#1a1e28', border: '1px solid rgba(255,255,255,.09)' }} /></div>
+        <button onClick={() => selectView('candidates')} className="rounded-lg px-4 py-2 text-sm font-semibold" style={{ background: view === 'candidates' ? 'rgba(201,168,76,.17)' : '#1a1e28', color: view === 'candidates' ? '#e8c96e' : '#8b90a4', border: `1px solid ${view === 'candidates' ? 'rgba(201,168,76,.4)' : 'rgba(255,255,255,.07)'}` }}>Para conciliar</button>
+        <button onClick={() => selectView('completed')} className="rounded-lg px-4 py-2 text-sm font-semibold" style={{ background: view === 'completed' ? 'rgba(62,207,142,.12)' : '#1a1e28', color: view === 'completed' ? '#6ee7b7' : '#8b90a4', border: `1px solid ${view === 'completed' ? 'rgba(62,207,142,.3)' : 'rgba(255,255,255,.07)'}` }}>Ja conciliados</button>
+        <div className="relative ml-auto w-full sm:w-72"><Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-[#5a5f73]" /><input value={search} onChange={event => changeSearch(event.target.value)} placeholder="Buscar descricao ou conta..." className="h-10 w-full rounded-lg pl-9 pr-3 text-sm text-[#e8eaf0] outline-none" style={{ background: '#1a1e28', border: '1px solid rgba(255,255,255,.09)' }} /></div>
       </div>
 
-      {view === 'candidates' && <div className="rounded-lg border border-blue-400/15 bg-blue-400/[.05] px-4 py-3 text-xs text-blue-200">Mostramos somente pares com uma entrada e uma saida de valor exatamente igual. A ordem prioriza as datas mais proximas; nada e vinculado automaticamente.</div>}
+      {view === 'candidates' && <div className="rounded-lg border border-blue-400/15 bg-blue-400/[.05] px-4 py-3 text-xs text-blue-200">Mostramos todos os pares com uma entrada e uma saida de valor exatamente igual. A ordem prioriza as datas mais proximas; use as paginas para navegar. Nada e vinculado automaticamente.</div>}
 
       {loading ? <div className="py-20 text-center"><Loader2 className="mx-auto animate-spin text-[#c9a84c]" /></div> : items.length === 0 ? (
         <div className="rounded-xl py-20 text-center text-sm text-[#8b90a4]" style={{ background: '#13161d', border: '1px solid rgba(255,255,255,.07)' }}>{view === 'candidates' ? 'Nenhum par de mesmo valor disponivel para conciliar.' : 'Nenhuma conciliacao registrada.'}</div>
@@ -121,6 +134,14 @@ export default function ReconciliationCenter() {
           </div>
         </article>
       })}</div>}
+
+      {view === 'candidates' && totalCandidates > 0 && <div className="flex items-center justify-between gap-3 text-sm text-[#8b90a4]">
+        <span>Pagina {page} de {Math.ceil(totalCandidates / 100)} ({totalCandidates} pares)</span>
+        <div className="flex gap-2">
+          <button onClick={() => setPage(current => Math.max(1, current - 1))} disabled={page === 1 || loading} className="rounded-md px-3 py-2 disabled:opacity-40" style={{ background: '#1a1e28', border: '1px solid rgba(255,255,255,.09)' }}>Anterior</button>
+          <button onClick={() => setPage(current => current + 1)} disabled={page >= Math.ceil(totalCandidates / 100) || loading} className="rounded-md px-3 py-2 disabled:opacity-40" style={{ background: '#1a1e28', border: '1px solid rgba(255,255,255,.09)' }}>Proxima</button>
+        </div>
+      </div>}
     </div>
   )
 }

@@ -1305,6 +1305,71 @@ class ReconciliationIntegrationTests(unittest.TestCase):
         self.assertEqual(inverted.status_code, 400)
         self.assertEqual(inverted.get_json()["code"], "TYPE_MISMATCH")
 
+    def test_reconciliation_candidates_are_complete_and_paginated(self) -> None:
+        rows = []
+        for value in [*range(1, 200), *range(201, 250), *range(251, 503)]:
+            rows.extend(
+                [
+                    (
+                        f"expense-{value}",
+                        f"expense-key-{value}",
+                        "2026-02-01",
+                        "2026/02",
+                        "PAGAMENTO DE FATURA",
+                        "pagamento de fatura",
+                        -value,
+                        "expense",
+                        "reconciled" if value == 1 else "pending",
+                        "bank-a",
+                        "file-a",
+                        1 if value == 1 else 0,
+                    ),
+                    (
+                        f"income-{value}",
+                        f"income-key-{value}",
+                        "2026-02-01",
+                        "2026/02",
+                        "PAGAMENTO DE FATURA",
+                        "pagamento de fatura",
+                        value,
+                        "income",
+                        "reconciled" if value == 1 else "pending",
+                        "bank-b",
+                        "file-b",
+                        1 if value == 1 else 0,
+                    ),
+                ]
+            )
+        self.conn.executemany(
+            """
+            INSERT INTO transactions(
+              id,tx_key,date,competence_month,description,description_norm,amount,type,status,
+              account_id,imported_file_id,locked
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            rows,
+        )
+
+        first = self.client.get("/api/v1/reconciliations?view=candidates&page=1")
+        fifth = self.client.get("/api/v1/reconciliations?view=candidates&page=5")
+        sixth = self.client.get("/api/v1/reconciliations?view=candidates&page=6")
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(first.get_json()["total"], 501)
+        self.assertEqual(len(first.get_json()["items"]), 100)
+        self.assertTrue(first.get_json()["has_more"])
+        self.assertIn(
+            "expense-1",
+            {item["expense"]["id"] for item in fifth.get_json()["items"]},
+        )
+        self.assertEqual(sixth.status_code, 200)
+        self.assertEqual(len(sixth.get_json()["items"]), 1)
+        self.assertFalse(sixth.get_json()["has_more"])
+        self.assertIn(
+            "expense",
+            {item["expense"]["id"] for item in sixth.get_json()["items"]},
+        )
+
 
 class FinancialReportingIntegrationTests(unittest.TestCase):
     def setUp(self) -> None:
