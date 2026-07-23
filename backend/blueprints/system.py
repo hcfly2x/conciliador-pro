@@ -8,6 +8,7 @@ import io
 import json
 import logging
 import os
+import re
 import shutil
 import zipfile
 from collections.abc import Iterable, Iterator
@@ -182,6 +183,10 @@ AUDIT_COLUMNS = [
     ("Documento guardado em", "stored_document_created_at"),
 ]
 
+# XML 1.0 nao permite estes controles dentro de uma celula. Eles podem chegar
+# de textos extraidos de PDF e fariam o openpyxl abortar toda a exportacao.
+_ILLEGAL_EXCEL_CHARACTERS = re.compile(r"[\x00-\x08\x0B\x0C\x0E-\x1F]")
+
 
 def _audit_transaction_rows(conn) -> Iterator[dict]:
     cursor = conn.execute(
@@ -259,17 +264,24 @@ def _excel_audit_value(key: str, value):
         return ""
     if key in {"locked", "history_match_confirmed"}:
         return "Sim" if value else "Não"
-    if key in {"date", "history_date", "counterpart_date"} and isinstance(value, str):
-        try:
-            return dt.date.fromisoformat(value[:10])
-        except ValueError:
-            return value
-    if key in {"classified_at", "reconciliation_created_at", "imported_at", "stored_document_created_at"} and isinstance(value, str):
-        try:
-            parsed = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
-            return parsed.replace(tzinfo=None)
-        except ValueError:
-            return value
+    if key in {"date", "history_date", "counterpart_date"}:
+        if isinstance(value, dt.datetime):
+            return value.date()
+        if isinstance(value, str):
+            try:
+                return dt.date.fromisoformat(value[:10])
+            except ValueError:
+                pass
+    if key in {"classified_at", "reconciliation_created_at", "imported_at", "stored_document_created_at"}:
+        if isinstance(value, str):
+            try:
+                value = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+            except ValueError:
+                pass
+        if isinstance(value, dt.datetime) and value.tzinfo is not None:
+            return value.astimezone(dt.timezone.utc).replace(tzinfo=None)
+    if isinstance(value, str):
+        return _ILLEGAL_EXCEL_CHARACTERS.sub(" ", value)
     return value
 
 
