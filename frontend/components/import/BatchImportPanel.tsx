@@ -102,7 +102,7 @@ export default function BatchImportPanel() {
           if (blockers.length) {
             updateItem(id, {
               ...base,
-              status: preview.duplicates_db > 0 ? 'skipped' : 'review',
+              status: 'review',
               detail: blockers.join('; '),
             })
             continue

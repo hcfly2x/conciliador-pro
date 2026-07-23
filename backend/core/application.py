@@ -4458,8 +4458,8 @@ def import_document(
         internal_duplicates = sum(max(0, c - 1) for c in internal_counter.values())
 
         # Repeticoes internas representam ocorrencias reais distintas e sao preservadas.
-        # Qualquer coincidencia com o banco bloqueia o lote inteiro: indica que o
-        # arquivo (ou parte dele) ja foi importado e evita contabilidade parcial.
+        # Sobreposicoes com documentos anteriores so podem ser ignoradas mediante
+        # confirmacao explicita. O hash integral continua bloqueando reimportacoes.
         db_counts = {
             r["sig"]: existing_db_duplicate_count(conn, acc[0], r) for r in parsed_rows
         }
@@ -4470,11 +4470,12 @@ def import_document(
             if preview_occ[r["sig"]] <= db_counts.get(r["sig"], 0):
                 existing_db_duplicates += 1
 
-        if existing_db_duplicates > 0:
+        if existing_db_duplicates > 0 and not confirm_duplicates:
             return {
                 "detail": (
                     f"Importacao bloqueada: {existing_db_duplicates} lancamento(s) do arquivo "
-                    "ja existem no banco. Isso indica que o arquivo ja foi importado."
+                    "ja existem no banco. Confirme a sobreposicao para importar apenas "
+                    "os lancamentos novos."
                 ),
                 "code": "DATABASE_DUPLICATES_FOUND",
                 "duplicates_found": existing_db_duplicates,
@@ -4508,6 +4509,18 @@ def import_document(
             progress("saving", 0, len(parsed_rows), "Salvando lancamentos no banco")
         for row_index, r in enumerate(parsed_rows, start=1):
             occ[r["sig"]] = occ.get(r["sig"], 0) + 1
+            if occ[r["sig"]] <= db_counts.get(r["sig"], 0):
+                duplicates_db += 1
+                if progress and (
+                    row_index == len(parsed_rows) or row_index % 25 == 0
+                ):
+                    progress(
+                        "saving",
+                        row_index,
+                        len(parsed_rows),
+                        f"{row_index} de {len(parsed_rows)} lancamentos conferidos",
+                    )
+                continue
 
             # Ocorrencias internas repetidas sao legitimas e recebem chaves distintas.
             key = (
@@ -4908,12 +4921,6 @@ def import_preview():
                 import_meta.get("empty_statement_confirmed")
             ):
                 critical_errors.append("Nenhum lancamento foi identificado no arquivo.")
-            if existing_db_duplicates > 0:
-                critical_errors.append(
-                    f"{existing_db_duplicates} lancamento(s) ja existem no banco. "
-                    "O arquivo foi bloqueado para evitar uma importacao repetida."
-                )
-
         return jsonify(
             {
                 "preview_id": preview_id,
