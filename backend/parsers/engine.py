@@ -1510,7 +1510,7 @@ def _santander_statement_type(description: str, amount_text: str) -> str:
 def _clean_santander_statement_desc(description: str) -> str:
     desc = re.sub(r"\s+", " ", description or "").strip(" -")
     starter = re.search(
-        r"\b(PIX|IOF|TARIFA|DEBITO|CREDITO|PAGAMENTO|PGTO|REMUNERACAO|JUROS|APLICACAO|RESGATE)\b",
+        r"\b(PIX|IOF|TARIFA|DEBITO|CREDITO|CONTA|PAGAMENTO|PGTO|REMUNERACAO|JUROS|APLICACAO|RESGATE)\b",
         desc,
         re.IGNORECASE,
     )
@@ -1530,29 +1530,45 @@ def _parse_santander_movement_statement(
 
     Esse PDF tambem possui secoes de comprovantes e resumos, que sao
     incompletas. A fonte primaria e o bloco entre SALDO EM dd/mm inicial
-    e SALDO EM dd/mm final.
+    e SALDO EM dd/mm final. Alguns layouts novos nao entregam essas linhas
+    na extracao de texto; nesses casos, usa Movimentacao/Saldos por Periodo.
     """
     raw_lines = [re.sub(r"\s+", " ", (ln or "").strip()) for ln in text.splitlines()]
     lines = [ln for ln in raw_lines if ln]
     saldo_re = r"-?\d{1,3}(?:\.\d{3})*,\d{2}-?"
+    amount_re = re.compile(saldo_re)
     start_re = re.compile(rf"^SALDO EM \d{{2}}/\d{{2}}\s+{saldo_re}$", re.IGNORECASE)
     end_re = re.compile(rf"^SALDO EM \d{{2}}/\d{{2}}\s+{saldo_re}$", re.IGNORECASE)
 
     start_idx = None
+    has_explicit_start = False
     for idx, line in enumerate(lines):
         if start_re.match(line):
             start_idx = idx
+            has_explicit_start = True
             break
+    if start_idx is None:
+        for idx, line in enumerate(lines):
+            if norm_text(line) == "movimentacao":
+                start_idx = idx
+                break
     if start_idx is None:
         return None
 
-    saldo_anterior = parse_money(lines[start_idx].split()[-1])
+    saldo_anterior = (
+        parse_money(lines[start_idx].split()[-1]) if has_explicit_start else None
+    )
     block: list[str] = []
     saldo_final = None
+    daily_balances: list[float] = []
     for line in lines[start_idx + 1 :]:
         line_norm = norm_text(line)
-        if end_re.match(line):
+        if has_explicit_start and end_re.match(line):
             saldo_final = parse_money(line.split()[-1])
+            break
+        if line_norm.startswith("saldos por periodo") or line_norm.startswith(
+            "comprovantes de pagamento"
+        ):
             break
         if "data descricao" in line_norm or "pagina" in line_norm:
             continue
@@ -1561,13 +1577,44 @@ def _parse_santander_movement_statement(
         ):
             continue
         block.append(line)
+        amounts = amount_re.findall(line)
+        if len(amounts) >= 2:
+            possible_balance = parse_money(amounts[-1])
+            if possible_balance is not None:
+                daily_balances.append(possible_balance)
 
     if not block:
         return None
 
+    if not has_explicit_start and daily_balances:
+        saldo_final = daily_balances[-1]
+
+    if not has_explicit_start and saldo_final is not None:
+        summary_labels = {
+            "depositos transferencias": "credit_transfers",
+            "outros creditos": "other_credits",
+            "pagamentos transferencias": "debit_transfers",
+            "outros debitos": "other_debits",
+        }
+        summary: dict[str, float] = {}
+        for line in lines[:start_idx]:
+            line_norm = norm_text(line)
+            for label, key in summary_labels.items():
+                if not line_norm.startswith(label):
+                    continue
+                values = amount_re.findall(line)
+                if values:
+                    value = parse_money(values[-1])
+                    if value is not None:
+                        summary[key] = abs(value)
+                break
+        if len(summary) == len(summary_labels):
+            total_credits = summary["credit_transfers"] + summary["other_credits"]
+            total_debits = summary["debit_transfers"] + summary["other_debits"]
+            saldo_anterior = round(saldo_final - total_credits + total_debits, 2)
+
     ref_year = _infer_statement_year(text, filename)
     ref_month = _infer_statement_month(text, filename)
-    amount_re = re.compile(r"-?\d{1,3}(?:\.\d{3})*,\d{2}-?")
     date_re = re.compile(r"^(\d{2}/\d{2})\s+(.*)$")
     tx_starters = (
         "PIX ",
@@ -1575,6 +1622,7 @@ def _parse_santander_movement_statement(
         "TARIFA ",
         "DEBITO ",
         "CREDITO ",
+        "CONTA ",
         "PAGAMENTO ",
         "PGTO ",
         "REMUNERACAO ",

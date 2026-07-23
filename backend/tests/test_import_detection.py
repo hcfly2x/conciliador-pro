@@ -12,6 +12,7 @@ from parsers.engine import (
     _is_explicit_empty_nubank_text,
     _parse_credit_card_pdf_text,
     _parse_nubank_statement,
+    _parse_santander_movement_statement,
     enrich_transaction,
     run_import_pipeline,
 )
@@ -573,6 +574,68 @@ class SuggestionJobTests(unittest.TestCase):
 
 
 class InstallmentTests(unittest.TestCase):
+    def test_santander_statement_without_extracted_balance_labels_keeps_debits(self) -> None:
+        text = """
+        EXTRATO CONSOLIDADO INTELIGENTE
+        março/2026
+        Depósitos / Transferências 1.500,00
+        Outros Créditos 0,10
+        Pagamentos / Transferências 300,00
+        Outros Débitos 0,00
+        Movimentação
+        02/03 PIX RECEBIDO CLIENTE TESTE - 1.000,00
+        03/03 CONTA DE AGUA E ESGOTO EM CANAIS
+        INTERNET SANEAMENTO TESTE
+        - 100,00-
+        PIX ENVIADO FORNECEDOR TESTE - 200,00-
+        PIX RECEBIDO OUTRO CLIENTE - 500,00
+        REMUNERACAO APLICACAO AUTOMATICA - 0,10 2.200,10
+        Saldos por Período
+        03 2.200,10 0,00 0,00 0,00 0,00 0,00 2.200,10
+        Comprovantes de Pagamento
+        03/03 INTERNET BANKING PIX FORNECEDOR TESTE 200,00
+        """
+
+        parsed = _parse_santander_movement_statement(
+            text, "Extrato - 03-26 - Santander.pdf"
+        )
+
+        self.assertIsNotNone(parsed)
+        raw, balance = parsed
+        self.assertEqual(
+            sorted(
+                (row.date, row.tx_type_raw, row.amount_raw, row.description_raw)
+                for row in raw
+            ),
+            sorted(
+                [
+                    ("2026-03-02", "income", 1000.0, "PIX RECEBIDO CLIENTE TESTE"),
+                    (
+                        "2026-03-03",
+                        "expense",
+                        100.0,
+                        "CONTA DE AGUA E ESGOTO EM CANAIS INTERNET SANEAMENTO TESTE",
+                    ),
+                    (
+                        "2026-03-03",
+                        "expense",
+                        200.0,
+                        "PIX ENVIADO FORNECEDOR TESTE",
+                    ),
+                    ("2026-03-03", "income", 500.0, "PIX RECEBIDO OUTRO CLIENTE"),
+                    (
+                        "2026-03-03",
+                        "income",
+                        0.1,
+                        "REMUNERACAO APLICACAO AUTOMATICA",
+                    ),
+                ]
+            ),
+        )
+        self.assertTrue(balance.ok)
+        self.assertEqual(balance.saldo_anterior, 1000.0)
+        self.assertEqual(balance.saldo_final_declarado, 2200.1)
+
     def test_santander_pdf_uses_brl_credit_section_and_undated_iof(self) -> None:
         text = """
         Vencimento 20/10/2025
