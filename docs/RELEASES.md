@@ -5,6 +5,7 @@ schema e ao modo operacional que preservam os dados de producao.
 
 | Data | Commit | Schema | Backend | Executor de jobs | Evidencia |
 |---|---|---:|---|---|---|
+| 23/07/2026 | `fabafb6` | 2 (confirmado pelo health) | Render/PostgreSQL | `inline` no web | CI completo verde; exportacao XLSX em streaming e compatibilidade do cursor PostgreSQL; download de auditoria confirmado em producao pelo proprietario |
 | 22/07/2026 | `e73adfd` | 2 (runner; confirmacao publica pendente) | Render/PostgreSQL | `inline` no web | CI verde, health 200, 40 requests concorrentes, importacao e vinculo em lote confirmados pelo proprietario |
 | 22/07/2026 | `d4699b2` | 2 (confirmado pelo health) | Render/PostgreSQL | `inline` no web | CI completo verde, Vercel 200, health 200 e processamento de vinculos em blocos de 10 |
 | 22/07/2026 | `c853b14` | 2 (confirmado pelo health) | Render/PostgreSQL | `inline` no web | CI completo verde; vinculo em lote com limiar de 75%, progresso visual e persistencia homologados pelo proprietario |

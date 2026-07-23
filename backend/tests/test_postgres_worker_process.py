@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import io
 import os
 import subprocess
 import sys
@@ -19,6 +20,24 @@ DATABASE_URL = (os.environ.get("DATABASE_URL") or "").strip()
     "requer PostgreSQL descartavel configurado em DATABASE_URL",
 )
 class PostgresWorkerProcessIntegrationTests(unittest.TestCase):
+    def test_audit_export_generates_xlsx_with_postgres_cursor(self) -> None:
+        from openpyxl import load_workbook
+
+        import app as app_module
+
+        client = app_module.app.test_client()
+        response = client.get("/api/v1/system/audit-export")
+
+        if response.status_code != 200:
+            self.fail(response.get_data(as_text=True))
+        self.assertEqual(
+            response.mimetype,
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+        workbook = load_workbook(io.BytesIO(response.data), read_only=True)
+        self.assertEqual(workbook.sheetnames, ["Lançamentos", "Resumo", "Dicionário"])
+        self.assertEqual(workbook["Resumo"]["B3"].value, 0)
+
     def test_worker_survives_web_restart_with_persisted_job(self) -> None:
         import psycopg
 

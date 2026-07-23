@@ -1,6 +1,6 @@
 # Roadmap vigente de finalizacao - Conciliador Pro
 
-Atualizado em 22/07/2026. Este e o checklist operacional vigente. O codigo e a
+Atualizado em 23/07/2026. Este e o checklist operacional vigente. O codigo e a
 fonte principal da verdade e `PROJECT_CONTEXT.md` consolida as regras do produto.
 Os demais roadmaps sao historicos ou entradas de code review.
 
@@ -21,10 +21,11 @@ fazer esforcos grandes em problemas pequenos ou otimizacoes nao medidas.
 
 ## Marco atual
 
-- `origin/main`, Vercel e Render: commit `c853b14`.
+- Ultima correcao funcional homologada em `origin/main`, Vercel e Render:
+  `fabafb6`; confirmar o runtime atual pelo health do backend.
 - Producao usa PostgreSQL e `WORKER_MODE=inline` no unico web service do Render.
-- Validacao: 95 testes Python locais na rodada atual, PostgreSQL descartavel no CI,
-  TypeScript, build e 8 jornadas Playwright aprovados.
+- Validacao: 103 testes Python locais, PostgreSQL descartavel no CI, TypeScript,
+  build e 9 jornadas Playwright aprovados.
 - O proprietario confirmou em producao importacao de extrato e vinculo em lote.
 - O health publicado confirma PostgreSQL, schema 2 e executor inline.
 
@@ -46,6 +47,8 @@ Decisoes e ressalvas completas em
   parcelado.
 - [x] Separar `bumpRefresh` da recarga de contas, categorias, subcategorias e
   meses; mutacoes operacionais devem atualizar somente estado e totais afetados.
+- [x] Executar a exportacao administrativa de auditoria contra o PostgreSQL 16
+  descartavel do CI, cobrindo a interface DB-API usada para gerar o XLSX.
 
 ### P1 - atacar o gargalo dominante com evidencia
 
@@ -158,8 +161,9 @@ Decisoes e ressalvas completas em
 ## 6. Frontend
 
 - [x] Extrair controles, grid e modal de historico da tabela de transacoes.
-- [x] Reduzir todos os componentes da tabela para menos de 400 linhas;
-  `useTransactionTable.tsx` possui 382 linhas.
+- [~] A tabela foi separada em controles, grid e modal, mas
+  `useTransactionTable.tsx` voltou a 405 linhas. `app/arquivos/page.tsx` (479)
+  e `ImportPage.tsx` (432) tambem precisam ser reduzidos.
 - [x] Remover configuracao Tailwind duplicada.
 - [x] Normalizar BOM/LF e adicionar `.gitattributes`.
 - [x] Manter progresso visual de operacoes longas, com barra, contadores e logs
@@ -176,10 +180,11 @@ Decisoes e ressalvas completas em
 - [x] Sentry opcional no backend e frontend, desligado sem DSN.
 - [ ] Confirmar erro controlado no Sentry de staging.
 - [ ] Confirmar formato JSON e correlacao de logs no ambiente hospedado.
-- [x] Confirmar commits atuais: Vercel e Render em `c853b14`.
+- [x] Homologar em producao a exportacao administrativa de auditoria no commit
+  `fabafb6`, com download confirmado pelo proprietario.
 - [~] Fazer smoke test em Vercel, Render e Supabase: frontend, health PostgreSQL,
-  CSP, CORS, 401, importacao real e vinculo em lote aprovados; matriz completa
-  de perfis e auditoria ainda aguarda homologacao dirigida.
+  CSP, CORS, 401, importacao real, vinculo em lote e exportacao de auditoria
+  aprovados; a matriz completa de perfis ainda aguarda homologacao dirigida.
 - [ ] Validar admin, colaborador e auditoria no ambiente hospedado.
 
 ## 8. Dados persistentes e schema
@@ -198,7 +203,7 @@ Decisoes e ressalvas completas em
 
 ## 9. Documentacao e limpeza
 
-- [x] Atualizar `PROJECT_CONTEXT.md` e este roadmap para o estado de 22/07/2026.
+- [x] Atualizar `PROJECT_CONTEXT.md` e este roadmap para o estado de 23/07/2026.
 - [x] Marcar roadmaps antigos como historicos/supersedidos.
 - [x] Atualizar contexto, arquitetura, API, banco, deploy e README para a rodada
   atual; revisar novamente ao concluir os dominios grandes.
