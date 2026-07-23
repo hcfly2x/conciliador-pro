@@ -103,6 +103,16 @@ class SqlTranslationTests(unittest.TestCase):
             "INSERT INTO x(a,b) VALUES (%s,%s)", [(1, 2), (3, 4)]
         )
 
+    def test_postgres_cursor_exposes_dbapi_description(self) -> None:
+        raw_cursor = mock.Mock()
+        raw_cursor.rowcount = 1
+        raw_cursor.description = [("transaction_id", None, None, None, None, None, None)]
+
+        cursor = db._PgCursor(raw_cursor)
+
+        self.assertIs(cursor.description, raw_cursor.description)
+        self.assertEqual([item[0] for item in cursor.description], ["transaction_id"])
+
 
 class PoolFallbackTests(unittest.TestCase):
     def tearDown(self) -> None:
