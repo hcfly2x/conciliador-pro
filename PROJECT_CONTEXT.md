@@ -52,6 +52,8 @@ lançamentos financeiros reais.
 
 - Login, logout, usuários via API, RBAC, auditoria e rate limit.
 - Importação de CSV, XLS, XLSX e PDF com detecção, preview e confirmação.
+- Importação sequencial de múltiplos arquivos selecionados, reutilizando a
+  mesma prévia, qualidade, deduplicação e confirmação do fluxo individual.
 - Parsers Santander, Nubank e XP para conta e cartão.
 - Detecção/correção de conta e competência.
 - Jobs com progresso, logs e retomada visual após refresh.
