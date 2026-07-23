@@ -1018,6 +1018,59 @@ def system_audit_export():
     )
 
 
+@bp.route("/api/v1/system/repair-santander-cards", methods=["POST"])
+def system_repair_santander_cards():
+    application = _application()
+    forbidden = application.require_admin()
+    if forbidden:
+        return forbidden
+
+    from repairs.santander_cards import (
+        CONFIRMATION,
+        RepairConflict,
+        repair_santander_cards,
+    )
+
+    payload = request.get_json(silent=True) or {}
+    dry_run = bool(payload.get("dry_run", True))
+    if not dry_run and payload.get("confirmation") != CONFIRMATION:
+        return jsonify(
+            {
+                "detail": "Confirmação inválida para corrigir as faturas Santander.",
+                "code": "CONFIRMATION_REQUIRED",
+            }
+        ), 400
+    try:
+        with application.db_connect() as conn:
+            result = repair_santander_cards(
+                conn,
+                application,
+                application.current_user(),
+                dry_run=dry_run,
+            )
+    except RepairConflict as exc:
+        return jsonify(
+            {
+                "detail": (
+                    "Alguns lançamentos mudaram desde a auditoria. "
+                    "Nenhuma correção foi aplicada."
+                ),
+                "code": "REPAIR_PRECONDITION_FAILED",
+                "conflicts": exc.conflicts[:25],
+                "conflict_count": len(exc.conflicts),
+            }
+        ), 409
+    except Exception:
+        logger.exception("Falha ao reparar faturas Santander")
+        return jsonify(
+            {
+                "detail": "Não foi possível corrigir as faturas Santander.",
+                "code": "SANTANDER_REPAIR_FAILED",
+            }
+        ), 500
+    return jsonify(result)
+
+
 @bp.route("/api/v1/system/documents/backfill", methods=["POST"])
 def system_document_backfill():
     """Restaura um original ausente sem reimportar ou alterar lançamentos."""

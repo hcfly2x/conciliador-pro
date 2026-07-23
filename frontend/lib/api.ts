@@ -464,6 +464,31 @@ export async function downloadAuditExport(): Promise<void> {
   window.URL.revokeObjectURL(url)
 }
 
+export interface SantanderCardRepairResult {
+  ok: boolean
+  dry_run: boolean
+  manifest_id: string
+  repair_count: number
+  updates?: number
+  inserts?: number
+  updated?: number
+  inserted?: number
+  already_applied: number
+  conflicts: number
+}
+
+export async function repairSantanderCards(dryRun: boolean): Promise<SantanderCardRepairResult> {
+  return http<SantanderCardRepairResult>(
+    'POST',
+    '/system/repair-santander-cards',
+    {
+      dry_run: dryRun,
+      ...(dryRun ? {} : { confirmation: 'CORRIGIR_FATURAS_SANTANDER' }),
+    },
+    120000,
+  )
+}
+
 export interface DocumentBackfillResult {
   ok: boolean
   status: 'created' | 'linked_existing' | 'already_present'
@@ -814,4 +839,3 @@ export async function getReportMonthly(): Promise<MonthlyReport[]> {
   if (USE_MOCK) { await delay(); return mockMonthlyReport }
   return http<MonthlyReport[]>('GET', '/reports/monthly')
 }
-

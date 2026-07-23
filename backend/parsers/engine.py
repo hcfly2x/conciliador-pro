@@ -1771,6 +1771,15 @@ def _is_explicit_empty_nubank_text(text: str) -> bool:
     )
 
 
+def _is_explicit_empty_xp_text(text: str) -> bool:
+    normalized = norm_text(text)
+    return (
+        "nao ha lancamentos para o periodo" in normalized
+        and "saldo disponivel no final do periodo filtrado" in normalized
+        and "extrato conta digital" in normalized
+    )
+
+
 def is_explicit_empty_statement(
     path: Path,
     fmt: FormatDetection,
@@ -1780,17 +1789,26 @@ def is_explicit_empty_statement(
     if account_type == "credit_card":
         return False
 
-    if fmt.file_format == "pdf" and fmt.bank == "NUBANK" and PdfReader is not None:
+    if (
+        fmt.file_format == "pdf"
+        and fmt.bank in {"NUBANK", "XP"}
+        and PdfReader is not None
+    ):
         try:
             text = "\n".join(
                 (page.extract_text() or "") for page in PdfReader(str(path)).pages
             )
         except Exception:
             logger.warning(
-                "Falha ao verificar se PDF Nubank esta vazio: %s", path, exc_info=True
+                "Falha ao verificar se PDF %s esta vazio: %s",
+                fmt.bank,
+                path,
+                exc_info=True,
             )
             return False
-        return _is_explicit_empty_nubank_text(text)
+        if fmt.bank == "NUBANK":
+            return _is_explicit_empty_nubank_text(text)
+        return _is_explicit_empty_xp_text(text)
 
     if fmt.file_format == "csv" and fmt.bank == "XP":
         try:
