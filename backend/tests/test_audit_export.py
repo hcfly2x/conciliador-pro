@@ -98,6 +98,38 @@ class AuditWorkbookTests(unittest.TestCase):
         )
         self.assertEqual(workbook["Resumo"]["B3"].value, 5_000)
 
+    def test_workbook_sanitizes_xml_controls_and_timezone_datetimes(self):
+        row = {key: "" for _, key in AUDIT_COLUMNS}
+        row.update(
+            transaction_id="tx-dirty",
+            description="Compra\x00 com\x0b controles",
+            notes="linha valida\x1flinha invalida",
+            amount=-1.0,
+            type="expense",
+            status="pending",
+            imported_at=dt.datetime(
+                2026, 7, 22, 9, 30, tzinfo=dt.timezone(dt.timedelta(hours=-3))
+            ),
+        )
+
+        output = _audit_workbook([row], "2026-07-22T12:00:00+00:00")
+        workbook = load_workbook(io.BytesIO(output.getvalue()), data_only=False)
+        transactions = workbook["Lançamentos"]
+        headers = [cell.value for cell in transactions[1]]
+
+        self.assertEqual(
+            transactions.cell(2, headers.index("Descrição") + 1).value,
+            "Compra  com  controles",
+        )
+        self.assertEqual(
+            transactions.cell(2, headers.index("Observações") + 1).value,
+            "linha valida linha invalida",
+        )
+        self.assertEqual(
+            transactions.cell(2, headers.index("Importado em") + 1).value,
+            dt.datetime(2026, 7, 22, 12, 30),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
