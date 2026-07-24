@@ -1,6 +1,7 @@
 # Arquitetura web - Conciliador Pro
 
-Atualizado em 22/07/2026. Para regras de produto, consulte `PROJECT_CONTEXT.md`.
+Atualizado em 24/07/2026. Para regras de produto, consulte `PROJECT_CONTEXT.md`;
+para prioridades, `ROADMAP.md`.
 
 ## Topologia
 
@@ -8,11 +9,11 @@ Atualizado em 22/07/2026. Para regras de produto, consulte `PROJECT_CONTEXT.md`.
 Next.js 15 / Vercel
         | HTTPS + Bearer token
         v
-Flask / Gunicorn / Render ------ Flask worker separado
-        |                              |
-        +---------- PostgreSQL --------+
-                    |
-             filas persistentes
+Flask / Gunicorn / Render (WORKER_MODE=inline)
+        |
+PostgreSQL / Supabase
+        |
+filas persistentes executadas pelo web
 ```
 
 Sem `DATABASE_URL`, backend e worker usam SQLite para desenvolvimento/testes. O
@@ -42,13 +43,15 @@ adicionadas apenas como `ALTER TABLE` solto no nucleo.
 
 ## Jobs
 
-A arquitetura alvo usa `WORKER_MODE=process` e um processo com
+A produção possui somente o web service do Render e usa `WORKER_MODE=inline`.
+Os jobs de importação, base histórica, sugestões e recálculo continuam
+persistidos, com progresso e logs, mas são executados por esse processo web.
+
+A arquitetura futura suportada usa `WORKER_MODE=process` e um processo com
 `WORKER_PROCESS=1`: o web apenas enfileira e o worker reivindica atomicamente um
-job `queued`, muda para `claimed` e executa. A producao atual possui somente o
-web service do Render e, por isso, usa `WORKER_MODE=inline`. Em PostgreSQL, um
-advisory lock exclusivo impede dois workers de recuperar ou consumir a fila
-durante a sobreposicao de processos em um deploy. Somente o worker que obtem
-esse lease recupera jobs interrompidos; o web nunca os refila.
+job `queued`, muda para `claimed` e executa. Em PostgreSQL, advisory lock
+exclusivo evita recuperação/consumo concorrente durante deploys. Essa topologia
+não está ativa e não deve ser tratada como requisito operacional atual.
 
 SQLite local usa `WORKER_MODE=inline` por padrao. Um teste multi-processo valida
 a persistencia da fila e reinicio do web; o CI repete o cenario em PostgreSQL 16.

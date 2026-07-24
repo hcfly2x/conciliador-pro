@@ -1,5 +1,9 @@
 # Homologacao de ambientes - atualizada em 23/07/2026
 
+> Atualização em 24/07/2026: a confirmação mais recente de produção é o health
+> do commit `86150c5fc422`, PostgreSQL, schema 3 e `WORKER_MODE=inline`. As
+> versões listadas abaixo permanecem como evidência histórica da rodada anterior.
+
 Registro cumulativo de validacao. Os testes automatizados e de infraestrutura
 nao alteraram dados financeiros; importacao e vinculo em lote foram executados e
 confirmados pelo proprietario no uso normal do produto.

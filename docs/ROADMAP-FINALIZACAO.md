@@ -1,4 +1,8 @@
-# Roadmap vigente de finalizacao - Conciliador Pro
+# Roadmap histórico de finalização - Conciliador Pro
+
+> Supersedido por `../ROADMAP.md` em 24/07/2026. Mantido como registro de
+> decisões e evidências de julho; seus commits, schema e checklist não definem
+> o trabalho atual.
 
 Atualizado em 23/07/2026. Este e o checklist operacional vigente. O codigo e a
 fonte principal da verdade e `PROJECT_CONTEXT.md` consolida as regras do produto.

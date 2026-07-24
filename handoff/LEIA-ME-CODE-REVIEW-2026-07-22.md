@@ -1,4 +1,6 @@
-# Pacote para code review - 22/07/2026
+# Pacote para code review - 22/07/2026 — HISTÓRICO
+
+> Supersedido por `LEIA-ME-CODE-REVIEW-2026-07-24.md`.
 
 Este pacote representa o estado local atual do Conciliador Pro. Ele inclui
 alteracoes ainda nao commitadas nem publicadas. A producao permanece no commit

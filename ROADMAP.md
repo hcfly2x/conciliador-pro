@@ -1,6 +1,6 @@
 # Roadmap — Conciliador Pro
 
-Atualizado em 23/07/2026. Este plano consolida o roadmap revisado com o
+Atualizado em 24/07/2026. Este plano consolida o roadmap revisado com o
 `PROJECT_CONTEXT.md` e o código da `main`. Aplicamos Pareto: primeiro a
 integridade financeira e a capacidade de operar/restaurar; depois evidência de
 desempenho; só então refatorações grandes ou novos módulos.
@@ -12,12 +12,15 @@ desempenho; só então refatorações grandes ou novos módulos.
   XP 06/2026 corrigidas e validadas pelo usuário.
 - Candidatos de conciliação passaram a ser completos e paginados, sem o corte
   anterior que escondia pares válidos.
+- Classificação em lote agora confirma se itens já classificados devem ser
+  mantidos ou reclassificados; a substituição é exclusiva do administrador e
+  auditada.
 - Base financeira revisada pelo usuário, incluindo XP 06/2026 e Santander
   10/2025.
 
 ## P0 — Confiabilidade operacional (maior retorno imediato)
 
-1. **Runbook de produção e jobs — em implementação.** Manter o deploy real
+1. **Runbook de produção e jobs — concluído nesta rodada.** Manter o deploy real
    documentado: Supabase + Render web em `WORKER_MODE=inline` + Vercel; incluir
    health check, diagnóstico de jobs, rollback e validação pós-release.
 2. **Backups e restauração comprovada.** Definir backup diário do PostgreSQL e

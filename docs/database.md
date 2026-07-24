@@ -1,6 +1,6 @@
 # Banco de dados - estado vigente
 
-Atualizado em 22/07/2026. O DDL executavel em `core/application.py` e as
+Atualizado em 24/07/2026. O DDL executavel em `core/application.py` e as
 migrations em `backend/migrations` prevalecem sobre este resumo.
 
 ## Bancos suportados
@@ -28,7 +28,8 @@ migrations em `backend/migrations` prevalecem sobre este resumo.
 - Repeticoes internas recebem chaves distintas e sao preservadas.
 - Categoria deve existir e corresponder ao tipo receita/despesa.
 - Subcategoria deve existir.
-- Lancamento protegido exige desbloqueio auditado.
+- Lancamento protegido exige desbloqueio auditado. A exceção é a reclassificação
+  explícita em lote por admin (`include_classified`), também auditada.
 - Uma transacao nao pode participar de duas conciliacoes ativas.
 - Uma base historica nova so substitui a anterior depois de produzir registros.
 
@@ -53,7 +54,9 @@ valores existentes e planejar conversao reversivel.
 
 O runner recusa migration desconhecida ou alterada depois de aplicada. A versao
 1 marca o schema legado como baseline; a versao 2 adiciona indices das filas por
-`(status, created_at)`. Novas mudancas devem receber uma nova versao e teste de
+`(status, created_at)`; e a versao 3 restaura, de forma idempotente e
+especifica, uma ocorrência real de pagamento de fatura Santander de agosto/2024
+que havia sido omitida. Novas mudancas devem receber uma nova versao e teste de
 idempotencia.
 
 ## Backup

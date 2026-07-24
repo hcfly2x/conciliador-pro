@@ -1,6 +1,7 @@
 # PROJECT_CONTEXT.md — Conciliador Pro
 
-Atualizado em 23/07/2026, após revisão de código e validação operacional.
+Atualizado em 24/07/2026, após a publicação da confirmação de reclassificação
+em lote e a revisão documental.
 
 O código atual é a fonte principal da verdade. Documentos marcados como
 históricos não definem requisitos. Ideias antigas só voltam ao projeto mediante
@@ -21,13 +22,13 @@ lançamentos financeiros reais.
 - Branch oficial: `main`.
 - A `main`, a Vercel e o Render acompanham o mesmo fluxo de release. O health
   do backend é a fonte operacional para confirmar o commit ativo.
-- Última confirmação de health: commit `a71e446`, PostgreSQL, schema 3 e
+- Última confirmação de health: commit `86150c5`, PostgreSQL, schema 3 e
   `WORKER_MODE=inline`.
 - Banco de produção: PostgreSQL/Supabase, schema 3.
 - Backend: Render com `WORKER_MODE=inline`.
 - Frontend: Vercel.
 - CI atual aprovada: testes Python, PostgreSQL 16, TypeScript, build e 9 E2E.
-- O código contém 111 métodos de teste Python.
+- O código contém 113 métodos de teste Python.
 - Existem 64 rotas: 51 implementadas nos blueprints e 13 ainda no núcleo.
 - O repositório está em uso com dados reais; mudanças devem preservar
   classificações, vínculos, conciliações, auditoria e documentos.
@@ -67,7 +68,9 @@ lançamentos financeiros reais.
 - Vínculos históricos individuais e em lote com revisão manual.
 - Classificação individual/em lote e proteção pós-classificação.
 - A classificação em lote conserva visíveis os itens protegidos ou aguardando
-  revisão de vínculo e informa separadamente o que não foi aplicado.
+  revisão de vínculo e informa separadamente o que não foi aplicado. Quando a
+  seleção contém lançamentos já classificados, o administrador escolhe entre
+  manter essas classificações ou atualizá-las junto com o lote.
 - Planos de parcelas e propagação confirmada de categoria/subcategoria.
 - Conciliação reversível de entradas e saídas.
 - Lista completa e paginada de candidatos à conciliação, ordenada por
@@ -136,14 +139,14 @@ lançamentos financeiros reais.
 
 Consulte `ROADMAP.md`. As prioridades atuais são:
 
-1. Validar administração, colaborador, auditoria, logs e Sentry no ambiente
+1. Comprovar backup diário e restauração em PostgreSQL descartável antes da
+   próxima migration.
+2. Validar administração, colaborador, auditoria, logs e Sentry no ambiente
    hospedado.
-2. Medir performance de vínculos e consultas antes de criar otimizações SQL.
-3. Concluir a separação dos 13 handlers ainda mantidos no núcleo do backend.
-4. Reduzir os componentes frontend acima de 400 linhas: `arquivos/page.tsx`,
+3. Medir performance de vínculos e consultas antes de criar otimizações SQL.
+4. Concluir a separação dos 13 handlers ainda mantidos no núcleo do backend.
+5. Reduzir os componentes frontend acima de 400 linhas: `arquivos/page.tsx`,
    `ImportPage.tsx` e `useTransactionTable.tsx`.
-5. Manter contexto, arquitetura, API, releases e roadmap sincronizados a cada
-   marco homologado.
 6. Usar migration versionada para qualquer nova mudança de schema.
 
 ## Itens explicitamente abandonados

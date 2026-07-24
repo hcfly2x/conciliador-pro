@@ -1,6 +1,6 @@
 # Matriz de variaveis de ambiente
 
-Atualizado em 23/07/2026. Segredos nunca devem ser adicionados ao repositorio.
+Atualizado em 24/07/2026. Segredos nunca devem ser adicionados ao repositorio.
 
 ## Backend web e worker
 

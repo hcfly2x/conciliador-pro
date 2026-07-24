@@ -1,6 +1,6 @@
 # Contrato da API - resumo vigente
 
-Base: `/api/v1`. Atualizado em 22/07/2026. O mapa Flask e os testes prevalecem.
+Base: `/api/v1`. Atualizado em 24/07/2026. O mapa Flask e os testes prevalecem.
 
 ## Publicos
 
@@ -37,7 +37,10 @@ reinsercao.
 - `GET /transactions`, `GET /transactions/months`
 - `PATCH /transactions/<id>/classify`, `/flags`, `/unlink-history`
 - `POST /transactions/<id>/unlock`
-- `PATCH /transactions/bulk-classify`
+- `PATCH /transactions/bulk-classify`: aceita `ids`, `category_id`,
+  `subcategory_id` opcional e `include_classified` opcional. Sem esse último,
+  lançamentos protegidos permanecem inalterados; com ele, somente admin pode
+  reclassificar os itens já classificados e a ação é auditada.
 - `POST /transactions/<id>/history-link`
 - `POST /transactions/history-links/batch`
 - `GET /transactions/<id>/suggestions`

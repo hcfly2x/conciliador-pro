@@ -1,4 +1,7 @@
-# architecture.md — Conciliador Financeiro Pessoal
+# architecture.md — HISTÓRICO — Conciliador Financeiro Pessoal
+
+> Não vigente. Este arquivo descreve FastAPI, SQLAlchemy, Alembic e Docker,
+> tecnologias abandonadas. Consulte `ARQUITETURA-WEB.md` e `../PROJECT_CONTEXT.md`.
 
 ## 1. Visão Geral
 

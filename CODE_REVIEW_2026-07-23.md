@@ -1,5 +1,9 @@
 # Code review - 23/07/2026
 
+> Atualização documental em 24/07/2026: este registro cobre a revisão estática
+> anterior a `a71e446` e `86150c5`. Para o estado atual, comece por
+> `PROJECT_CONTEXT.md`, `ROADMAP.md`, `docs/README.md` e pelo Git.
+
 ## Escopo
 
 Revisão do código em `main`, da documentação operacional e das validações
@@ -11,7 +15,9 @@ locais após os ajustes de importação/auditoria de julho de 2026.
 - A suíte Python do backend foi executada sem falha.
 - O build de produção do frontend (`next build`) foi concluído e gerou
   `BUILD_ID`.
-- Existem 110 métodos de teste Python e 9 cenários E2E declarados.
+- Na revisão original havia 110 métodos de teste Python e 9 cenários E2E
+  declarados. A `main` atual contém 113 testes Python; o revisor deve executar
+  a suíte em vez de usar esta contagem histórica como evidência.
 - A produção havia sido confirmada no commit `74a681e`, com PostgreSQL, schema
   3 e `WORKER_MODE=inline`, antes desta atualização exclusivamente documental.
 

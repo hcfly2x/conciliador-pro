@@ -1,4 +1,7 @@
-# backend-tasks.md — Tarefas para o Codex
+# backend-tasks.md — HISTÓRICO — Tarefas para o Codex
+
+> Não vigente. A referência a FastAPI, SQLAlchemy e Alembic foi abandonada.
+> Consulte `../ROADMAP.md` e `ARQUITETURA-WEB.md`.
 
 Stack: FastAPI + PostgreSQL + SQLAlchemy + Alembic + Python 3.12
 Leia architecture.md, database.md e api-contract.md antes de implementar.
