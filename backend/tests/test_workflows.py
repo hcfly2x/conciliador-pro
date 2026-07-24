@@ -829,6 +829,65 @@ class WorkflowIntegrationTests(unittest.TestCase):
             ).fetchone()[0]
         )
 
+    def test_bulk_classification_can_explicitly_reclassify_selected_locked_rows(self) -> None:
+        self.conn.execute(
+            "INSERT INTO categories(id,name,color,text_color,type) "
+            "VALUES ('cat-expense-other','OUTRA DESPESA','#000','#fff','expense')"
+        )
+        self.conn.execute(
+            "UPDATE transactions SET category_id='cat-expense', locked=1 WHERE id='tx-1'"
+        )
+
+        kept = self.client.patch(
+            "/api/v1/transactions/bulk-classify",
+            json={"ids": ["tx-1"], "category_id": "cat-expense-other"},
+        )
+        self.assertEqual(kept.status_code, 200)
+        self.assertEqual(kept.get_json()["updated"], 0)
+        self.assertEqual(kept.get_json()["skipped_locked"], 1)
+
+        overwritten = self.client.patch(
+            "/api/v1/transactions/bulk-classify",
+            json={
+                "ids": ["tx-1"],
+                "category_id": "cat-expense-other",
+                "include_classified": True,
+            },
+        )
+        self.assertEqual(overwritten.status_code, 200)
+        self.assertEqual(overwritten.get_json()["updated"], 1)
+        self.assertEqual(overwritten.get_json()["overwritten_classified"], 1)
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT category_id,locked FROM transactions WHERE id='tx-1'"
+            ).fetchone(),
+            ("cat-expense-other", 1),
+        )
+
+    def test_collaborator_cannot_reclassify_locked_rows_in_bulk(self) -> None:
+        self.conn.execute(
+            "UPDATE transactions SET category_id='cat-expense', locked=1 WHERE id='tx-1'"
+        )
+        app.auth_mod.AUTH_DISABLED = False
+        app.auth_mod.user_for_token = lambda _token: {
+            "id": "collab",
+            "username": "collab",
+            "role": app.auth_mod.ROLE_COLLAB,
+        }
+
+        response = self.client.patch(
+            "/api/v1/transactions/bulk-classify",
+            json={
+                "ids": ["tx-1"],
+                "category_id": "cat-expense",
+                "include_classified": True,
+            },
+            headers={"Authorization": "Bearer valid"},
+        )
+
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.get_json()["code"], "FORBIDDEN")
+
     def test_document_transaction_deletion_requires_confirmation(self) -> None:
         response = self.client.delete(
             "/api/v1/coverage/files",

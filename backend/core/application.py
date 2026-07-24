@@ -6884,11 +6884,16 @@ def bulk_classify():
     ids = data.get("ids") or []
     cat = (data.get("category_id") or "").strip()
     sub = (data.get("subcategory_id") or "").strip() or None
+    include_classified = bool(data.get("include_classified"))
     if not ids or not cat:
         return jsonify(
             {"detail": "ids e category_id obrigatorios", "code": "VALIDATION_ERROR"}
         ), 400
     user = current_user()
+    if include_classified:
+        forbidden = require_admin()
+        if forbidden:
+            return forbidden
     now = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
     with db_connect() as conn:
         qmarks = ",".join(["?"] * len(ids))
@@ -6910,25 +6915,35 @@ def bulk_classify():
             return jsonify(validation_error), validation_status
         blocked_rows = conn.execute(
             f"""
-            SELECT id,locked,history_match_id,history_match_confirmed,identity_score
+            SELECT id,locked,category_id,history_match_id,history_match_confirmed,identity_score
             FROM transactions WHERE id IN ({qmarks})
             """,
             ids,
         ).fetchall()
         available_ids = {r[0] for r in blocked_rows}
         locked_ids = {r[0] for r in blocked_rows if int(r[1] or 0) == 1}
+        classified_locked_ids = {
+            r[0] for r in blocked_rows if int(r[1] or 0) == 1 and r[2]
+        }
         link_ids = {
             r[0]
             for r in blocked_rows
-            if r[2]
-            and not bool(r[3])
-            and float(r[4] or 0) >= HISTORY_LINK_CANDIDATE_THRESHOLD
+            if r[3]
+            and not bool(r[4])
+            and float(r[5] or 0) >= HISTORY_LINK_CANDIDATE_THRESHOLD
         }
+        protected_locked_ids = locked_ids - classified_locked_ids
+        skipped_locked_ids = (
+            protected_locked_ids
+            if include_classified
+            else locked_ids
+        )
         target_ids = [
             i
             for i in ids
-            if i in available_ids and i not in locked_ids and i not in link_ids
+            if i in available_ids and i not in skipped_locked_ids and i not in link_ids
         ]
+        overwritten_ids = [i for i in target_ids if i in classified_locked_ids]
         updated = 0
         if target_ids:
             qmarks2 = ",".join(["?"] * len(target_ids))
@@ -6945,7 +6960,7 @@ def bulk_classify():
             for tid in target_ids:
                 record_audit(
                     user,
-                    "bulk_classify",
+                    "bulk_reclassify" if tid in classified_locked_ids else "bulk_classify",
                     "transaction",
                     tid,
                     "category_id",
@@ -6964,8 +6979,10 @@ def bulk_classify():
         {
             "updated": updated,
             "updated_ids": target_ids if updated else [],
-            "skipped_locked": len(locked_ids),
-            "skipped_locked_ids": sorted(locked_ids),
+            "overwritten_classified": len(overwritten_ids),
+            "overwritten_classified_ids": overwritten_ids,
+            "skipped_locked": len(skipped_locked_ids),
+            "skipped_locked_ids": sorted(skipped_locked_ids),
             "skipped_history_links": len(link_ids),
             "skipped_history_link_ids": sorted(link_ids),
             "skipped_missing": len(set(ids) - available_ids),

@@ -103,7 +103,10 @@ lançamentos financeiros reais.
 - Sobreposição parcial exige confirmação explícita; duplicados existentes são
   preservados e somente as ocorrências novas são inseridas.
 - Classificação exige categoria compatível com receita/despesa.
-- Lançamento classificado fica protegido até desbloqueio administrativo.
+- Lançamento classificado fica protegido até desbloqueio administrativo. Na
+  classificação em lote, quando houver selecionados já classificados, a tela
+  pergunta se o administrador quer manter esses itens ou reclassificá-los; a
+  segunda opção fica registrada na auditoria.
 - Confirmar vínculo replica categoria/subcategoria sem alterar os dados reais.
 - Rejeitar vínculo impede a repetição do mesmo candidato.
 - Lote padrão exige mesma data, mesmo valor em centavos e descrição >= 75%.

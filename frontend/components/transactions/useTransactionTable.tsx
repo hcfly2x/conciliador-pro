@@ -326,13 +326,21 @@ export function useTransactionTable({
 
   async function handleBulkClassify() {
     if (!bulkCatId || !selected.size) return
+    const selectedTransactions = txs.filter(tx => selected.has(tx.id))
+    const classifiedCount = selectedTransactions.filter(tx => tx.locked && tx.category_id).length
+    const includeClassified = classifiedCount > 0 && window.confirm(
+      `${classifiedCount} lancamento(s) selecionado(s) ja possuem classificacao.\n\nOK: aplicar a nova categoria/subcategoria tambem neles.\nCancelar: aplicar somente nos lancamentos ainda nao classificados.`
+    )
     try {
-      const { updated, skipped_locked, skipped_history_links } = await bulkClassify([...selected], bulkCatId, bulkSubId || undefined)
+      const { updated, overwritten_classified, skipped_locked, skipped_history_links } = await bulkClassify(
+        [...selected], bulkCatId, bulkSubId || undefined, includeClassified
+      )
       const skipped = [
         skipped_locked ? `${skipped_locked} protegidos` : '',
         skipped_history_links ? `${skipped_history_links} aguardando revisao de vinculo` : '',
       ].filter(Boolean).join(', ')
-      addToast(`${updated} lancamentos classificados${skipped ? ` (${skipped} ignorados)` : ''}`)
+      const overwritten = overwritten_classified ? `; ${overwritten_classified} classificacao(oes) existente(s) atualizada(s)` : ''
+      addToast(`${updated} lancamentos classificados${overwritten}${skipped ? ` (${skipped} ignorados)` : ''}`)
       setSelected(new Set()); setBulkCatId(''); setBulkSubId('')
       await load(page)
       await refreshPendingBadge()

@@ -438,6 +438,8 @@ export async function getHistory(filters: HistoryFilters = {}): Promise<Paginate
 export interface BulkClassifyResult {
   updated: number
   updated_ids: string[]
+  overwritten_classified?: number
+  overwritten_classified_ids?: string[]
   skipped_locked?: number
   skipped_locked_ids?: string[]
   skipped_history_links?: number
@@ -445,9 +447,9 @@ export interface BulkClassifyResult {
   skipped_missing?: number
 }
 
-export async function bulkClassify(ids: string[], category_id: string, subcategory_id?: string): Promise<BulkClassifyResult> {
+export async function bulkClassify(ids: string[], category_id: string, subcategory_id?: string, include_classified = false): Promise<BulkClassifyResult> {
   if (USE_MOCK) { await delay(); return { updated: ids.length, updated_ids: ids } }
-  return http<BulkClassifyResult>('PATCH', '/transactions/bulk-classify', { ids, category_id, subcategory_id })
+  return http<BulkClassifyResult>('PATCH', '/transactions/bulk-classify', { ids, category_id, subcategory_id, include_classified })
 }
 
 export async function downloadAuditExport(): Promise<void> {
