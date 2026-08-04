@@ -314,10 +314,32 @@ export function useTransactionTable({
 
   function toggleAll() {
     if (selected.size === txs.length) setSelected(new Set())
-    else setSelected(new Set(txs.map(t => t.id)))
+    else {
+      const types = new Set(txs.map(tx => tx.type))
+      if (types.size > 1) {
+        addToast('Filtre por receita ou despesa antes de selecionar todos para classificar em lote', 'err')
+        return
+      }
+      setSelected(new Set(txs.map(t => t.id)))
+    }
   }
   function toggleOne(id: string) {
-    setSelected(s => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n })
+    const transaction = txs.find(tx => tx.id === id)
+    if (!transaction) return
+    setSelected(current => {
+      const next = new Set(current)
+      if (next.has(id)) {
+        next.delete(id)
+        return next
+      }
+      const selectedType = txs.find(tx => next.has(tx.id))?.type
+      if (selectedType && selectedType !== transaction.type) {
+        addToast('A classificacao em lote aceita somente receitas ou somente despesas', 'err')
+        return current
+      }
+      next.add(id)
+      return next
+    })
   }
 
   function toggleTagFilter(tag: string) {
@@ -327,10 +349,25 @@ export function useTransactionTable({
   async function handleBulkClassify() {
     if (!bulkCatId || !selected.size) return
     const selectedTransactions = txs.filter(tx => selected.has(tx.id))
+    const selectedTypes = new Set(selectedTransactions.map(tx => tx.type))
+    if (selectedTypes.size !== 1) {
+      addToast('A classificacao em lote aceita somente receitas ou somente despesas', 'err')
+      return
+    }
+    const category = categories.find(item => item.id === bulkCatId)
+    if (category?.type !== selectedTransactions[0].type) {
+      addToast('Escolha uma categoria compativel com o tipo dos lancamentos selecionados', 'err')
+      return
+    }
     const classifiedCount = selectedTransactions.filter(tx => tx.locked && tx.category_id).length
-    const includeClassified = classifiedCount > 0 && window.confirm(
-      `${classifiedCount} lancamento(s) selecionado(s) ja possuem classificacao.\n\nOK: aplicar a nova categoria/subcategoria tambem neles.\nCancelar: aplicar somente nos lancamentos ainda nao classificados.`
-    )
+    const includeClassified = classifiedCount > 0 && isAdmin()
+      ? window.confirm(
+        `${classifiedCount} lancamento(s) selecionado(s) ja possuem classificacao.\n\nOK: aplicar a nova categoria/subcategoria tambem neles.\nCancelar: aplicar somente nos lancamentos ainda nao classificados.`
+      )
+      : false
+    if (classifiedCount > 0 && !isAdmin()) {
+      addToast('Itens ja classificados serao mantidos: apenas administrador pode reclassifica-los', 'err')
+    }
     try {
       const { updated, overwritten_classified, skipped_locked, skipped_history_links } = await bulkClassify(
         [...selected], bulkCatId, bulkSubId || undefined, includeClassified
@@ -344,7 +381,9 @@ export function useTransactionTable({
       setSelected(new Set()); setBulkCatId(''); setBulkSubId('')
       await load(page)
       await refreshPendingBadge()
-    } catch { addToast('Erro na classificacao em lote', 'err') }
+    } catch (error: unknown) {
+      addToast((error as { detail?: string })?.detail || 'Erro na classificacao em lote', 'err')
+    }
   }
 
   async function handlePrepareHistoricalLinks() {
