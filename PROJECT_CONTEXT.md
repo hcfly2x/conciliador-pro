@@ -21,14 +21,14 @@ lançamentos financeiros reais.
 - Branch oficial: `main`.
 - A `main`, a Vercel e o Render acompanham o mesmo fluxo de release. O health
   do backend é a fonte operacional para confirmar o commit ativo.
-- Última confirmação de health: commit `86150c5`, PostgreSQL, schema 3 e
+- Última confirmação de health: commit `76a32c6`, PostgreSQL, schema 4 e
   `WORKER_MODE=inline`.
 - Banco de produção: PostgreSQL/Supabase, schema 3.
 - Backend: Render com `WORKER_MODE=inline`.
 - Frontend: Vercel.
 - CI atual aprovada: testes Python, PostgreSQL 16, TypeScript, build e 9 E2E.
-- A próxima publicação aplicará o schema 4, que torna todas as categorias
-  existentes híbridas sem alterar lançamentos ou histórico.
+- O schema 4 torna todas as categorias existentes híbridas sem alterar
+  lançamentos ou histórico.
 - O código contém 114 métodos de teste Python.
 - Existem 64 rotas: 51 implementadas nos blueprints e 13 ainda no núcleo.
 - O repositório está em uso com dados reais; mudanças devem preservar

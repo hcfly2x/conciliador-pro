@@ -5,6 +5,7 @@ schema e ao modo operacional que preservam os dados de producao.
 
 | Data | Commit | Schema | Backend | Executor de jobs | Evidencia |
 |---|---|---:|---|---|---|
+| 04/08/2026 | `76a32c6` | 4 (health confirmado) | Render/PostgreSQL | `inline` no web | Categorias e subcategorias passam a ser híbridas; o lote pode conter receitas e despesas. Migration 4 atualiza apenas `categories.type`; health respondeu `76a32c6664c7`. |
 | 24/07/2026 | `86150c5` | 3 (health confirmado) | Render/PostgreSQL | `inline` no web | Classificação em lote passa a confirmar se itens já classificados devem ser incluídos; inclusão exige admin e é auditada. Health respondeu commit `86150c5fc422`. |
 | 23/07/2026 | `a71e446` | 3 (health confirmado) | Render/PostgreSQL | `inline` no web | Candidatos de conciliação completos e paginados; health respondeu `a71e4462c778`. |
 | 23/07/2026 | `fabafb6` | 2 (confirmado pelo health) | Render/PostgreSQL | `inline` no web | CI completo verde; exportacao XLSX em streaming e compatibilidade do cursor PostgreSQL; download de auditoria confirmado em producao pelo proprietario |
