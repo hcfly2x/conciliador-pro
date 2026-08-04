@@ -1,7 +1,6 @@
 # PROJECT_CONTEXT.md — Conciliador Pro
 
-Atualizado em 24/07/2026, após a publicação da confirmação de reclassificação
-em lote e a revisão documental.
+Atualizado em 04/08/2026, após tornar categorias e subcategorias híbridas.
 
 O código atual é a fonte principal da verdade. Documentos marcados como
 históricos não definem requisitos. Ideias antigas só voltam ao projeto mediante
@@ -28,7 +27,9 @@ lançamentos financeiros reais.
 - Backend: Render com `WORKER_MODE=inline`.
 - Frontend: Vercel.
 - CI atual aprovada: testes Python, PostgreSQL 16, TypeScript, build e 9 E2E.
-- O código contém 113 métodos de teste Python.
+- A próxima publicação aplicará o schema 4, que torna todas as categorias
+  existentes híbridas sem alterar lançamentos ou histórico.
+- O código contém 114 métodos de teste Python.
 - Existem 64 rotas: 51 implementadas nos blueprints e 13 ainda no núcleo.
 - O repositório está em uso com dados reais; mudanças devem preservar
   classificações, vínculos, conciliações, auditoria e documentos.
@@ -67,10 +68,10 @@ lançamentos financeiros reais.
 - Sugestões Top 3 e avaliação leave-one-out.
 - Vínculos históricos individuais e em lote com revisão manual.
 - Classificação individual/em lote e proteção pós-classificação.
-- A classificação em lote conserva visíveis os itens protegidos ou aguardando
-  revisão de vínculo e informa separadamente o que não foi aplicado. Quando a
-  seleção contém lançamentos já classificados, o administrador escolhe entre
-  manter essas classificações ou atualizá-las junto com o lote.
+- A classificação em lote aceita receitas e despesas no mesmo lote com a mesma
+  categoria/subcategoria híbrida. Itens protegidos ou aguardando revisão de
+  vínculo continuam visíveis e informados separadamente. Quando houver itens já
+  classificados, o administrador escolhe entre mantê-los ou reclassificá-los.
 - Planos de parcelas e propagação confirmada de categoria/subcategoria.
 - Conciliação reversível de entradas e saídas.
 - Lista completa e paginada de candidatos à conciliação, ordenada por
@@ -105,7 +106,9 @@ lançamentos financeiros reais.
 - Arquivo integralmente já importado continua bloqueado pelo hash.
 - Sobreposição parcial exige confirmação explícita; duplicados existentes são
   preservados e somente as ocorrências novas são inseridas.
-- Classificação exige categoria compatível com receita/despesa.
+- Categorias e subcategorias são híbridas: podem classificar receitas e
+  despesas. O tipo do lançamento continua vindo exclusivamente do documento e
+  não é alterado pela classificação.
 - Lançamento classificado fica protegido até desbloqueio administrativo. Na
   classificação em lote, quando houver selecionados já classificados, a tela
   pergunta se o administrador quer manter esses itens ou reclassificá-los; a

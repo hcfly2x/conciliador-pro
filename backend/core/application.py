@@ -2619,18 +2619,12 @@ def validate_classification_selection(
     conn: sqlite3.Connection,
     category_id: str,
     subcategory_id: str | None,
-    tx_type: str,
 ) -> tuple[dict[str, Any] | None, int]:
     category = conn.execute(
-        "SELECT id,type FROM categories WHERE id=?", (category_id,)
+        "SELECT id FROM categories WHERE id=?", (category_id,)
     ).fetchone()
     if not category:
         return {"detail": "Categoria nao encontrada", "code": "CATEGORY_NOT_FOUND"}, 404
-    if category[1] != tx_type:
-        return {
-            "detail": "Categoria incompativel com o tipo do lancamento",
-            "code": "CATEGORY_TYPE_MISMATCH",
-        }, 422
     if (
         subcategory_id
         and not conn.execute(
@@ -3792,20 +3786,20 @@ def evaluate_suggestion_quality(
     }
 
 
-def find_category_id(conn: sqlite3.Connection, name: str, tx_type: str):
+def find_category_id(conn: sqlite3.Connection, name: str):
     cname = (name or "").strip()
     if not cname:
         return None
     row = conn.execute(
-        "SELECT id FROM categories WHERE UPPER(name)=UPPER(?) AND type=? LIMIT 1",
-        (cname, tx_type),
+        "SELECT id FROM categories WHERE UPPER(name)=UPPER(?) LIMIT 1",
+        (cname,),
     ).fetchone()
     if row:
         return row[0]
     cat_id = str(uuid.uuid4())
     conn.execute(
         "INSERT INTO categories(id,name,color,text_color,type) VALUES (?,?,?,?,?)",
-        (cat_id, cname.upper(), "#334155", "#ffffff", tx_type),
+        (cat_id, cname.upper(), "#334155", "#ffffff", "hybrid"),
     )
     return cat_id
 
@@ -4145,7 +4139,7 @@ def import_seed_workbook(
                 if not tx_type:
                     continue
                 category_label = "SMARTEK" if is_smartek_sheet else str(cat_raw or "")
-                cat_id = find_category_id(conn, category_label, tx_type)
+                cat_id = find_category_id(conn, category_label)
                 if not cat_id:
                     continue
                 sub_label = (
@@ -4334,11 +4328,9 @@ def import_seed_pdf(path: Path, progress=None, imported_file_id: str | None = No
             tail_norm = norm_text(tail)
 
             matched = None
-            for cid, cname, ctype, cnorm in sorted(
+            for cid, cname, _ctype, cnorm in sorted(
                 cat_map, key=lambda x: len(x[3]), reverse=True
             ):
-                if ctype != tx_type:
-                    continue
                 if cnorm and (
                     tail_norm.startswith(cnorm) or f" {cnorm} " in f" {tail_norm} "
                 ):
@@ -6082,9 +6074,7 @@ def classify(tx_id: str):
                     "code": "HISTORY_LINK_REVIEW_REQUIRED",
                 }
             ), 409
-        validation_error, validation_status = validate_classification_selection(
-            conn, cat, sub, tx[6]
-        )
+        validation_error, validation_status = validate_classification_selection(conn, cat, sub)
         if validation_error:
             return jsonify(validation_error), validation_status
         old_cat, old_sub, old_notes, old_status = tx[8], tx[9], tx[10] or "", tx[11]
@@ -6897,20 +6887,7 @@ def bulk_classify():
     now = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
     with db_connect() as conn:
         qmarks = ",".join(["?"] * len(ids))
-        tx_types = conn.execute(
-            f"SELECT DISTINCT type FROM transactions WHERE id IN ({qmarks})",
-            ids,
-        ).fetchall()
-        if len(tx_types) != 1:
-            return jsonify(
-                {
-                    "detail": "A classificacao em lote deve conter somente receitas ou somente despesas",
-                    "code": "MIXED_TRANSACTION_TYPES",
-                }
-            ), 422
-        validation_error, validation_status = validate_classification_selection(
-            conn, cat, sub, tx_types[0][0]
-        )
+        validation_error, validation_status = validate_classification_selection(conn, cat, sub)
         if validation_error:
             return jsonify(validation_error), validation_status
         blocked_rows = conn.execute(

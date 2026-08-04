@@ -401,17 +401,17 @@ class ClassificationValidationTests(unittest.TestCase):
         conn.execute("INSERT INTO subcategories VALUES ('known-sub')")
         return conn
 
-    def test_category_must_match_transaction_type(self) -> None:
+    def test_category_is_valid_for_both_transaction_types(self) -> None:
         error, status = app.validate_classification_selection(
-            self.make_db(), "income-cat", None, "expense"
+            self.make_db(), "income-cat", None
         )
 
-        self.assertEqual(status, 422)
-        self.assertEqual(error["code"], "CATEGORY_TYPE_MISMATCH")
+        self.assertIsNone(error)
+        self.assertEqual(status, 200)
 
     def test_unknown_subcategory_is_rejected(self) -> None:
         error, status = app.validate_classification_selection(
-            self.make_db(), "expense-cat", "missing-sub", "expense"
+            self.make_db(), "expense-cat", "missing-sub"
         )
 
         self.assertEqual(status, 404)
@@ -419,7 +419,7 @@ class ClassificationValidationTests(unittest.TestCase):
 
     def test_valid_selection_is_accepted(self) -> None:
         error, status = app.validate_classification_selection(
-            self.make_db(), "expense-cat", "known-sub", "expense"
+            self.make_db(), "expense-cat", "known-sub"
         )
 
         self.assertIsNone(error)

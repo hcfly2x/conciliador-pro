@@ -1,5 +1,6 @@
 export type AccountType = 'checking' | 'credit_card' | 'savings'
 export type TransactionType = 'income' | 'expense'
+export type CategoryType = TransactionType | 'hybrid'
 export type TransactionStatus = 'pending' | 'reconciled' | 'auto_classified' | 'duplicate' | 'ignored'
 
 export interface Account {
@@ -30,7 +31,7 @@ export interface Category {
   name: string
   color: string
   text_color: string
-  type: TransactionType
+  type: CategoryType
 }
 
 export interface Subcategory {

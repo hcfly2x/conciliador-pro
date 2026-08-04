@@ -65,7 +65,7 @@ export default function CategoriesPage() {
   return (
     <div className="max-w-2xl">
       <div className="flex justify-end mb-5">
-        <button onClick={() => setEditing({ name: '', color: '#dc2626', text_color: '#fff', type: 'expense', isNew: true })} className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold" style={{ background: '#c9a84c', color: '#0d0f14' }}>
+        <button onClick={() => setEditing({ name: '', color: '#dc2626', text_color: '#fff', type: 'hybrid', isNew: true })} className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold" style={{ background: '#c9a84c', color: '#0d0f14' }}>
           <Plus size={14} /> Nova categoria
         </button>
       </div>
@@ -73,17 +73,10 @@ export default function CategoriesPage() {
       {editing && (
         <div className="rounded-xl p-5 mb-5" style={{ background: '#13161d', border: '1px solid rgba(201,168,76,0.3)' }}>
           <h3 className="font-display font-bold text-[14px] text-[#e8eaf0] mb-4">{editing.id ? 'Editar' : 'Nova'} categoria</h3>
-          <div className="grid grid-cols-2 gap-4 mb-4">
+          <div className="mb-4">
             <div>
               <label className="block text-[11px] font-semibold text-[#5a5f73] uppercase tracking-widest mb-2">Nome</label>
               <input className="w-full h-9 rounded-md px-3 text-sm text-[#e8eaf0] outline-none" style={{ background: '#1a1e28', border: '1px solid rgba(255,255,255,0.12)' }} value={editing.name || ''} onChange={e => setEditing({ ...editing, name: e.target.value.toUpperCase() })} placeholder="GASTO PESSOAL" />
-            </div>
-            <div>
-              <label className="block text-[11px] font-semibold text-[#5a5f73] uppercase tracking-widest mb-2">Tipo</label>
-              <select className="w-full h-9 rounded-md px-3 text-sm text-[#e8eaf0] outline-none" style={{ background: '#1a1e28', border: '1px solid rgba(255,255,255,0.12)' }} value={editing.type || 'expense'} onChange={e => setEditing({ ...editing, type: e.target.value as any })}>
-                <option value="expense">Despesa</option>
-                <option value="income">Receita</option>
-              </select>
             </div>
           </div>
           <div className="mb-4">
@@ -105,7 +98,7 @@ export default function CategoriesPage() {
         <table className="w-full text-sm">
           <thead>
             <tr style={{ background: '#1a1e28', borderBottom: '1px solid rgba(255,255,255,0.07)' }}>
-              {['Categoria', 'Tipo', 'Cor', 'Ações'].map(h => (
+              {['Categoria', 'Uso', 'Cor', 'Ações'].map(h => (
                 <th key={h} className="px-4 py-3 text-left text-[11px] font-semibold text-[#5a5f73] uppercase tracking-widest">{h}</th>
               ))}
             </tr>
@@ -116,7 +109,7 @@ export default function CategoriesPage() {
                 <td className="px-4 py-3">
                   <span className="px-2.5 py-1 rounded text-[11px] font-semibold font-mono-custom" style={{ background: c.color + '25', color: c.color, border: `1px solid ${c.color}40` }}>{c.name}</span>
                 </td>
-                <td className="px-4 py-3 text-xs text-[#5a5f73]">{c.type === 'expense' ? 'Despesa' : 'Receita'}</td>
+                <td className="px-4 py-3 text-xs text-[#5a5f73]">Híbrida</td>
                 <td className="px-4 py-3"><span className="w-5 h-5 rounded block" style={{ background: c.color }} /></td>
                 <td className="px-4 py-3">
                   <div className="flex gap-2">

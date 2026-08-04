@@ -73,9 +73,7 @@ def review_history_link(tx_id: str):
                     }
                 ), 409
             validation_error, validation_status = (
-                application.validate_classification_selection(
-                    conn, history[0], history[1], row[4]
-                )
+                application.validate_classification_selection(conn, history[0], history[1])
             )
             if validation_error:
                 return jsonify(validation_error), validation_status
@@ -290,7 +288,7 @@ def confirm_history_link_in_batch(conn, tx_id: str) -> tuple[dict[str, Any], str
     if not history:
         return {}, "Registro historico nao encontrado"
     validation_error, _validation_status = application.validate_classification_selection(
-        conn, history[0], history[1], row[4]
+        conn, history[0], history[1]
     )
     if validation_error:
         return {}, str(

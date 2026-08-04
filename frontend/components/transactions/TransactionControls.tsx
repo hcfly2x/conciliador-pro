@@ -14,8 +14,6 @@ const TAG_OPTIONS = [
 
 export function TransactionControls({ model }: { model: ReturnType<typeof useTransactionTable> }) {
   const { total, summary, search, setSearch, months, monthFilter, setMonthFilter, typeFilter, setTypeFilter, accounts, accountFilter, setAccountFilter, categories, categoryFilter, setCategoryFilter, subcategories, subcategoryFilter, setSubcategoryFilter, installmentFilter, setInstallmentFilter, pageSize, setPageSize, load, page, dateFrom, setDateFrom, dateTo, setDateTo, tagMode, setTagMode, tagFilters, setTagFilters, txs, selected, bulkCatId, setBulkCatId, bulkSubId, setBulkSubId, handleBulkClassify, linkingBatch, handlePrepareHistoricalLinks, moveTargetLedgerId, handleMoveToLedger, moveTargetLedgerName, bulkLedgerId, setBulkLedgerId, defaultLedgerId, ledgers, linkBatchLogs, linkBatchProgress, setLinkBatchLogs, batchReviewIds, linkReviewId, setLinkReviewId, toggleTagFilter } = model
-  const selectedType = txs.find(tx => selected.has(tx.id))?.type
-  const bulkCategories = selectedType ? categories.filter(category => category.type === selectedType) : categories
   const progressPercent = linkBatchProgress?.total
     ? Math.round((linkBatchProgress.completed / linkBatchProgress.total) * 100)
     : 0
@@ -150,7 +148,7 @@ export function TransactionControls({ model }: { model: ReturnType<typeof useTra
           <span className="text-sm text-[#e8c96e] font-medium">{selected.size} selecionados</span>
           <select className="h-8 px-2 rounded-md text-sm text-[#e8eaf0] outline-none flex-1 max-w-xs" style={{ background: '#1a1e28', border: '1px solid rgba(255,255,255,0.12)' }} value={bulkCatId} onChange={e => setBulkCatId(e.target.value)}>
             <option value="">Aplicar categoria...</option>
-            {bulkCategories.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+            {categories.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
           </select>
           <select className="h-8 px-2 rounded-md text-sm text-[#e8eaf0] outline-none flex-1 max-w-xs" style={{ background: '#1a1e28', border: '1px solid rgba(255,255,255,0.12)' }} value={bulkSubId} onChange={e => setBulkSubId(e.target.value)}>
             <option value="">Sem subcategoria</option>

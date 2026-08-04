@@ -197,9 +197,7 @@ export default function ClassificationCenter() {
 
   async function applySelected() {
     const ids = [...selected]
-    const txTypes = new Set(items.filter(tx => selected.has(tx.id)).map(tx => tx.type))
     if (!ids.length || !bulkCategory) { addToast('Selecione lancamentos e categoria', 'err'); return }
-    if (txTypes.size !== 1) { addToast('O lote deve conter somente receitas ou somente despesas', 'err'); return }
     if (!window.confirm(`Classificar ${ids.length} lancamentos selecionados?`)) return
     setBusyId('bulk')
     try {
@@ -267,8 +265,7 @@ export default function ClassificationCenter() {
     { value: 'classified' as const, label: 'Classificados', count: summary.classified },
   ]
 
-  const selectedType = items.find(tx => selected.has(tx.id))?.type
-  const bulkCategories = categories.filter(category => !selectedType || category.type === selectedType)
+  const bulkCategories = categories
   const progress = job?.total ? Math.min(100, (job.processed / job.total) * 100) : 0
 
   return (
@@ -353,7 +350,7 @@ export default function ClassificationCenter() {
           return (
             <article key={tx.id} className="rounded-xl p-4" style={{ background: '#13161d', border: `1px solid ${index === 0 ? 'rgba(201,168,76,.4)' : 'rgba(255,255,255,.07)'}` }}>
               <div className="flex items-start gap-3">
-                {queue !== 'links' && queue !== 'classified' && <input type="checkbox" checked={selected.has(tx.id)} onChange={() => setSelected(current => { const next = new Set(current); if (next.has(tx.id)) next.delete(tx.id); else { const first = items.find(item => next.has(item.id)); if (!first || first.type === tx.type) next.add(tx.id); else addToast('Selecione somente receitas ou somente despesas', 'err') } return next })} className="mt-1" />}
+                {queue !== 'links' && queue !== 'classified' && <input type="checkbox" checked={selected.has(tx.id)} onChange={() => setSelected(current => { const next = new Set(current); if (next.has(tx.id)) next.delete(tx.id); else next.add(tx.id); return next })} className="mt-1" />}
                 <div className="min-w-0 flex-1">
                   <div className="flex flex-wrap items-center gap-x-3 gap-y-1"><strong className="text-sm text-[#e8eaf0]">{tx.description}</strong><span className="text-xs text-[#8b90a4]">{formatDate(tx.date)} · {tx.account_name}</span><span className={`ml-auto text-sm font-bold ${tx.type === 'income' ? 'text-emerald-400' : 'text-red-400'}`}>{tx.type === 'income' ? '+' : '-'}{formatCurrencyAbs(tx.amount)}</span></div>
                   {!!tx.merchant_norm && <p className="mt-1 text-[11px] text-[#5a5f73]">{tx.transaction_method} · {tx.merchant_norm}</p>}
@@ -374,7 +371,7 @@ export default function ClassificationCenter() {
                   {txSuggestions.length > 0 ? <div className="grid gap-2 md:grid-cols-3">{txSuggestions.slice(0, 3).map((suggestion, suggestionIndex) => <button key={`${tx.id}-${suggestion.category_id}`} onClick={() => patchDraft(tx.id, { category_id: suggestion.category_id, subcategory_id: '' })} className="rounded-lg p-3 text-left" style={{ background: draft.category_id === suggestion.category_id ? 'rgba(201,168,76,.15)' : 'rgba(255,255,255,.025)', border: `1px solid ${draft.category_id === suggestion.category_id ? 'rgba(201,168,76,.45)' : 'rgba(255,255,255,.07)'}` }}><div className="flex items-center gap-2"><span className="rounded bg-white/5 px-1.5 py-0.5 text-[10px] text-[#8b90a4]">{suggestionIndex + 1}</span><strong className="text-sm text-[#e8eaf0]">{suggestion.category_name}</strong><span className="ml-auto text-sm font-bold text-[#e8c96e]">{(suggestion.confidence ?? suggestion.category_probability ?? 0).toFixed(0)}%</span></div><p className="mt-2 text-[11px] text-[#8b90a4]">{suggestion.history_evidence} historico · {suggestion.transaction_evidence} classificados</p></button>)}</div> : <p className="rounded-lg bg-white/[.025] p-3 text-sm text-[#8b90a4]">{queue === 'waiting' ? 'Este lancamento ainda nao foi calculado.' : queue === 'dismissed' ? 'As sugestoes deste lancamento foram ignoradas.' : 'Nenhuma evidencia atingiu o minimo para sugerir uma categoria.'}</p>}
 
                   <div className="grid gap-2 md:grid-cols-3">
-                    <select value={draft.category_id} onChange={event => patchDraft(tx.id, { category_id: event.target.value, subcategory_id: '' })} className="h-10 rounded-md px-3 text-sm text-[#e8eaf0]" style={{ background: '#1a1e28', border: '1px solid rgba(255,255,255,.10)' }}><option value="">Escolha a categoria</option>{categories.filter(category => category.type === tx.type).map(category => <option key={category.id} value={category.id}>{category.name}</option>)}</select>
+                    <select value={draft.category_id} onChange={event => patchDraft(tx.id, { category_id: event.target.value, subcategory_id: '' })} className="h-10 rounded-md px-3 text-sm text-[#e8eaf0]" style={{ background: '#1a1e28', border: '1px solid rgba(255,255,255,.10)' }}><option value="">Escolha a categoria</option>{categories.map(category => <option key={category.id} value={category.id}>{category.name}</option>)}</select>
                     <select value={draft.subcategory_id} onChange={event => patchDraft(tx.id, { subcategory_id: event.target.value })} disabled={!draft.category_id} className="h-10 rounded-md px-3 text-sm text-[#e8eaf0] disabled:opacity-40" style={{ background: '#1a1e28', border: '1px solid rgba(255,255,255,.10)' }}><option value="">Sem subcategoria</option>{(chosenSuggestion?.subcategories || []).map(subcategory => <option key={`suggested-${subcategory.subcategory_id}`} value={subcategory.subcategory_id}>★ {subcategory.subcategory_name} ({subcategory.confidence.toFixed(0)}%)</option>)}{subcategories.filter(subcategory => !(chosenSuggestion?.subcategories || []).some(candidate => candidate.subcategory_id === subcategory.id)).map(subcategory => <option key={subcategory.id} value={subcategory.id}>{subcategory.name}</option>)}</select>
                     <input value={draft.notes} onChange={event => patchDraft(tx.id, { notes: event.target.value })} placeholder="Observacao opcional" className="h-10 rounded-md px-3 text-sm text-[#e8eaf0]" style={{ background: '#1a1e28', border: '1px solid rgba(255,255,255,.10)' }} />
                   </div>

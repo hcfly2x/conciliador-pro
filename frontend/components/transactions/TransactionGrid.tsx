@@ -197,7 +197,7 @@ export function TransactionGrid({ model }: { model: ReturnType<typeof useTransac
                           </option>
                         ))}
                         {(rowSuggestions[tx.id] || []).length > 0 && <option value="" disabled>-- Todas --</option>}
-                        {categories.filter(c => c.type === tx.type).map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                        {categories.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
                       </select>
                     </td>
                     <td className="px-3 py-2.5">

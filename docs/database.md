@@ -1,6 +1,6 @@
 # Banco de dados - estado vigente
 
-Atualizado em 24/07/2026. O DDL executavel em `core/application.py` e as
+Atualizado em 04/08/2026. O DDL executavel em `core/application.py` e as
 migrations em `backend/migrations` prevalecem sobre este resumo.
 
 ## Bancos suportados
@@ -26,7 +26,9 @@ migrations em `backend/migrations` prevalecem sobre este resumo.
 
 - Lote inteiro bloqueado quando qualquer ocorrencia ja existe no banco.
 - Repeticoes internas recebem chaves distintas e sao preservadas.
-- Categoria deve existir e corresponder ao tipo receita/despesa.
+- Categoria e subcategoria selecionadas devem existir.
+- Categorias e subcategorias são híbridas; a classificação não altera o tipo
+  financeiro importado do lançamento.
 - Subcategoria deve existir.
 - Lancamento protegido exige desbloqueio auditado. A exceção é a reclassificação
   explícita em lote por admin (`include_classified`), também auditada.
@@ -54,10 +56,10 @@ valores existentes e planejar conversao reversivel.
 
 O runner recusa migration desconhecida ou alterada depois de aplicada. A versao
 1 marca o schema legado como baseline; a versao 2 adiciona indices das filas por
-`(status, created_at)`; e a versao 3 restaura, de forma idempotente e
+`(status, created_at)`; a versao 3 restaura, de forma idempotente e
 especifica, uma ocorrência real de pagamento de fatura Santander de agosto/2024
-que havia sido omitida. Novas mudancas devem receber uma nova versao e teste de
-idempotencia.
+que havia sido omitida; e a versao 4 torna as categorias existentes híbridas.
+Novas mudancas devem receber uma nova versao e teste de idempotencia.
 
 ## Backup
 

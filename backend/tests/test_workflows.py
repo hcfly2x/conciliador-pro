@@ -829,6 +829,29 @@ class WorkflowIntegrationTests(unittest.TestCase):
             ).fetchone()[0]
         )
 
+    def test_bulk_classification_accepts_income_and_expense_together(self) -> None:
+        self.conn.execute(
+            "INSERT INTO transactions("
+            "id,tx_key,account_id,date,competence_month,description,description_norm,amount,type,"
+            "locked,notes,status,imported_file_id) VALUES "
+            "('tx-income','key-income','acc','2026-01-11','2026/01','RECEBIMENTO','recebimento',"
+            "100,'income',0,'','pending','file')"
+        )
+
+        response = self.client.patch(
+            "/api/v1/transactions/bulk-classify",
+            json={"ids": ["tx-1", "tx-income"], "category_id": "cat-expense"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["updated"], 2)
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT COUNT(1) FROM transactions WHERE id IN ('tx-1','tx-income') AND category_id='cat-expense'"
+            ).fetchone()[0],
+            2,
+        )
+
     def test_bulk_classification_can_explicitly_reclassify_selected_locked_rows(self) -> None:
         self.conn.execute(
             "INSERT INTO categories(id,name,color,text_color,type) "

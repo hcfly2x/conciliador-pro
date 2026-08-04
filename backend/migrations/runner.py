@@ -153,6 +153,11 @@ def _restore_santander_august_2024_payment(conn: Any) -> None:
     )
 
 
+def _make_categories_hybrid(conn: Any) -> None:
+    """Categorias deixam de ser exclusivas de receita ou despesa."""
+    conn.execute("UPDATE categories SET type='hybrid' WHERE type<>'hybrid'")
+
+
 MIGRATIONS = (
     Migration(1, "legacy_schema_baseline_20260722", "a8fb9da9", _baseline),
     Migration(2, "job_queue_status_indexes", "5ee2751d", _add_job_queue_indexes),
@@ -162,6 +167,7 @@ MIGRATIONS = (
         "f35ea46c",
         _restore_santander_august_2024_payment,
     ),
+    Migration(4, "make_categories_hybrid", "6cb5bd2a", _make_categories_hybrid),
 )
 
 

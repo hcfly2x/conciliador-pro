@@ -18,16 +18,22 @@ class MigrationRunnerTests(unittest.TestCase):
             conn.execute(
                 f"CREATE TABLE {table}(id TEXT PRIMARY KEY,status TEXT,created_at TEXT)"
             )
+        conn.execute("CREATE TABLE categories(id TEXT PRIMARY KEY,type TEXT)")
+        conn.execute("INSERT INTO categories(id,type) VALUES ('legacy-expense','expense')")
         return conn
 
     def test_applies_each_version_once_and_creates_queue_indexes(self) -> None:
         conn = self.make_connection()
-        self.assertEqual(run_migrations(conn), [1, 2, 3])
+        self.assertEqual(run_migrations(conn), [1, 2, 3, 4])
         self.assertEqual(run_migrations(conn), [])
         rows = conn.execute(
             "SELECT version,name FROM schema_migrations ORDER BY version"
         ).fetchall()
-        self.assertEqual([row[0] for row in rows], [1, 2, 3])
+        self.assertEqual([row[0] for row in rows], [1, 2, 3, 4])
+        self.assertEqual(
+            conn.execute("SELECT type FROM categories WHERE id='legacy-expense'").fetchone()[0],
+            "hybrid",
+        )
         indexes = {
             row[0]
             for row in conn.execute(
@@ -104,7 +110,7 @@ class MigrationRunnerTests(unittest.TestCase):
             """
         )
 
-        self.assertEqual(run_migrations(conn), [1, 2, 3])
+        self.assertEqual(run_migrations(conn), [1, 2, 3, 4])
         self.assertEqual(run_migrations(conn), [])
         restored = conn.execute(
             """

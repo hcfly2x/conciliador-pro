@@ -340,17 +340,10 @@ def ledger_exclude(ledger_id: str):
 @bp.route("/api/v1/categories", methods=["GET", "POST"])
 def categories():
     if request.method == "GET":
-        ctype = (request.args.get("type") or "").strip()
         with db_connect() as conn:
-            if ctype:
-                rows = conn.execute(
-                    "SELECT id,name,color,text_color,type FROM categories WHERE type=? ORDER BY name",
-                    (ctype,),
-                ).fetchall()
-            else:
-                rows = conn.execute(
-                    "SELECT id,name,color,text_color,type FROM categories ORDER BY name"
-                ).fetchall()
+            rows = conn.execute(
+                "SELECT id,name,color,text_color,type FROM categories ORDER BY name"
+            ).fetchall()
         return jsonify(
             [
                 {
@@ -358,18 +351,17 @@ def categories():
                     "name": r[1],
                     "color": r[2],
                     "text_color": r[3],
-                    "type": r[4],
+                    "type": "hybrid",
                 }
                 for r in rows
             ]
         )
     data = request.get_json(force=True)
     name = data.get("name", "").strip()
-    category_type = data.get("type", "expense")
-    if not name or category_type not in ("expense", "income"):
+    if not name:
         return jsonify(
             {
-                "detail": "Nome e tipo de categoria validos sao obrigatorios",
+                "detail": "Nome de categoria obrigatorio",
                 "code": "VALIDATION_ERROR",
             }
         ), 400
@@ -378,12 +370,12 @@ def categories():
         name,
         data.get("color", "#334155"),
         data.get("text_color", "#ffffff"),
-        category_type,
+        "hybrid",
     )
     with db_connect() as conn:
         duplicate = conn.execute(
-            "SELECT id FROM categories WHERE UPPER(name)=UPPER(?) AND type=?",
-            (name, category_type),
+            "SELECT id FROM categories WHERE UPPER(name)=UPPER(?)",
+            (name,),
         ).fetchone()
         if duplicate:
             return jsonify(
@@ -399,7 +391,7 @@ def categories():
             "name": item[1],
             "color": item[2],
             "text_color": item[3],
-            "type": item[4],
+            "type": "hybrid",
         }
     ), 201
 
@@ -452,33 +444,13 @@ def category_detail(cat_id: str):
                     "code": "VALIDATION_ERROR",
                 }
             ), 400
-        new_type = data.get("type", "expense")
-        if new_type not in ("expense", "income"):
-            return jsonify(
-                {"detail": "Tipo de categoria invalido", "code": "VALIDATION_ERROR"}
-            ), 400
-        incompatible = conn.execute(
-            """
-            SELECT
-              (SELECT COUNT(1) FROM transactions WHERE category_id=? AND type<>?) +
-              (SELECT COUNT(1) FROM classification_history WHERE category_id=? AND type<>?)
-            """,
-            (cat_id, new_type, cat_id, new_type),
-        ).fetchone()[0]
-        if int(incompatible or 0) > 0:
-            return jsonify(
-                {
-                    "detail": "O tipo da categoria conflita com lancamentos ou registros historicos existentes.",
-                    "code": "CATEGORY_TYPE_IN_USE",
-                }
-            ), 400
         conn.execute(
             "UPDATE categories SET name=?, color=?, text_color=?, type=? WHERE id=?",
             (
                 name,
                 data.get("color", "#334155"),
                 data.get("text_color", "#ffffff"),
-                new_type,
+                "hybrid",
                 cat_id,
             ),
         )
@@ -493,7 +465,7 @@ def category_detail(cat_id: str):
             "name": row[1],
             "color": row[2],
             "text_color": row[3],
-            "type": row[4],
+            "type": "hybrid",
         }
     )
 

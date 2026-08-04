@@ -314,28 +314,14 @@ export function useTransactionTable({
 
   function toggleAll() {
     if (selected.size === txs.length) setSelected(new Set())
-    else {
-      const types = new Set(txs.map(tx => tx.type))
-      if (types.size > 1) {
-        addToast('Filtre por receita ou despesa antes de selecionar todos para classificar em lote', 'err')
-        return
-      }
-      setSelected(new Set(txs.map(t => t.id)))
-    }
+    else setSelected(new Set(txs.map(t => t.id)))
   }
   function toggleOne(id: string) {
-    const transaction = txs.find(tx => tx.id === id)
-    if (!transaction) return
     setSelected(current => {
       const next = new Set(current)
       if (next.has(id)) {
         next.delete(id)
         return next
-      }
-      const selectedType = txs.find(tx => next.has(tx.id))?.type
-      if (selectedType && selectedType !== transaction.type) {
-        addToast('A classificacao em lote aceita somente receitas ou somente despesas', 'err')
-        return current
       }
       next.add(id)
       return next
@@ -349,16 +335,6 @@ export function useTransactionTable({
   async function handleBulkClassify() {
     if (!bulkCatId || !selected.size) return
     const selectedTransactions = txs.filter(tx => selected.has(tx.id))
-    const selectedTypes = new Set(selectedTransactions.map(tx => tx.type))
-    if (selectedTypes.size !== 1) {
-      addToast('A classificacao em lote aceita somente receitas ou somente despesas', 'err')
-      return
-    }
-    const category = categories.find(item => item.id === bulkCatId)
-    if (category?.type !== selectedTransactions[0].type) {
-      addToast('Escolha uma categoria compativel com o tipo dos lancamentos selecionados', 'err')
-      return
-    }
     const classifiedCount = selectedTransactions.filter(tx => tx.locked && tx.category_id).length
     const includeClassified = classifiedCount > 0 && isAdmin()
       ? window.confirm(
